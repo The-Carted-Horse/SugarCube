@@ -235,10 +235,24 @@ class NightscoutHandler(BaseHTTPRequestHandler):
             self._send_json({"status": 404, "message": "Not found"}, 404)
 
 
+PULL_TYPES = frozenset({"tidepool", "nightscout"})
+
+
 def start_servers(users, store: Store) -> list[NightscoutServer]:
-    """Start one Nightscout server thread per configured user."""
+    """Start one Nightscout server thread per push-configured user.
+
+    People whose data is pulled (Tidepool, a Nightscout site) are never
+    shown a port, so one is not opened for them either — their port stays
+    reserved in config.json so switching back to push is lossless. Set
+    "also_push": true on the source for the rare person who does both.
+    """
     servers = []
     for user in users:
+        source = user.source or {}
+        if source.get("type") in PULL_TYPES and not source.get("also_push"):
+            log.info("[%s] %s source: not opening a push listener on port %d",
+                     user.name, source["type"], user.port)
+            continue
         server = NightscoutServer(user.port, user.name, user.api_secret, store)
         thread = threading.Thread(
             target=server.serve_forever, name=f"ns-{user.name}", daemon=True

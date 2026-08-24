@@ -54,6 +54,58 @@ def admin_url(host: str, port: int, path: str = "") -> str:
     return origin + path
 
 
+FIRST_USER_PORT = 1337
+
+
+def assign_ports(users: list[dict], reserved=frozenset()) -> None:
+    """Give every user a unique push port, in place.
+
+    Ports the user never sees still have to be valid and unique — load()
+    rejects duplicates, and a config it rejects would restart-loop the
+    device. Existing sound ports are kept; blanks, duplicates and
+    privileged ports are reassigned from FIRST_USER_PORT upwards.
+    """
+    taken = set(reserved)
+    for user in users:
+        port = user.get("port")
+        if isinstance(port, int) and 1024 <= port <= 65535 and port not in taken:
+            taken.add(port)
+        else:
+            user["port"] = None
+    candidate = FIRST_USER_PORT
+    for user in users:
+        if user["port"] is None:
+            while candidate in taken:
+                candidate += 1
+            user["port"] = candidate
+            taken.add(candidate)
+
+
+def write_atomic(raw: dict, path: str | Path) -> "Config":
+    """Validate, then replace the config file in one step.
+
+    Both the settings page and the setup wizard write config.json; the
+    validate-before-replace order is the only thing standing between a
+    bad edit and a device that restart-loops forever (the unit sets
+    StartLimitIntervalSec=0), so it lives in one place.
+    """
+    path = Path(path)
+    tmp = str(path) + ".tmp"
+    with open(tmp, "w") as handle:
+        json.dump(raw, handle, indent=2)
+        handle.write("\n")
+    try:
+        config = load(tmp)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    os.replace(tmp, path)
+    return config
+
+
 READABLE_ALPHABET = "abcdefghjkmnpqrstuvwxyzACDEFGHJKMNPQRSTUVWXYZ23456789"
 SIMPLE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
 
