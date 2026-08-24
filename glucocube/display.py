@@ -337,6 +337,25 @@ class Display:
             ]
             pygame.draw.polygon(surface, color, head)
 
+    def draw_logo(self, surface, center, size, color):
+        """An isometric cube: a hexagon with three edges to the near corner.
+
+        Drawn rather than blitted, like the sun and moon above it, so it
+        stays crisp on any panel and adds no asset to carry around.
+        """
+        radius = size / 2
+        points = [
+            (center[0] + math.cos(math.radians(60 * i - 90)) * radius,
+             center[1] + math.sin(math.radians(60 * i - 90)) * radius)
+            for i in range(6)
+        ]
+        width = max(1, int(size * 0.09))
+        pygame.draw.lines(surface, color, True, points, width)
+        # Vertices 1, 3 and 5 are the three edges meeting at the near
+        # corner — the line that turns a hexagon into a cube.
+        for index in (1, 3, 5):
+            pygame.draw.line(surface, color, center, points[index], width)
+
     def draw_chart(self, chart: pygame.Rect, snap: UserSnapshot, stale: bool,
                    th: dict, future, est: bool, now_ms: int):
         """3h history + 2h forecast: range band, trace, cone, dotted forecast."""
@@ -604,6 +623,22 @@ class Display:
             if x + notice_w < rect.right - int(px * 10):
                 self.label(surface, notice, px, self.pal.high,
                            midleft=(x, rect.centery))
+
+        # The mark sits in the middle of the footer, and gives way to
+        # anything that has something to say: the update notice is
+        # actionable, this is decoration.
+        mark_px = max(9, int(px * 0.92))
+        mark_size = int(mark_px * 1.35)
+        mark_w = mark_size + int(mark_px * 0.6) + int(len("GLUCOCUBE") * mark_px * 0.85)
+        left_edge = rect.centerx - mark_w // 2
+        if (not update
+                and left_edge > when_rect.right + px
+                and rect.centerx + mark_w // 2 < self._toggle_rect.left - px):
+            self.draw_logo(surface, (left_edge + mark_size // 2, rect.centery),
+                           mark_size, self.pal.faint)
+            self.label(surface, "GlucoCube", mark_px, self.pal.faint,
+                       midleft=(left_edge + mark_size + int(mark_px * 0.6),
+                                rect.centery))
 
         icon_r = max(6, int(rect.height * 0.14))
         icon_c = (rect.right - pad - icon_r, rect.centery)

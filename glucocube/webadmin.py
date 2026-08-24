@@ -207,6 +207,10 @@ footer a, footer button { color:var(--dim); background:none; border:0;
   font:inherit; letter-spacing:inherit; text-decoration:none; cursor:pointer;
   padding:0; text-transform:uppercase; }
 footer .grow { flex:1 1 auto; }
+/* The same cube the physical screen draws, quiet in the middle. */
+footer .brand { display:inline-flex; align-items:center; gap:.6em;
+                color:var(--faint); }
+footer .brand svg { flex:0 0 auto; }
 #updated.err { color:var(--low); }
 footer span, footer a, footer button { white-space:nowrap; }
 /* Stacked (narrow) layout: viewport can't fit both cards — allow scrolling. */
@@ -218,12 +222,19 @@ footer span, footer a, footer button { white-space:nowrap; }
   .card:first-child { border-top:0; }
   .big { font-size:clamp(4rem,14vh,7rem); }
   footer { flex-wrap:wrap; gap:.4rem 1.1rem; }
+  /* No room to be decorative once the footer is wrapping. */
+  footer .brand, footer .grow { display:none; }
 }
 </style></head><body>
 <div class="grid" id="grid"></div>
 <footer>
   <span id="when"></span>
   <span id="updated"></span>
+  <span class="grow"></span>
+  <span class="brand"><svg viewBox="0 0 16 16" width="14" height="14"
+    aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.2"
+    stroke-linejoin="round" d="M8 1 14.1 4.5 14.1 11.5 8 15 1.9 11.5 1.9 4.5Z
+    M8 8 14.1 4.5 M8 8 8 15 M8 8 1.9 4.5"/></svg>GlucoCube</span>
   <span class="grow"></span>
   <a id="upgrade" href="/settings" style="display:none;color:var(--high)"></a>
   <a href="/log">Log</a>
