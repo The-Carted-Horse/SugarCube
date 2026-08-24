@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 import secrets as secrets_mod
 
 from . import config as config_mod
-from . import network, predict, synclog, ui, updater, verify
+from . import network, onboarding, predict, synclog, ui, updater, verify
 from .server import DualStackServer
 from .config import SCREEN_PNG, Config, merged_thresholds
 from .store import Store
@@ -506,10 +506,13 @@ class AdminHandler(BaseHTTPRequestHandler):
     # ---- GET ----
 
     def do_GET(self):
-        if not self._authorized():
+        path = self.path.split("?")[0]
+        if not self._authorized() and not onboarding.open_without_login(path):
             self._deny()
             return
-        path = self.path.split("?")[0]
+        if onboarding.handles(path):
+            onboarding.do_get(self, path)
+            return
         if path == "/":
             self._send(DASHBOARD_HTML.encode(), "text/html; charset=utf-8")
         elif path == "/settings":
@@ -931,10 +934,11 @@ version of this page.</p>
             " in about a minute.</p>", refresh="45;url=/settings").encode()
 
     def do_POST(self):
-        if not self._authorized():
+        post_path = self.path.split("?")[0]
+        if (not self._authorized()
+                and not onboarding.open_without_login(post_path)):
             self._deny()
             return
-        post_path = self.path.split("?")[0]
         length = int(self.headers.get("Content-Length") or 0)
         raw_body = self.rfile.read(length) if length else b""
         if post_path == "/api/source/test":
@@ -944,6 +948,9 @@ version of this page.</p>
             k: v[0]
             for k, v in parse_qs(raw_body.decode()).items()
         }
+        if onboarding.handles(post_path):
+            onboarding.do_post(self, post_path, form)
+            return
         if post_path == "/display/theme":
             theme = form.get("theme")
             if theme in ("dark", "light"):

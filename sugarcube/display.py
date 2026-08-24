@@ -642,7 +642,7 @@ class Display:
             self._lan_ip = (ip, time.monotonic())
         return ip
 
-    def _mdns_url(self) -> str | None:
+    def _mdns_url(self, path: str = "/setup") -> str | None:
         """http://<hostname>.local/... — works once avahi is up (the image
         ships it); dev machines and odd hostnames just skip the hint."""
         if not sys.platform.startswith("linux"):
@@ -650,7 +650,7 @@ class Display:
         host = socket.gethostname().split(".")[0]
         if not host or host == "localhost":
             return None
-        return admin_url(f"{host}.local", self.config.admin_port, "/settings")
+        return admin_url(f"{host}.local", self.config.admin_port, path)
 
     def _qr_surface(self, url: str, target_px: int) -> pygame.Surface | None:
         if self._qr_cache and self._qr_cache[0] == url:
@@ -733,11 +733,11 @@ class Display:
             # settings page already logged in (?key= auto-auth).
             url = admin_url(
                 network.HOTSPOT_ADDR, self.config.admin_port,
-                f"/settings?key={self.config.admin_password}",
+                f"/setup?key={self.config.admin_password}",
             )
             self.text(screen, "Connected!  One more scan", int(s * 0.075),
                       self.pal.fg, kind="num", midtop=(cx, int(h * 0.035)))
-            self.text(screen, "2.  Scan to open the setup page", int(s * 0.045),
+            self.text(screen, "2.  Scan to open setup", int(s * 0.045),
                       self.pal.dim, midtop=(cx, int(h * 0.15)))
             qr = self._qr_surface(url, int(s * 0.42))
             if qr:
@@ -747,7 +747,7 @@ class Display:
             else:
                 info_y = int(h * 0.40)
             plain = admin_url(network.HOTSPOT_ADDR, self.config.admin_port,
-                              "/settings")
+                              "/setup")
             self.text(screen, f"or open  {plain}", int(s * 0.04),
                       self.pal.dim, midtop=(cx, info_y))
             if self.config.admin_password:
@@ -814,7 +814,7 @@ class Display:
         # The .local name leads: mDNS keeps working when the address
         # changes, and it reaches the device over IPv6 on networks that
         # filter client-to-client IPv4.
-        ip_url = admin_url(ip, self.config.admin_port, "/settings")
+        ip_url = admin_url(ip, self.config.admin_port, "/setup")
         primary = mdns or ip_url
         self.text(screen, "Scan from a phone on this network to set up",
                   int(s * 0.045), self.pal.dim, midtop=(cx, int(h * 0.17)))
