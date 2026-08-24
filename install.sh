@@ -104,6 +104,20 @@ polkit.addRule(function(action, subject) {
 POLKITEOF
 fi
 
+# --- Captive portal for the setup hotspot ----------------------------------
+# Resolves every name to the device while the hotspot is up, so a phone
+# that joins opens the setup page by itself. NetworkManager applies this
+# only to "shared" connections, so it does nothing on a normal network.
+
+if [ -d /etc/NetworkManager ]; then
+    log "Installing the setup-hotspot captive portal DNS rule"
+    $SUDO install -d /etc/NetworkManager/dnsmasq-shared.d
+    $SUDO tee /etc/NetworkManager/dnsmasq-shared.d/sugarcube-captive.conf > /dev/null <<'CAPTIVEEOF'
+# Captive portal for the SugarCube setup hotspot; see the project README.
+address=/#/10.42.0.1
+CAPTIVEEOF
+fi
+
 # --- systemd service -------------------------------------------------------
 
 log "Installing systemd service (user: $RUN_USER, path: $REPO_DIR)"

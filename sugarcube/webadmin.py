@@ -20,7 +20,8 @@ from urllib.parse import parse_qs, urlparse
 import secrets as secrets_mod
 
 from . import config as config_mod
-from . import network, onboarding, predict, synclog, ui, updater, verify
+from . import captive, network, onboarding, predict, synclog, ui, updater
+from . import verify
 from .server import DualStackServer
 from .config import SCREEN_PNG, Config, merged_thresholds
 from .store import Store
@@ -507,6 +508,10 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        # Before the auth check on purpose: a 401 makes a phone's captive
+        # browser ask for a username instead of showing the setup page.
+        if captive.maybe_handle(self, path):
+            return
         if not self._authorized() and not onboarding.open_without_login(path):
             self._deny()
             return
@@ -558,6 +563,17 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._send(ui.page("Not found", "<h1>Not found</h1>"
                                '<p><a href="/settings">Back to settings</a></p>'
                                ).encode(), "text/html; charset=utf-8", 404)
+
+    def do_HEAD(self):
+        """Some Windows connectivity probes use HEAD rather than GET."""
+        path = self.path.split("?")[0]
+        if captive.maybe_handle(self, path, body=False):
+            return
+        if not self._authorized():
+            self._deny()
+            return
+        self._send(b"", "text/html; charset=utf-8",
+                   200 if path in ("/", "/settings", "/setup", "/log") else 404)
 
     def _dashboard_data(self) -> dict:
         import time
