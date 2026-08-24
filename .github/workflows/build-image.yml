@@ -66,3 +66,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.build.outputs.image-path }}
+          # Releases were going out with an empty description; the commit
+          # log is a better starting point than nothing.
+          generate_release_notes: true
