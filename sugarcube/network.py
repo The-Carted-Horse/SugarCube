@@ -1,7 +1,7 @@
 """Wi-Fi provisioning via NetworkManager (nmcli).
 
 When the Pi has no network at all, we bring up a setup hotspot
-("TrioMonitor-Setup"). The display shows a WIFI: QR code that joins a
+("SugarCube-Setup"). The display shows a WIFI: QR code that joins a
 phone to that hotspot, where the settings page offers a list of nearby
 networks so the user can hand the Pi their home Wi-Fi credentials.
 
@@ -17,10 +17,10 @@ import threading
 
 from . import synclog
 
-log = logging.getLogger("trio_monitor.network")
+log = logging.getLogger("sugarcube.network")
 
-HOTSPOT_SSID = "TrioMonitor-Setup"
-HOTSPOT_CONN = "trio-monitor-hotspot"
+HOTSPOT_SSID = "SugarCube-Setup"
+HOTSPOT_CONN = "sugarcube-hotspot"
 HOTSPOT_ADDR = "10.42.0.1"
 
 
@@ -139,6 +139,31 @@ def wifi_scan() -> list[dict]:
     return sorted(networks, key=lambda n: -n["signal"])
 
 
+def reboot() -> bool:
+    """Restart the device so everything comes up cleanly on the new network.
+
+    Works as the unprivileged service user thanks to the polkit rule the
+    installer/image drops in; anywhere else the refusal is logged (and the
+    display still recovers on its own — it just takes a little longer).
+    """
+    log.info("Rebooting to apply network change")
+    synclog.add("network", "system", "rebooting to apply Wi-Fi settings")
+    try:
+        proc = subprocess.run(
+            ["systemctl", "reboot"], capture_output=True, text=True, timeout=15
+        )
+        if proc.returncode != 0:
+            err = (proc.stdout + proc.stderr).strip()
+            log.warning("Reboot refused: %s", err)
+            synclog.add("network", "system", f"reboot refused: {err}", ok=False)
+            return False
+        return True
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        log.warning("Reboot failed: %s", exc)
+        synclog.add("network", "system", f"reboot failed: {exc}", ok=False)
+        return False
+
+
 def connect_wifi(ssid: str, password: str) -> tuple[bool, str]:
     """Leave the hotspot (if up) and join the given network."""
     if hotspot_active():
@@ -153,6 +178,10 @@ def connect_wifi(ssid: str, password: str) -> tuple[bool, str]:
         return True, out
     log.warning("Failed to join '%s': %s", ssid, out)
     synclog.add("network", "system", f"failed to join '{ssid}': {out}", ok=False)
+    # nmcli can leave the half-created profile behind (especially when the
+    # timeout kills it); a saved bad profile would autoconnect-fight the
+    # setup hotspot, so drop it.
+    _nmcli("connection", "delete", "id", ssid)
     return False, out
 
 

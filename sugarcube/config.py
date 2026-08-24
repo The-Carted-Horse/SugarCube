@@ -1,4 +1,4 @@
-"""Configuration loading for Trio Monitor."""
+"""Configuration loading for SugarCube."""
 
 import json
 import os
@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Where the display loop drops live screenshots for the /screen.png endpoint.
-SCREEN_PNG = os.path.join(tempfile.gettempdir(), "trio-monitor-screen.png")
+SCREEN_PNG = os.path.join(tempfile.gettempdir(), "sugarcube-screen.png")
 
 
 @dataclass
@@ -43,9 +43,15 @@ class DisplayConfig:
 class Config:
     users: list[UserConfig] = field(default_factory=list)
     display: DisplayConfig = field(default_factory=DisplayConfig)
-    database: str = "trio-monitor.db"
-    admin_port: int = 8080          # 0 disables the web admin
+    database: str = "sugarcube.db"
+    admin_port: int = 80            # 0 disables the web admin
     admin_password: str = ""        # empty disables Basic auth
+
+
+def admin_url(host: str, port: int, path: str = "") -> str:
+    """URL for the admin UI; plain http URLs omit the default port."""
+    origin = f"http://{host}" if port == 80 else f"http://{host}:{port}"
+    return origin + path
 
 
 READABLE_ALPHABET = "abcdefghjkmnpqrstuvwxyzACDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -75,8 +81,8 @@ def create_default(path: str | Path) -> None:
             {"name": "Person B", "port": 1338, "api_secret": secrets.token_hex(12)},
         ],
         "display": {},
-        "database": "trio-monitor.db",
-        "admin": {"port": 8080, "password": simple_secret()},
+        "database": "sugarcube.db",
+        "admin": {"port": 80, "password": simple_secret()},
     }
     Path(path).write_text(json.dumps(starter, indent=2) + "\n")
 
@@ -106,7 +112,7 @@ def load(path: str | Path) -> Config:
 
     display = DisplayConfig(**raw.get("display", {}))
 
-    database = raw.get("database", "trio-monitor.db")
+    database = raw.get("database", "sugarcube.db")
     if not Path(database).is_absolute():
         database = str(path.parent / database)
 
@@ -115,6 +121,6 @@ def load(path: str | Path) -> Config:
         users=users,
         display=display,
         database=database,
-        admin_port=int(admin.get("port", 8080)),
+        admin_port=int(admin.get("port", 80)),
         admin_password=admin.get("password", ""),
     )

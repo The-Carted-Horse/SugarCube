@@ -1,0 +1,15 @@
+polkit.addRule(function(action, subject) {
+    if (subject.user != "sugar") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    // Wi-Fi provisioning (scan, hotspot, join) via nmcli.
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0) {
+        return polkit.Result.YES;
+    }
+    // Reboot after Wi-Fi settings are applied.
+    if (action.id == "org.freedesktop.login1.reboot" ||
+        action.id == "org.freedesktop.login1.reboot-multiple-sessions") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

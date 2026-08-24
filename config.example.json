@@ -14,5 +14,5 @@
     "urgent_high": 250,
     "stale_minutes": 12
   },
-  "database": "trio-monitor.db"
+  "database": "sugarcube.db"
 }

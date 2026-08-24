@@ -1,9 +1,10 @@
 """Web admin UI — edit config.json from a browser.
 
-Serves a single settings page (default port 8080) where users, ports, API
-secrets, Tidepool sources, and display thresholds can be edited. Saving
-validates the new config, writes it atomically, and exits the process so
-systemd restarts the app with the new settings (Restart=always).
+Serves the dashboard and a settings page (default port 80; falls back to
+8080 when 80 isn't available) where users, ports, API secrets, Tidepool
+sources, and display thresholds can be edited. Saving validates the new
+config, writes it atomically, and exits the process so systemd restarts
+the app with the new settings (Restart=always).
 
 Protected with HTTP Basic auth when config.admin.password is set.
 """
@@ -24,7 +25,7 @@ from . import network, predict, synclog
 from .config import SCREEN_PNG, Config, merged_thresholds
 from .store import Store
 
-log = logging.getLogger("trio_monitor.webadmin")
+log = logging.getLogger("sugarcube.webadmin")
 
 PAGE_STYLE = """
 :root, [data-theme=dark] { color-scheme: dark;
@@ -112,7 +113,7 @@ function addPerson() {
 
 LOG_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Trio Monitor sync log</title>__THEME__<style>__STYLE__</style></head><body>
+<title>SugarCube sync log</title>__THEME__<style>__STYLE__</style></head><body>
 __NAV__
 <h1>Sync log</h1>
 <p class="note">Most recent first. Cleared when the app restarts.</p>
@@ -138,138 +139,224 @@ setInterval(refreshLog, 15000);
 
 DASHBOARD_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Trio Monitor</title>
+<title>SugarCube</title>
 <style>
-:root, [data-theme=dark] {
-  --bg:#0d1117; --card:#141a21; --band:#182018; --line:#2d333b;
-  --fg:#ebeef1; --dim:#6e7681; --inrange:#3fb950; --high:#d29922;
-  --low:#f85149; --urgent:#ff2828;
+@font-face { font-family:'Space Grotesk'; font-weight:700;
+  src:url('/fonts/SpaceGrotesk-Bold.ttf') format('truetype'); }
+@font-face { font-family:'Space Grotesk'; font-weight:500;
+  src:url('/fonts/SpaceGrotesk-Medium.ttf') format('truetype'); }
+@font-face { font-family:'JetBrains Mono'; font-weight:400;
+  src:url('/fonts/JetBrainsMono-Regular.ttf') format('truetype'); }
+@font-face { font-family:'JetBrains Mono'; font-weight:500;
+  src:url('/fonts/JetBrainsMono-Medium.ttf') format('truetype'); }
+:root, [data-theme=dark] { color-scheme: dark;
+  --bg:#0a0c0f; --band:#14191e; --line:#262d34; --fg:#e9edf1;
+  --dim:#7a848e; --faint:#545d66; --trace:#9da5ae;
+  --inrange:#5fde96; --high:#e9b949; --low:#f45c54; --urgent:#ff453a;
 }
-[data-theme=light] {
-  --bg:#f4f6f8; --card:#ffffff; --band:#e8edf0; --line:#c6ccd3;
-  --fg:#1a2027; --dim:#5c6670; --inrange:#168a3a; --high:#b26c06;
-  --low:#ce2626; --urgent:#e20000;
+[data-theme=light] { color-scheme: light;
+  --bg:#f6f7f5; --band:#e9ebe6; --line:#d1d4cf; --fg:#181c20;
+  --dim:#666e76; --faint:#949ba2; --trace:#7a828a;
+  --inrange:#109448; --high:#b07408; --low:#cc2c24; --urgent:#e00000;
 }
 * { box-sizing:border-box; margin:0; }
 html, body { height:100%; }
-body { font-family:-apple-system,system-ui,sans-serif; background:var(--bg);
-       color:var(--fg); padding:.8rem; transition:background .2s;
-       display:flex; flex-direction:column; overflow:hidden; }
-header { display:flex; align-items:center; justify-content:space-between;
-         flex:0 0 auto; margin-bottom:.6rem; }
-header h1 { font-size:1.05rem; color:var(--dim); font-weight:600; }
-header .right { display:flex; gap:.8rem; align-items:center; }
-header a, header button { color:var(--dim); background:none; border:1px solid var(--line);
-  border-radius:8px; padding:.35rem .7rem; font-size:.85rem; cursor:pointer;
-  text-decoration:none; }
-#updated { font-size:.75rem; color:var(--dim); }
+body { font-family:'JetBrains Mono',ui-monospace,monospace; background:var(--bg);
+       color:var(--fg); display:flex; flex-direction:column; overflow:hidden;
+       transition:background .2s; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr));
+        flex:1 1 auto; min-height:0; }
+.card { padding:clamp(.8rem,3vh,1.6rem) clamp(1rem,3.5vw,2.4rem);
+        display:flex; flex-direction:column; min-height:0;
+        border-left:1px solid var(--line); }
+.card:first-child { border-left:0; }
+.card.urgent { box-shadow:inset 0 0 0 3px var(--urgent); border-radius:12px; }
+.head { display:flex; justify-content:space-between; align-items:baseline; }
+.who { font-weight:500; letter-spacing:.35em;
+       font-size:clamp(.85rem,2.6vh,1.4rem); text-transform:uppercase; }
+.badge { color:var(--dim); letter-spacing:.22em;
+         font-size:clamp(.6rem,1.7vh,.85rem); white-space:nowrap; }
+.dot { display:inline-block; width:.55em; height:.55em; border-radius:50%;
+       margin-right:.55em; vertical-align:6%; }
+.bigrow { display:flex; align-items:flex-start; gap:clamp(.8rem,3vw,2rem);
+          flex:0 0 auto; margin:.2rem 0 0; }
+.big { font-family:'Space Grotesk',system-ui,sans-serif; font-weight:700;
+       font-size:clamp(4rem,22vh,11rem); line-height:.95;
+       letter-spacing:-.01em; }
+.side { display:flex; flex-direction:column; gap:.35em;
+        padding-top:clamp(.4rem,2vh,1.2rem);
+        font-size:clamp(1rem,3.6vh,2rem); }
+.side .arrow { font-weight:500; font-size:1.15em; line-height:1; }
+.side .delta { font-family:'Space Grotesk',system-ui,sans-serif;
+               font-weight:500; line-height:1; }
+.side .unit { color:var(--faint); letter-spacing:.22em;
+              font-size:clamp(.55rem,1.5vh,.8rem); }
+.fcrow { display:flex; align-items:center; gap:.9em; margin-top:auto;
+         padding-top:.4rem; font-size:clamp(.6rem,1.7vh,.85rem); }
+.fcrow .lbl { color:var(--dim); letter-spacing:.22em; white-space:nowrap; }
+.fcrow .rule { flex:1 1 auto; border-top:1px solid var(--line); }
+.fcrow .val { font-family:'Space Grotesk',system-ui,sans-serif; font-weight:700;
+              font-size:1.7em; }
+.fcrow .eta { color:var(--faint); letter-spacing:.15em; }
+.chartbox { flex:0 0 auto; height:clamp(90px,24vh,220px); margin-top:.5rem; }
+.chartbox svg { width:100%; height:100%; display:block; overflow:visible; }
+.stats { display:grid; grid-template-columns:repeat(4,1fr);
+         margin-top:clamp(.5rem,2.4vh,1.4rem); flex:0 0 auto; }
+.stats .lbl { font-size:clamp(.55rem,1.6vh,.8rem); color:var(--dim);
+              letter-spacing:.22em; }
+.stats .val { font-family:'Space Grotesk',system-ui,sans-serif; font-weight:700;
+              font-size:clamp(1.4rem,5vh,2.6rem); line-height:1.25; }
+.stats .val small { font-size:.5em; color:var(--dim); font-weight:700; }
+.stats .sub2 { font-size:clamp(.5rem,1.4vh,.75rem); color:var(--faint);
+               letter-spacing:.18em; }
+footer { flex:0 0 auto; display:flex; align-items:center; gap:1.2rem;
+         border-top:1px solid var(--line);
+         padding:.55rem clamp(1rem,2.5vw,2rem);
+         font-size:clamp(.6rem,1.7vh,.8rem); letter-spacing:.22em;
+         color:var(--dim); }
+footer a, footer button { color:var(--dim); background:none; border:0;
+  font:inherit; letter-spacing:inherit; text-decoration:none; cursor:pointer;
+  padding:0; text-transform:uppercase; }
+footer .grow { flex:1 1 auto; }
 #updated.err { color:var(--low); }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
-        gap:.8rem; flex:1 1 auto; min-height:0; }
-.card { background:var(--card); border:1px solid var(--line); border-radius:14px;
-        padding:.9rem 1rem 1rem; display:flex; flex-direction:column;
-        min-height:0; }
-.card.urgent { border:3px solid var(--urgent); }
-.who { display:flex; justify-content:center; align-items:center; gap:.5rem;
-       color:var(--dim); font-weight:600; font-size:clamp(.9rem,2.4vh,1.3rem); }
-.dot { width:.6rem; height:.6rem; border-radius:50%; }
-.big { display:flex; justify-content:center; align-items:baseline; gap:.6rem;
-       font-size:clamp(2.8rem,15vh,8rem); font-weight:800; line-height:1.12; }
-.big .arrow { font-size:.55em; font-weight:700; }
-.sub { text-align:center; color:var(--dim); margin-bottom:.5rem;
-       font-size:clamp(.8rem,2.2vh,1.2rem); }
-.chartbox { flex:1 1 auto; min-height:80px; }
-.chartbox svg { width:100%; height:100%; display:block; background:var(--band);
-      border-radius:10px; }
-.strip { display:grid; grid-template-columns:repeat(4,1fr); text-align:center;
-         margin-top:.6rem; flex:0 0 auto; }
-.strip .lbl, .stats .lbl { font-size:clamp(.62rem,1.6vh,.85rem); color:var(--dim);
-         letter-spacing:.05em; }
-.strip .val { font-size:clamp(1.1rem,3.6vh,2rem); font-weight:700; }
-.stats { display:grid; grid-template-columns:repeat(4,1fr); text-align:center;
-         margin-top:.7rem; flex:0 0 auto; }
-.stats .val { font-size:clamp(1rem,3vh,1.7rem); font-weight:700; }
-.stats .sub2 { font-size:clamp(.6rem,1.5vh,.8rem); color:var(--dim); }
+footer span, footer a, footer button { white-space:nowrap; }
 /* Stacked (narrow) layout: viewport can't fit both cards — allow scrolling. */
 @media (max-width:719px) {
+  html, body { height:auto; min-height:100%; }
   body { overflow-y:auto; }
-  .grid { grid-auto-rows:minmax(85vh,auto); }
-  .big { font-size:clamp(2.8rem,10vh,6rem); }
+  .grid { grid-auto-rows:auto; }
+  .card { border-left:0; border-top:1px solid var(--line); min-height:88vh; }
+  .card:first-child { border-top:0; }
+  .big { font-size:clamp(4rem,14vh,7rem); }
+  footer { flex-wrap:wrap; gap:.4rem 1.1rem; }
 }
 </style></head><body>
-<header>
-  <h1>Trio Monitor</h1>
-  <div class="right">
-    <span id="updated">loading&hellip;</span>
-    <button id="theme">&#9788;</button>
-    <a href="/log">Log</a>
-    <a href="/settings">Settings</a>
-  </div>
-</header>
 <div class="grid" id="grid"></div>
+<footer>
+  <span id="when"></span>
+  <span id="updated"></span>
+  <span class="grow"></span>
+  <a href="/log">Log</a>
+  <a href="/settings">Settings</a>
+  <button id="theme"></button>
+</footer>
 <script>
 const ARROWS = {DoubleUp:"\\u2191\\u2191", SingleUp:"\\u2191", FortyFiveUp:"\\u2197",
   Flat:"\\u2192", FortyFiveDown:"\\u2198", SingleDown:"\\u2193", DoubleDown:"\\u2193\\u2193"};
 const html = document.documentElement;
 function applyTheme(t){ html.dataset.theme = t;
-  document.getElementById('theme').innerHTML = t === 'dark' ? '&#9788;' : '&#9789;'; }
+  document.getElementById('theme').innerHTML =
+    t === 'dark' ? 'Night &#9788;' : 'Day &#9789;'; }
 applyTheme(localStorage.theme ||
   (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
 document.getElementById('theme').onclick = () => {
   const t = html.dataset.theme === 'dark' ? 'light' : 'dark';
   localStorage.theme = t; applyTheme(t);
 };
+function tick(){
+  const d = new Date();
+  const date = d.toLocaleDateString('en-GB',
+    {weekday:'short', day:'2-digit', month:'short'}).replaceAll(',','');
+  const hm = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', hour12:false});
+  document.getElementById('when').textContent = (date + ' \\u00b7 ' + hm).toUpperCase();
+  render();  // ages keep advancing even when the server is unreachable
+}
+setInterval(tick, 15000);
+
+const esc = s => String(s).replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 function colorFor(v, th, stale){
-  if (v == null || stale) return 'var(--dim)';
+  if (v == null || stale) return 'var(--faint)';
   if (v <= th.urgent_low || v >= th.urgent_high) return 'var(--urgent)';
   if (v < th.low) return 'var(--low)';
   if (v > th.high) return 'var(--high)';
   return 'var(--inrange)';
 }
-function age(now, then){
+function ageC(now, then){
   if (!then) return '--';
   const m = Math.floor((now - then) / 60000);
-  if (m < 1) return 'now';
-  if (m < 60) return m + 'm ago';
-  if (m < 1440) return Math.floor(m/60) + 'h' + String(m%60).padStart(2,'0') + 'm ago';
-  return Math.floor(m/1440) + 'd ago';
+  if (m < 1) return 'NOW';
+  if (m < 60) return m + 'M';
+  if (m < 1440) return Math.floor(m/60) + 'H' + String(m%60).padStart(2,'0') + 'M';
+  return Math.floor(m/1440) + 'D';
 }
 function chart(u, th, now, W, H){
-  const hasF = u.forecast && u.forecast.series.length;
-  const t0 = now - 180*60000, t1 = now + (hasF ? 120*60000 : 0);
+  const AXIS = 20, PH = H - AXIS;           // reserve a strip for the axis
+  const est = u.forecast && u.forecast.source === 'est';
+  const t0 = now - 180*60000, t1 = now + 120*60000;
   const pts = u.history || [];
-  const fpts = hasF ? u.forecast.series : [];
+  const fpts = (u.forecast && u.forecast.series) || [];
   const vals = pts.concat(fpts).map(p => p[1]);
   if (!vals.length) return `<svg viewBox="0 0 ${W} ${H}"></svg>`;
-  const lo = Math.min(Math.min(...vals), th.low) - 10;
-  const hi = Math.max(Math.max(...vals), th.high) + 10;
-  const X = t => Math.max(0, Math.min(W, (t - t0) / (t1 - t0) * W));
-  const Y = v => H - (v - lo) / (hi - lo) * H;
-  const r = Math.max(2, Math.min(3.5, H / 60));
-  let s = `<svg viewBox="0 0 ${W} ${H}">`;
-  for (const b of [th.low, th.high]) {
-    s += `<line x1="4" x2="${W-4}" y1="${Y(b)}" y2="${Y(b)}" stroke="var(--line)"/>`;
-    s += `<text x="${W-6}" y="${Y(b)-3}" font-size="11" fill="var(--dim)" text-anchor="end">${b}</text>`;
+  const lo = Math.min(Math.min(...vals), th.low) - 18;
+  const hi = Math.max(Math.max(...vals), th.high) + 24;
+  const X = t => (t - t0) / (t1 - t0) * W;
+  const Y = v => PH - (v - lo) / (hi - lo) * PH;
+  let s = `<svg viewBox="0 0 ${W} ${H}" font-family="JetBrains Mono,monospace">`;
+  // target range band + bounds
+  s += `<rect x="0" y="${Y(th.high)}" width="${W}" height="${Y(th.low)-Y(th.high)}" fill="var(--band)"/>`;
+  s += `<text x="${W-5}" y="${Y(th.high)+13}" font-size="11" fill="var(--faint)" text-anchor="end">${th.high}</text>`;
+  s += `<text x="${W-5}" y="${Y(th.low)-4}" font-size="11" fill="var(--faint)" text-anchor="end">${th.low}</text>`;
+  // dashed now divider
+  s += `<line x1="${X(now)}" x2="${X(now)}" y1="2" y2="${PH-2}" stroke="var(--line)" stroke-dasharray="4 5"/>`;
+  // forecast confidence cone, clamped inside the plot area
+  if (fpts.length > 1){
+    const rate = est ? 0.26 : 0.17;
+    const Yc = v => Math.max(0, Math.min(PH, Y(v)));
+    const up = fpts.map(p => `${X(p[0]).toFixed(1)},${Yc(p[1] + 4 + (p[0]-now)/60000*rate).toFixed(1)}`);
+    const dn = fpts.map(p => `${X(p[0]).toFixed(1)},${Yc(p[1] - 4 - (p[0]-now)/60000*rate).toFixed(1)}`);
+    s += `<polygon points="${up.concat(dn.reverse()).join(' ')}" fill="${colorFor(fpts[fpts.length-1][1], th, false)}" opacity="0.12"/>`;
   }
-  if (hasF) s += `<line x1="${X(now)}" x2="${X(now)}" y1="3" y2="${H-3}" stroke="var(--line)"/>`;
-  if (pts.length > 1)
-    s += `<polyline fill="none" stroke="var(--dim)" stroke-width="1" points="${
-      pts.map(p => X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1)).join(' ')}"/>`;
-  for (const p of pts)
-    s += `<circle cx="${X(p[0]).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="${r}" fill="${colorFor(p[1], th, false)}"/>`;
+  // history trace, split on >15-min gaps so sensor outages stay visible
+  let seg = [];
+  const flush = () => {
+    if (seg.length > 1)
+      s += `<polyline fill="none" stroke="var(--trace)" stroke-width="1.6" points="${
+        seg.map(p => X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1)).join(' ')}"/>`;
+    seg = [];
+  };
+  for (const p of pts){
+    if (seg.length && p[0] - seg[seg.length-1][0] > 15*60000) flush();
+    seg.push(p);
+  }
+  flush();
+  // forecast dots
+  const r = Math.max(1.6, PH * 0.022);
   for (const p of fpts)
-    s += `<circle cx="${X(p[0]).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="${(r*0.8).toFixed(1)}" opacity="0.65" fill="${colorFor(p[1], th, false)}"/>`;
+    s += `<circle cx="${X(p[0]).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="${r.toFixed(1)}" fill="${colorFor(p[1], th, false)}"/>`;
+  // now marker: halo + dot at the latest reading
+  if (pts.length){
+    const last = pts[pts.length-1];
+    const c = colorFor(u.sgv, th, false);
+    s += `<circle cx="${X(last[0]).toFixed(1)}" cy="${Y(last[1]).toFixed(1)}" r="${(PH*0.14).toFixed(1)}" fill="${c}" opacity="0.18"/>`;
+    s += `<circle cx="${X(last[0]).toFixed(1)}" cy="${Y(last[1]).toFixed(1)}" r="${(PH*0.07).toFixed(1)}" fill="${c}"/>`;
+  }
+  // time axis
+  const AX = [[-180,'-3H','start'],[-120,'-2H','middle'],[-60,'-1H','middle'],
+              [0,'NOW','middle'],[60,'+1H','middle'],[120,'+2H','end']];
+  for (const [m, lab, anchor] of AX)
+    s += `<text x="${((m+180)/300*W).toFixed(1)}" y="${H-3}" font-size="11" letter-spacing="2" fill="var(--faint)" text-anchor="${anchor}">${lab}</text>`;
   return s + '</svg>';
 }
-let lastData = null;
+let lastData = null, receivedAt = 0;
+// Ages/staleness advance from the moment the data arrived, so a dead
+// server can't freeze the cards looking fresh.
+const effNow = () => lastData.now + (Date.now() - receivedAt);
 function drawCharts(){
   if (!lastData) return;
   document.querySelectorAll('.chartbox').forEach(box => {
     const u = lastData.users[+box.dataset.i];
-    if (u) box.innerHTML = chart(u, u.thresholds || lastData.thresholds, lastData.now,
+    if (u) box.innerHTML = chart(u, u.thresholds || lastData.thresholds, effNow(),
                                  box.clientWidth || 400, box.clientHeight || 130);
   });
+}
+function render(){
+  if (!lastData) return;
+  document.getElementById('grid').innerHTML =
+    lastData.users.map((u, i) =>
+      card(u, u.thresholds || lastData.thresholds, effNow(), i)).join('');
+  drawCharts();
 }
 let resizeTimer;
 window.addEventListener('resize', () => {
@@ -283,30 +370,37 @@ function card(u, th, now, idx){
   const col = colorFor(u.sgv, th, stale);
   const urgent = !stale && u.sgv != null && (u.sgv <= th.urgent_low || u.sgv >= th.urgent_high);
   const tilde = u.forecast && u.forecast.source === 'est' ? '~' : '';
-  const labels = {30:'+30m', 60:'+1h', 90:'+1.5h', 120:'+2h'};
-  let strip = '';
-  if (u.forecast && !stale)
-    strip = '<div class="strip">' + [30,60,90,120].map(hz => {
-      const v = u.forecast.horizons[hz];
-      return v == null ? '' : `<div><div class="lbl">${labels[hz]}</div>` +
-        `<div class="val" style="color:${colorFor(v, th, false)};opacity:.85">${tilde}${Math.round(v)}</div></div>`;
-    }).join('') + '</div>';
-  const stat = (lbl, val, sub) =>
-    `<div><div class="lbl">${lbl}</div><div class="val">${val}</div>` +
+  const f2h = u.forecast && !stale ? u.forecast.horizons[120] : null;
+  const eta = new Date(now + 120*60000).toLocaleTimeString([],
+    {hour:'2-digit', minute:'2-digit', hour12:false});
+  const fc = f2h != null
+    ? `<span class="val" style="color:${colorFor(f2h, th, false)}">${tilde}${Math.round(f2h)}</span>
+       <span class="eta">${eta}</span>` : '';
+  const stat = (lbl, val, unit, sub) =>
+    `<div><div class="lbl">${lbl}</div><div class="val">${val}<small>${unit}</small></div>` +
     (sub ? `<div class="sub2">${sub}</div>` : '') + '</div>';
   return `<div class="card${urgent ? ' urgent' : ''}">
-    <div class="who">${u.name} <span class="dot" style="background:${dotCol}"></span></div>
-    <div class="big" style="color:${col}">${u.sgv != null ? Math.round(u.sgv) : '---'}
-      <span class="arrow">${!stale && ARROWS[u.direction] || ''}</span></div>
-    <div class="sub">${u.delta != null && !stale ? (u.delta >= 0 ? '+' : '') + Math.round(u.delta) + ' &nbsp; ' : ''}${age(now, u.sgv_date)}</div>
-    <div class="chartbox" data-i="${idx}"></div>${strip}
+    <div class="head"><span class="who">${esc(u.name)}</span>
+      <span class="badge"><span class="dot" style="background:${dotCol}"></span>${u.source_label || 'TRIO'} \\u00b7 ${ageC(now, u.sgv_date)}</span></div>
+    <div class="bigrow">
+      <div class="big" style="color:${col}">${u.sgv != null ? Math.round(u.sgv) : '---'}</div>
+      <div class="side">
+        <span class="arrow" style="color:${col}">${!stale && ARROWS[u.direction] || ''}</span>
+        <span class="delta">${u.delta != null && !stale ? (u.delta >= 0 ? '+' : '') + Math.round(u.delta) : ''}</span>
+        <span class="unit">MG/DL</span>
+      </div>
+    </div>
+    <div class="fcrow"><span class="lbl">FORECAST 2H</span><span class="rule"></span>${fc}</div>
+    <div class="chartbox" data-i="${idx}"></div>
     <div class="stats">
-      ${stat('IOB', u.iob != null ? u.iob.toFixed(1) + 'U' : '--')}
-      ${stat('COB', u.cob != null ? Math.round(u.cob) + 'g' : '--')}
-      ${stat('CARBS', u.last_carbs != null ? Math.round(u.last_carbs) + 'g' : '--',
-             u.last_carbs_date ? age(now, u.last_carbs_date) : '')}
-      ${stat('BOLUS', u.last_bolus != null ? u.last_bolus.toFixed(2) + 'U' : '--',
-             u.last_bolus_date ? age(now, u.last_bolus_date) : '')}
+      ${stat('IOB', u.iob != null ? u.iob.toFixed(1) : '--', u.iob != null ? 'U' : '')}
+      ${stat('COB', u.cob != null ? Math.round(u.cob) : '--', u.cob != null ? 'G' : '')}
+      ${stat('CARBS', u.last_carbs != null ? Math.round(u.last_carbs) : '--',
+             u.last_carbs != null ? 'G' : '',
+             u.last_carbs_date ? ageC(now, u.last_carbs_date) + ' AGO' : '')}
+      ${stat('BOLUS', u.last_bolus != null ? u.last_bolus.toFixed(2) : '--',
+             u.last_bolus != null ? 'U' : '',
+             u.last_bolus_date ? ageC(now, u.last_bolus_date) + ' AGO' : '')}
     </div></div>`;
 }
 async function refresh(){
@@ -316,16 +410,16 @@ async function refresh(){
     if (!r.ok) throw new Error(r.status);
     const d = await r.json();
     lastData = d;
-    document.getElementById('grid').innerHTML =
-      d.users.map((u, i) => card(u, u.thresholds || d.thresholds, d.now, i)).join('');
-    drawCharts();
-    updated.textContent = 'updated ' + new Date().toLocaleTimeString();
+    receivedAt = Date.now();
+    render();
+    updated.textContent = '';
     updated.classList.remove('err');
   } catch (e) {
-    updated.textContent = 'connection lost — retrying';
+    updated.textContent = 'CONNECTION LOST \\u2014 RETRYING';
     updated.classList.add('err');
   }
 }
+tick();
 refresh();
 setInterval(refresh, 30000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
@@ -336,8 +430,24 @@ class AdminServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    FALLBACK_PORT = 8080
+
     def __init__(self, config: Config, config_path: str, store: Store):
-        super().__init__(("0.0.0.0", config.admin_port), AdminHandler)
+        try:
+            super().__init__(("0.0.0.0", config.admin_port), AdminHandler)
+        except OSError as exc:
+            if config.admin_port == self.FALLBACK_PORT:
+                raise
+            # Port 80 needs CAP_NET_BIND_SERVICE (the systemd unit grants
+            # it) and might be taken by another server. Run by hand — e.g.
+            # on a dev machine — fall back to an unprivileged port and let
+            # the display show that one.
+            log.warning(
+                "Cannot bind port %d (%s); using %d instead",
+                config.admin_port, exc, self.FALLBACK_PORT,
+            )
+            config.admin_port = self.FALLBACK_PORT
+            super().__init__(("0.0.0.0", config.admin_port), AdminHandler)
         self.config = config
         self.config_path = str(config_path)
         self.password = config.admin_password
@@ -355,11 +465,12 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        if "Cache-Control" not in (extra or {}):
+            self.send_header("Cache-Control", "no-store")
         if getattr(self, "_grant_cookie", False):
             self.send_header(
                 "Set-Cookie",
-                f"trio_key={self.server.password}; Path=/; Max-Age=604800",
+                f"sugarcube_key={self.server.password}; Path=/; Max-Age=604800",
             )
             self._grant_cookie = False
         for k, v in (extra or {}).items():
@@ -385,12 +496,12 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._grant_cookie = True
             return True
         cookies = self.headers.get("Cookie", "")
-        return f"trio_key={self.server.password}" in cookies
+        return f"sugarcube_key={self.server.password}" in cookies
 
     def _deny(self):
         self._send(
             b"Authentication required", "text/plain", 401,
-            {"WWW-Authenticate": 'Basic realm="Trio Monitor admin"'},
+            {"WWW-Authenticate": 'Basic realm="SugarCube admin"'},
         )
 
     # ---- GET ----
@@ -424,6 +535,17 @@ class AdminHandler(BaseHTTPRequestHandler):
                     self._send(f.read(), "image/png")
             except OSError:
                 self._send(b"no screenshot yet", "text/plain", 404)
+        elif path.startswith("/fonts/"):
+            # The dashboard uses the same typefaces as the physical screen;
+            # serving them locally keeps the page fully offline-capable.
+            name = os.path.basename(path)
+            font_path = os.path.join(os.path.dirname(__file__), "fonts", name)
+            if name.endswith(".ttf") and os.path.isfile(font_path):
+                with open(font_path, "rb") as f:
+                    self._send(f.read(), "font/ttf",
+                               extra={"Cache-Control": "max-age=604800"})
+            else:
+                self._send(b"not found", "text/plain", 404)
         else:
             self._send(b"not found", "text/plain", 404)
 
@@ -435,8 +557,11 @@ class AdminHandler(BaseHTTPRequestHandler):
         for user in self.server.config.users:
             snap = self.server.store.snapshot(user.name)
             horizons, series, source = predict.predict(snap, now_ms)
+            source_type = (user.source or {}).get("type")
             users.append({
                 "name": user.name,
+                "source_label": {"tidepool": "TWIIST",
+                                 "nightscout": "NS"}.get(source_type, "TRIO"),
                 "thresholds": {
                     **merged_thresholds(dc, user),
                     "stale_minutes": dc.stale_minutes,
@@ -530,8 +655,8 @@ class AdminHandler(BaseHTTPRequestHandler):
   <div class="row"><label>Network</label><select name="wifi_ssid">{options}</select></div>
   <div class="row"><label>Password</label><input type="password" name="wifi_password"></div>
   <button type="submit" class="minor">Join network</button>
-  <p class="note">Joining a different network changes the Pi's address —
-  the display will show the new URL.</p>
+  <p class="note">After joining, the device restarts on the new network and
+  its screen shows the new address.</p>
 </fieldset></form>"""
 
     def _render_page(self) -> str:
@@ -558,7 +683,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         )
         return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Trio Monitor settings</title>{THEME_SCRIPT}<style>{PAGE_STYLE}</style></head><body>
+<title>SugarCube settings</title>{THEME_SCRIPT}<style>{PAGE_STYLE}</style></head><body>
 {NAV_HTML}
 <h1>Settings</h1>
 <h2>Live display</h2>
@@ -611,16 +736,36 @@ are generated automatically; blank per-person thresholds inherit the defaults.</
                 self._send(b"missing ssid", "text/plain", 400)
                 return
             synclog.add("network", "system", f"joining Wi-Fi '{ssid}'")
-            threading.Thread(
-                target=network.connect_wifi, args=(ssid, password), daemon=True
-            ).start()
+            hotspot_pw = self.server.store.get_params("__network").get(
+                "hotspot_password", "")
+
+            def join_then_reboot():
+                import time
+                # The join tears the setup hotspot down, killing the
+                # phone's connection — give the response below a moment
+                # to reach it first.
+                time.sleep(2)
+                ok, _ = network.connect_wifi(ssid, password)
+                if ok:
+                    # Reboot so every service starts fresh on the new
+                    # network and the screen never shows a stale address.
+                    network.reboot()
+                elif hotspot_pw:
+                    # Bring the setup hotspot straight back for a retry
+                    # instead of waiting on the watcher's slow checks.
+                    network.start_hotspot(hotspot_pw)
+
+            threading.Thread(target=join_then_reboot, daemon=True).start()
             body = (
                 "<!DOCTYPE html><html><head><meta charset='utf-8'>"
                 f"<style>{PAGE_STYLE}</style></head><body>"
                 f"<h1>Joining {html.escape(ssid)}&hellip;</h1>"
-                "<p>If the password is right, the Pi switches networks in a few"
-                " seconds and its screen shows the new address. Reconnect your"
-                " phone to the same network and open that address.</p>"
+                "<p>If the password is right, the device restarts on the new"
+                " network and its screen shows the new address."
+                " Reconnect your phone to the same network and open that"
+                " address.</p>"
+                "<p>If the password was wrong, the setup hotspot comes back"
+                " shortly — rejoin it and try again.</p>"
                 "</body></html>"
             ).encode()
             self._send(body, "text/html; charset=utf-8")

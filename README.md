@@ -1,4 +1,4 @@
-# Trio Monitor
+# SugarCube
 
 A wall-mounted glucose dashboard for two (or more) people, built for a
 Raspberry Pi with the official 7" touchscreen. It boots straight into the
@@ -19,8 +19,9 @@ board, and recent treatments.
     settings all come across
   - **Pull from a Nightscout site** — for people with an existing cloud
     Nightscout; API secrets and access tokens both work (auto-detected)
-- **Glucose forecasts** (30m / 1h / 1.5h / 2h): uses the AID system's own
-  prediction curve when available (Trio's `predBGs`, Loop's `predicted`),
+- **Glucose forecast** — a 2-hour forecast curve with a confidence band on
+  every chart, plus the projected value 2 hours out: uses the AID system's
+  own prediction when available (Trio's `predBGs`, Loop's `predicted`),
   otherwise runs an oref0-style model (exponential insulin activity,
   deviation-based carb absorption) with therapy settings pulled from the
   person's Nightscout profile or Tidepool pump settings. Estimates are
@@ -34,14 +35,16 @@ board, and recent treatments.
   global defaults.
 - **QR-code onboarding** — a fresh device shows a QR code that takes a phone
   to the setup page; with no network at all it opens its own setup hotspot
-  first so you can connect the Pi to Wi-Fi from your phone.
+  first so you can connect the Pi to Wi-Fi from your phone. Once a network
+  is chosen the device reboots onto it and shows its new address (also
+  reachable as `http://sugarcube.local/` on the ready-made image).
 
 ## Install
 
 ### Option A: flash the ready-made image
 
-Grab `trio-monitor-<version>.img.xz` from the
-[releases page](https://github.com/hwhitfield2/Trio-Monitor/releases),
+Grab `sugarcube-<version>.img.xz` from the
+[releases page](https://github.com/The-Carted-Horse/SugarCube/releases),
 flash it with Raspberry Pi Imager (or `dd`), boot the Pi, and follow the
 QR codes on screen. That's the whole install.
 
@@ -53,7 +56,7 @@ push a `v*` tag or run it manually.)
 Use Raspberry Pi OS **Lite** (no desktop needed):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/hwhitfield2/Trio-Monitor/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/The-Carted-Horse/SugarCube/main/install.sh | bash
 ```
 
 The installer handles everything: dependencies, config with random secrets,
@@ -72,7 +75,10 @@ finishes by printing the URL and API secret for each person's uploader.
 
 ## The web app
 
-Everything is served from the admin port (default 8080, HTTP Basic auth):
+Everything is served on plain HTTP port 80 — just open `http://<pi-ip>/`
+(HTTP Basic auth; the login is shown on the device's setup screen). When
+port 80 isn't available (e.g. running by hand on a dev machine) it falls
+back to 8080.
 
 | Path | What |
 |---|---|
@@ -88,12 +94,16 @@ Runs on a Mac/PC in a window with fake data:
 
 ```bash
 pip install pygame qrcode
-python -m trio_monitor --demo --windowed
+python -m sugarcube --demo --windowed
 ```
 
 `--no-display` runs the servers headless; `--screenshot out.png` renders one
 frame and exits. The only runtime dependencies are `pygame` and `qrcode`
 (both from apt on the Pi); everything else is the Python standard library.
+The display and web app are typeset in
+[Space Grotesk](https://github.com/floriankarsten/space-grotesk) and
+[JetBrains Mono](https://github.com/JetBrains/JetBrainsMono), bundled under
+the SIL Open Font License in `sugarcube/fonts/`.
 
 ## Safety note
 

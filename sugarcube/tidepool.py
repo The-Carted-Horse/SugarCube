@@ -27,7 +27,7 @@ from . import synclog
 from .sources import BasePoller
 from .store import Store, parse_time_ms
 
-log = logging.getLogger("trio_monitor.tidepool")
+log = logging.getLogger("sugarcube.tidepool")
 
 API_BASE = "https://api.tidepool.org"
 MGDL_PER_MMOLL = 18.01559
