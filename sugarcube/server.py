@@ -27,7 +27,7 @@ from . import __version__, synclog
 from .config import SCREEN_PNG
 from .store import Store
 
-log = logging.getLogger("trio_monitor.server")
+log = logging.getLogger("sugarcube.server")
 
 
 class NightscoutServer(ThreadingHTTPServer):
@@ -46,7 +46,7 @@ class NightscoutServer(ThreadingHTTPServer):
 
 class NightscoutHandler(BaseHTTPRequestHandler):
     server: NightscoutServer
-    server_version = f"TrioMonitor/{__version__}"
+    server_version = f"SugarCube/{__version__}"
     protocol_version = "HTTP/1.1"
 
     # ---- plumbing ----
@@ -118,7 +118,7 @@ class NightscoutHandler(BaseHTTPRequestHandler):
             self._send_json(
                 {
                     "status": "ok",
-                    "name": "trio-monitor",
+                    "name": "sugarcube",
                     "version": __version__,
                     "apiEnabled": True,
                     "careportalEnabled": True,

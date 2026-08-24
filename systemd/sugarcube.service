@@ -1,5 +1,5 @@
 [Unit]
-Description=Trio Monitor glucose display
+Description=SugarCube glucose display
 # An appliance display must never stop retrying.
 StartLimitIntervalSec=0
 
@@ -9,10 +9,12 @@ User=pi
 Group=pi
 # video/render for KMS/DRM output, input for the touchscreen/keyboard
 SupplementaryGroups=video render input
-WorkingDirectory=/home/pi/Trio-Monitor
-ExecStart=/usr/bin/python3 -m trio_monitor --config /home/pi/Trio-Monitor/config.json
+WorkingDirectory=/home/pi/SugarCube
+ExecStart=/usr/bin/python3 -m sugarcube --config /home/pi/SugarCube/config.json
 Restart=always
 RestartSec=3
+# The web admin serves plain http on port 80.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 Environment=SDL_VIDEODRIVER=kmsdrm
 Environment=SDL_AUDIODRIVER=dummy
 Environment=PYTHONUNBUFFERED=1

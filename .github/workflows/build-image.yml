@@ -16,21 +16,21 @@ jobs:
       # inside it before the build starts.
       - name: Copy application into build stage
         run: |
-          rm -rf image/stage-trio/00-trio-monitor/files/trio_monitor
-          cp -r trio_monitor image/stage-trio/00-trio-monitor/files/
-          find image/stage-trio -name __pycache__ -type d -exec rm -rf {} +
+          rm -rf image/stage-sugarcube/00-sugarcube/files/sugarcube
+          cp -r sugarcube image/stage-sugarcube/00-sugarcube/files/
+          find image/stage-sugarcube -name __pycache__ -type d -exec rm -rf {} +
 
       - name: Build Raspberry Pi OS image with pi-gen
         id: build
         uses: usimd/pi-gen-action@v1
         with:
-          image-name: trio-monitor
+          image-name: sugarcube
           # stage2 = Raspberry Pi OS Lite (no desktop), then our stage on top
-          stage-list: stage0 stage1 stage2 ./image/stage-trio
+          stage-list: stage0 stage1 stage2 ./image/stage-sugarcube
           release: trixie
-          hostname: trio-monitor
-          username: trio
-          password: "triomonitor"
+          hostname: sugarcube
+          username: sugar
+          password: "sugarcube"
           disable-first-boot-user-rename: 1
           enable-ssh: 1
           wpa-country: "US"
@@ -41,7 +41,7 @@ jobs:
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
-          name: trio-monitor-image
+          name: sugarcube-image
           path: ${{ steps.build.outputs.image-path }}
 
       - name: Attach image to release

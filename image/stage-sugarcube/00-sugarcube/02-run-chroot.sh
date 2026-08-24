@@ -1,9 +1,9 @@
 #!/bin/bash -e
-# The first user ("trio") is created by pi-gen (username input in the
+# The first user ("sugar") is created by pi-gen (username input in the
 # workflow); config and database live in its home so /opt stays pristine.
-chown -R root:root /opt/trio-monitor
+chown -R root:root /opt/sugarcube
 
-systemctl enable trio-monitor.service
+systemctl enable sugarcube.service
 systemctl set-default multi-user.target
 
 # Unblock Wi-Fi: without a regulatory country rfkill blocks the radio,
@@ -11,9 +11,14 @@ systemctl set-default multi-user.target
 # pi-gen's WPA_COUNTRY handling.)
 raspi-config nonint do_wifi_country US || true
 
-# Wall display: never blank the console.
+# mDNS: reach the device as http://sugarcube.local without knowing
+# its IP.
+systemctl enable avahi-daemon.service
+
+# Wall display: never blank the console, and keep boot text off the
+# panel (the dashboard appears as soon as the service starts).
 if ! grep -q consoleblank /boot/firmware/cmdline.txt; then
-	sed -i '1 s/$/ consoleblank=0/' /boot/firmware/cmdline.txt
+	sed -i '1 s/$/ consoleblank=0 quiet loglevel=3 logo.nologo vt.global_cursor_default=0/' /boot/firmware/cmdline.txt
 fi
 
 # ---- slim the image ----

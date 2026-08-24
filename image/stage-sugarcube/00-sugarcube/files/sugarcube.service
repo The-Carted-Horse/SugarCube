@@ -1,20 +1,22 @@
 [Unit]
-Description=Trio Monitor glucose display
+Description=SugarCube glucose display
 # An appliance display must never stop retrying.
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=trio
-Group=trio
+User=sugar
+Group=sugar
 SupplementaryGroups=video render input netdev
-WorkingDirectory=/opt/trio-monitor
-ExecStart=/usr/bin/python3 -m trio_monitor --config /home/trio/config.json
+WorkingDirectory=/opt/sugarcube
+ExecStart=/usr/bin/python3 -m sugarcube --config /home/sugar/config.json
 Restart=always
 RestartSec=3
+# The web admin serves plain http on port 80.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 # fbdev proved reliable across Pi 4/5 panels; kmsdrm stays as
-# the fallback if TRIO_DISPLAY is ever unset.
-Environment=TRIO_DISPLAY=fbdev
+# the fallback if SUGARCUBE_DISPLAY is ever unset.
+Environment=SUGARCUBE_DISPLAY=fbdev
 Environment=SDL_VIDEODRIVER=kmsdrm
 Environment=SDL_AUDIODRIVER=dummy
 Environment=PYTHONUNBUFFERED=1

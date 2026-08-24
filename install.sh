@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# One-shot installer for Trio Monitor on a Raspberry Pi.
+# One-shot installer for SugarCube on a Raspberry Pi.
 #
 # Run from a checkout:   ./install.sh
-# Or with nothing yet:   curl -sSL https://raw.githubusercontent.com/hwhitfield2/Trio-Monitor/main/install.sh | bash
+# Or with nothing yet:   curl -sSL https://raw.githubusercontent.com/The-Carted-Horse/SugarCube/main/install.sh | bash
 #
 # Installs all dependencies, generates config.json with random API secrets,
 # disables console screen blanking, and enables + starts the boot service.
 set -euo pipefail
 
-REPO_URL="${TRIO_MONITOR_REPO:-https://github.com/hwhitfield2/Trio-Monitor.git}"
+REPO_URL="${SUGARCUBE_REPO:-https://github.com/The-Carted-Horse/SugarCube.git}"
 
 SUDO=""
 if [ "$(id -u)" -ne 0 ]; then
@@ -20,9 +20,9 @@ log() { echo "==> $*"; }
 # --- Locate (or fetch) the repo -------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd)"
-if [ ! -f "$SCRIPT_DIR/trio_monitor/__main__.py" ]; then
+if [ ! -f "$SCRIPT_DIR/sugarcube/__main__.py" ]; then
     # Piped from curl or run outside a checkout: clone and continue from there.
-    REPO_DIR="$HOME/Trio-Monitor"
+    REPO_DIR="$HOME/SugarCube"
     if [ ! -d "$REPO_DIR/.git" ]; then
         log "Cloning $REPO_URL to $REPO_DIR"
         command -v git >/dev/null || { $SUDO apt-get update; $SUDO apt-get install -y git; }
@@ -59,6 +59,12 @@ repo = Path(sys.argv[1])
 config = json.loads((repo / "config.example.json").read_text())
 for user in config["users"]:
     user["api_secret"] = secrets.token_hex(12)
+# The web admin is exposed on port 80 — never leave it without a password.
+alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
+config["admin"] = {
+    "port": 80,
+    "password": "".join(secrets.choice(alphabet) for _ in range(6)),
+}
 (repo / "config.json").write_text(json.dumps(config, indent=2) + "\n")
 PYEOF
 else
@@ -77,21 +83,42 @@ for CMDLINE in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
     fi
 done
 
+# --- polkit: Wi-Fi provisioning + reboot as the service user ----------------
+
+if [ -d /etc/polkit-1/rules.d ]; then
+    log "Allowing $RUN_USER to manage Wi-Fi and reboot (polkit rule)"
+    $SUDO tee /etc/polkit-1/rules.d/50-sugarcube.rules > /dev/null <<POLKITEOF
+polkit.addRule(function(action, subject) {
+    if (subject.user != "$RUN_USER") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0) {
+        return polkit.Result.YES;
+    }
+    if (action.id == "org.freedesktop.login1.reboot" ||
+        action.id == "org.freedesktop.login1.reboot-multiple-sessions") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});
+POLKITEOF
+fi
+
 # --- systemd service -------------------------------------------------------
 
 log "Installing systemd service (user: $RUN_USER, path: $REPO_DIR)"
 sed -e "s|^User=.*|User=$RUN_USER|" \
     -e "s|^Group=.*|Group=$RUN_USER|" \
-    -e "s|/home/pi/Trio-Monitor|$REPO_DIR|g" \
-    "$REPO_DIR/systemd/trio-monitor.service" \
-    | $SUDO tee /etc/systemd/system/trio-monitor.service > /dev/null
+    -e "s|/home/pi/SugarCube|$REPO_DIR|g" \
+    "$REPO_DIR/systemd/sugarcube.service" \
+    | $SUDO tee /etc/systemd/system/sugarcube.service > /dev/null
 
 $SUDO systemctl daemon-reload
-$SUDO systemctl enable trio-monitor.service
+$SUDO systemctl enable sugarcube.service
 
 if [ -d /dev/dri ]; then
-    log "Starting trio-monitor"
-    $SUDO systemctl restart trio-monitor.service || true
+    log "Starting sugarcube"
+    $SUDO systemctl restart sugarcube.service || true
 else
     log "No display hardware detected; service will start on next boot"
 fi
@@ -101,7 +128,7 @@ fi
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo
 echo "============================================================"
-echo " Trio Monitor installed."
+echo " SugarCube installed."
 echo
 echo " Enter these in each Trio under Settings -> Services -> Nightscout:"
 python3 - "$REPO_DIR" "${IP:-<pi-ip>}" <<'PYEOF'
@@ -116,9 +143,20 @@ for user in config["users"]:
     print(f"     API secret: {user['api_secret']}")
 PYEOF
 echo
-echo " Edit the names in $REPO_DIR/config.json, then:"
-echo "   sudo systemctl restart trio-monitor"
+echo " Web dashboard + settings:  http://${IP:-<pi-ip>}/"
+python3 - "$REPO_DIR" <<'PYEOF'
+import json, sys
+from pathlib import Path
+
+admin = json.loads(
+    (Path(sys.argv[1]) / "config.json").read_text()).get("admin", {})
+if admin.get("password"):
+    print(f"   login: admin / {admin['password']}")
+PYEOF
 echo
-echo " Logs: journalctl -u trio-monitor -f"
+echo " Edit the names in $REPO_DIR/config.json, then:"
+echo "   sudo systemctl restart sugarcube"
+echo
+echo " Logs: journalctl -u sugarcube -f"
 echo " If screen blanking was just disabled, reboot once for it to apply."
 echo "============================================================"
