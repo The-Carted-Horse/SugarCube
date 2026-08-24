@@ -1,4 +1,4 @@
-"""Entry point: python -m sugarcube [--config PATH] [--windowed] [--demo]"""
+"""Entry point: python -m glucocube [--config PATH] [--windowed] [--demo]"""
 
 import argparse
 import logging
@@ -83,7 +83,7 @@ def wait_for_connected_display(timeout: float = 45.0) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="sugarcube")
+    parser = argparse.ArgumentParser(prog="glucocube")
     parser.add_argument(
         "--config", default=None,
         help="path to config.json (default: config.json next to the package)",
@@ -146,7 +146,7 @@ def main() -> int:
             while True:
                 time.sleep(3600)
         else:
-            if os.environ.get("SUGARCUBE_DISPLAY") == "fbdev":
+            if os.environ.get("GLUCOCUBE_DISPLAY") == "fbdev":
                 # Render into a dummy SDL surface; frames go to /dev/fb0.
                 # Force dummy: a unit-level SDL_VIDEODRIVER=kmsdrm would
                 # otherwise make SDL seize the display with a blank buffer

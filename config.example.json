@@ -14,5 +14,5 @@
     "urgent_high": 250,
     "stale_minutes": 12
   },
-  "database": "sugarcube.db"
+  "database": "glucocube.db"
 }

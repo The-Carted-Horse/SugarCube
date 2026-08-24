@@ -5,7 +5,7 @@ check whether the network really reaches the internet. Answering that
 check with a redirect instead of the expected reply is what makes the
 phone pop its "Sign in to network" sheet. Paired with the wildcard DNS
 this project installs for NetworkManager's shared mode, that turns
-joining `SugarCube-Setup` into the setup page opening by itself —
+joining `GlucoCube-Setup` into the setup page opening by itself —
 replacing a second QR code scanned off the device's screen.
 
 Everything here is inert unless the setup hotspot is actually up.
@@ -17,7 +17,7 @@ import logging
 from . import network
 from .config import admin_url
 
-log = logging.getLogger("sugarcube.captive")
+log = logging.getLogger("glucocube.captive")
 
 # What each platform fetches to decide whether it is behind a portal.
 PROBE_PATHS = frozenset({
@@ -81,8 +81,8 @@ def maybe_handle(handler, path: str, body: bool = True) -> bool:
         '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f'<meta http-equiv="refresh" content="0;url={where}">'
-        "<title>Set up SugarCube</title></head><body>"
-        f'<p><a href="{where}">Set up SugarCube</a></p></body></html>'
+        "<title>Set up GlucoCube</title></head><body>"
+        f'<p><a href="{where}">Set up GlucoCube</a></p></body></html>'
     ).encode() if body else b""
     handler._send(payload, "text/html; charset=utf-8", 302, {"Location": where})
     return True

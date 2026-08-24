@@ -32,9 +32,9 @@ from . import synclog
 from .sources import BasePoller
 from .store import Store, parse_time_ms
 
-log = logging.getLogger("sugarcube.nspull")
+log = logging.getLogger("glucocube.nspull")
 
-USER_AGENT = "Mozilla/5.0 (X11; Linux aarch64) SugarCube/1.0"
+USER_AGENT = "Mozilla/5.0 (X11; Linux aarch64) GlucoCube/1.0"
 ENTRY_COUNT = 72        # 6 hours of 5-minute readings
 TREATMENT_COUNT = 50
 DEVICESTATUS_COUNT = 12

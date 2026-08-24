@@ -29,7 +29,7 @@ from . import __version__, synclog
 from .config import SCREEN_PNG
 from .store import Store
 
-log = logging.getLogger("sugarcube.server")
+log = logging.getLogger("glucocube.server")
 
 
 class DualStackServer(ThreadingHTTPServer):
@@ -82,7 +82,7 @@ class NightscoutServer(DualStackServer):
 
 class NightscoutHandler(BaseHTTPRequestHandler):
     server: NightscoutServer
-    server_version = f"SugarCube/{__version__}"
+    server_version = f"GlucoCube/{__version__}"
     protocol_version = "HTTP/1.1"
 
     # ---- plumbing ----
@@ -154,7 +154,7 @@ class NightscoutHandler(BaseHTTPRequestHandler):
             self._send_json(
                 {
                     "status": "ok",
-                    "name": "sugarcube",
+                    "name": "glucocube",
                     "version": __version__,
                     "apiEnabled": True,
                     "careportalEnabled": True,

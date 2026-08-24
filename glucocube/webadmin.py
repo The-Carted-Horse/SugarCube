@@ -26,7 +26,7 @@ from .server import DualStackServer
 from .config import SCREEN_PNG, Config, merged_thresholds
 from .store import Store
 
-log = logging.getLogger("sugarcube.webadmin")
+log = logging.getLogger("glucocube.webadmin")
 
 SETTINGS_SCRIPT = """<script>
 setInterval(() => {
@@ -128,7 +128,7 @@ setInterval(refreshLog, 15000);
 
 DASHBOARD_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SugarCube</title>
+<title>GlucoCube</title>
 <style>
 @font-face { font-family:'Space Grotesk'; font-weight:700;
   src:url('/fonts/SpaceGrotesk-Bold.ttf') format('truetype'); }
@@ -468,7 +468,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             # page the user has already navigated away from.
             self.send_header(
                 "Set-Cookie",
-                f"sugarcube_key={cookie}; Path=/;"
+                f"glucocube_key={cookie}; Path=/;"
                 " Max-Age=604800; SameSite=Lax",
             )
             self._grant_cookie = False
@@ -496,12 +496,12 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._grant_cookie = True
             return True
         cookies = self.headers.get("Cookie", "")
-        return f"sugarcube_key={self.server.password}" in cookies
+        return f"glucocube_key={self.server.password}" in cookies
 
     def _deny(self):
         self._send(
             b"Authentication required", "text/plain", 401,
-            {"WWW-Authenticate": 'Basic realm="SugarCube admin"'},
+            {"WWW-Authenticate": 'Basic realm="GlucoCube admin"'},
         )
 
     # ---- GET ----
@@ -523,7 +523,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         elif path == "/settings":
             self._send(self._render_page().encode(), "text/html; charset=utf-8")
         elif path == "/log":
-            page = ui.page("SugarCube sync log", LOG_BODY, nav=True,
+            page = ui.page("GlucoCube sync log", LOG_BODY, nav=True,
                            script=LOG_SCRIPT)
             self._send(page.encode(), "text/html; charset=utf-8")
         elif path == "/api/wifi.json":
@@ -699,7 +699,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                                            stype == "nightscout", ns_key),
                                        input_id=f"u{i}_ns_key"),
                      for_id=f"u{i}_ns_key",
-                     hint="Either works — SugarCube works out which.")
+                     hint="Either works — GlucoCube works out which.")
         )
         pull_extra = (
             ui.row("Check every", ui.text_input(
@@ -861,7 +861,7 @@ class AdminHandler(BaseHTTPRequestHandler):
   </form>"""
         return f"""<h2>Updates</h2>
 <fieldset><legend>Software</legend>
-  <p>SugarCube {ui.esc(current)} — {status}</p>
+  <p>GlucoCube {ui.esc(current)} — {status}</p>
   <form method="POST" action="/update/check">
     <button type="submit" class="quiet">Check now</button>
   </form>{install}
@@ -929,7 +929,7 @@ version of this page.</p>
   <span class="note">Restarts the display, about 5 seconds.</span>
 </div>
 </form>"""
-        return ui.page("SugarCube settings", body, nav=True,
+        return ui.page("GlucoCube settings", body, nav=True,
                        script=SETTINGS_SCRIPT)
 
     @staticmethod

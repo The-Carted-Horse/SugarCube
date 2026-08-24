@@ -12,7 +12,7 @@ import urllib.error
 from . import synclog
 from .store import Store
 
-log = logging.getLogger("sugarcube.sources")
+log = logging.getLogger("glucocube.sources")
 
 ERROR_BACKOFF_SECONDS = 300
 

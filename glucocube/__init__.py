@@ -1,4 +1,4 @@
-"""SugarCube — a two-person glucose dashboard for Raspberry Pi.
+"""GlucoCube — a two-person glucose dashboard for Raspberry Pi.
 
 Receives Nightscout-style uploads from Trio (entries, treatments,
 devicestatus) and renders both people's current glucose, IOB, and COB

@@ -1,4 +1,4 @@
-# SugarCube
+# GlucoCube
 
 A wall-mounted glucose dashboard for two (or more) people, built for a
 Raspberry Pi with the official 7" touchscreen. It boots straight into the
@@ -43,14 +43,14 @@ board, and recent treatments.
   With no network at all the device opens its own setup hotspot — join it
   and the wizard opens by itself, no second QR code to scan. Once a network
   is chosen the device reboots onto it and shows its new address (also
-  reachable as `http://sugarcube.local/` on the ready-made image).
+  reachable as `http://glucocube.local/` on the ready-made image).
 
 ## Install
 
 ### Option A: flash the ready-made image
 
-Grab `sugarcube-<version>.img.xz` from the
-[releases page](https://github.com/The-Carted-Horse/SugarCube/releases),
+Grab `glucocube-<version>.img.xz` from the
+[releases page](https://github.com/The-Carted-Horse/GlucoCube/releases),
 flash it with Raspberry Pi Imager (or `dd`), boot the Pi, and follow the
 QR codes on screen. That's the whole install.
 
@@ -62,7 +62,7 @@ push a `v*` tag or run it manually.)
 Use Raspberry Pi OS **Lite** (no desktop needed):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/The-Carted-Horse/SugarCube/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/The-Carted-Horse/GlucoCube/main/install.sh | bash
 ```
 
 The installer handles everything: dependencies, config with random secrets,
@@ -81,7 +81,7 @@ finishes by printing the URL and API secret for each person's uploader.
 
 ## The web app
 
-Everything is served on plain HTTP port 80 — open `http://sugarcube.local/`
+Everything is served on plain HTTP port 80 — open `http://glucocube.local/`
 (or the IP shown on the device's screen; HTTP Basic auth, login shown
 there too). The `.local` name needs mDNS — iPhones, Macs, Windows, and
 Android 12+ all resolve it; on older Android type the IP instead. When
@@ -99,7 +99,7 @@ back to 8080.
 
 ## Wi-Fi setup
 
-A device with no network opens its own `SugarCube-Setup` hotspot and shows
+A device with no network opens its own `GlucoCube-Setup` hotspot and shows
 a QR code that joins a phone to it. Once the phone is on that hotspot the
 setup page opens by itself — the device answers the connectivity check
 every phone makes on joining a network, which is what makes the "sign in
@@ -118,7 +118,7 @@ what went wrong.
 
 ## Updates
 
-The device checks GitHub for new [releases](https://github.com/The-Carted-Horse/SugarCube/releases)
+The device checks GitHub for new [releases](https://github.com/The-Carted-Horse/GlucoCube/releases)
 every 6 hours. When one is available it shows up on the display footer, the
 web dashboard, and the settings page — install it from **Settings →
 Updates** (the display restarts, data is untouched). A release whose notes
@@ -141,7 +141,7 @@ Runs on a Mac/PC in a window with fake data:
 
 ```bash
 pip install pygame qrcode
-python -m sugarcube --demo --windowed
+python -m glucocube --demo --windowed
 ```
 
 `--no-display` runs the servers headless — useful for working on the web UI,
@@ -149,14 +149,14 @@ since nothing it serves needs pygame. `--screenshot out.png` renders one
 frame and exits.
 
 If the touchscreen is mounted rotated relative to the panel, correct it
-with `SUGARCUBE_TOUCH_TRANSFORM` — a comma-separated list of `swap`,
-`invx` and `invy` — in the systemd unit. `SUGARCUBE_TOUCH=off` disables
+with `GLUCOCUBE_TOUCH_TRANSFORM` — a comma-separated list of `swap`,
+`invx` and `invy` — in the systemd unit. `GLUCOCUBE_TOUCH=off` disables
 reading the panel altogether. The only runtime dependencies are `pygame` and `qrcode`
 (both from apt on the Pi); everything else is the Python standard library.
 The display and web app are typeset in
 [Space Grotesk](https://github.com/floriankarsten/space-grotesk) and
 [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono), bundled under
-the SIL Open Font License in `sugarcube/fonts/`.
+the SIL Open Font License in `glucocube/fonts/`.
 
 ## Safety note
 

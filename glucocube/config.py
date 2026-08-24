@@ -1,4 +1,4 @@
-"""Configuration loading for SugarCube."""
+"""Configuration loading for GlucoCube."""
 
 import json
 import os
@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Where the display loop drops live screenshots for the /screen.png endpoint.
-SCREEN_PNG = os.path.join(tempfile.gettempdir(), "sugarcube-screen.png")
+SCREEN_PNG = os.path.join(tempfile.gettempdir(), "glucocube-screen.png")
 
 
 @dataclass
@@ -43,7 +43,7 @@ class DisplayConfig:
 class Config:
     users: list[UserConfig] = field(default_factory=list)
     display: DisplayConfig = field(default_factory=DisplayConfig)
-    database: str = "sugarcube.db"
+    database: str = "glucocube.db"
     admin_port: int = 80            # 0 disables the web admin
     admin_password: str = ""        # empty disables Basic auth
 
@@ -133,7 +133,7 @@ def create_default(path: str | Path) -> None:
             {"name": "Person B", "port": 1338, "api_secret": secrets.token_hex(12)},
         ],
         "display": {},
-        "database": "sugarcube.db",
+        "database": "glucocube.db",
         "admin": {"port": 80, "password": simple_secret()},
     }
     Path(path).write_text(json.dumps(starter, indent=2) + "\n")
@@ -164,7 +164,7 @@ def load(path: str | Path) -> Config:
 
     display = DisplayConfig(**raw.get("display", {}))
 
-    database = raw.get("database", "sugarcube.db")
+    database = raw.get("database", "glucocube.db")
     if not Path(database).is_absolute():
         database = str(path.parent / database)
 
