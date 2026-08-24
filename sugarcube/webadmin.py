@@ -56,6 +56,10 @@ button.minor { background: none; border: 1px solid var(--line); color: var(--dim
 button.danger { border-color: var(--danger); color: var(--danger); }
 img.screen { width: 100%; border: 1px solid var(--line); border-radius: 8px; margin-top: .5rem; }
 .status { color: var(--dim); font-size: .9rem; margin: .2rem 0; }
+.status.err { color: var(--danger); }
+pre.detail { background: var(--card); border: 1px solid var(--line);
+  border-radius: 6px; padding: .5rem; font-size: .75rem; overflow-x: auto;
+  white-space: pre-wrap; word-break: break-word; color: var(--dim); }
 .note { color: var(--faint); font-size: .85rem; }
 table { width:100%; border-collapse:collapse; font-size:.85rem; }
 td, th { padding:.35rem .5rem; border-bottom:1px solid var(--line); text-align:left; }
@@ -651,24 +655,75 @@ class AdminHandler(BaseHTTPRequestHandler):
         if not network.available():
             return ""
         e = html.escape
-        state = network.connectivity()
-        status = ("setup hotspot active — pick your home network below"
-                  if network.hotspot_active() else f"connectivity: {state}")
+        # Everything here reads cached state — scanning inline would block
+        # the page for the full nmcli timeout while the hotspot is up.
+        hotspot = network.hotspot_active()
+        status = ("setup hotspot active — choose your home network below"
+                  if hotspot else f"connectivity: {network.connectivity()}")
+
+        wifi = network.state()
+        last = ""
+        if wifi.get("state") == "failed":
+            last = (f'<div class="status err">Last attempt: could not join '
+                    f'<b>{e(str(wifi.get("ssid", "")))}</b> — '
+                    f'{e(str(wifi.get("error", "unknown error")))}</div>')
+            if wifi.get("detail"):
+                last += (f'<details><summary class="note">technical detail'
+                         f'</summary><pre class="detail">'
+                         f'{e(str(wifi["detail"]))}</pre></details>')
+        elif wifi.get("state") == "joining":
+            last = ('<div class="status">Attempting to join '
+                    f'<b>{e(str(wifi.get("ssid", "")))}</b>&hellip;</div>')
+        elif wifi.get("state") == "ok" and not hotspot:
+            last = ('<div class="status">Connected to '
+                    f'<b>{e(str(wifi.get("ssid", "")))}</b></div>')
+        if wifi.get("reboot_error"):
+            last += ('<div class="status err">Could not reboot automatically: '
+                     f'{e(str(wifi["reboot_error"]))} — power-cycle the device '
+                     'to finish.</div>')
+        if wifi.get("hotspot_error"):
+            last += ('<div class="status err">Setup hotspot could not start: '
+                     f'{e(str(wifi["hotspot_error"]))}</div>')
+
+        networks = network.cached_networks()
+        age = network.scan_age_seconds()
+        if networks:
+            when = ("just now" if age is None or age < 90
+                    else f"{int(age // 60)} min ago")
+            hint = f"{len(networks)} networks found, scanned {when}"
+        else:
+            hint = ("no scan results yet — type your network's name below"
+                    if hotspot else "no networks found; try Rescan")
         options = "".join(
             f'<option value="{e(n["ssid"])}">'
-            f'{e(n["ssid"])} ({n["signal"]}%{"" if n["secured"] else ", open"})'
-            "</option>"
-            for n in network.wifi_scan()
-        ) or "<option value=''>(no networks found)</option>"
+            f'{e(n["ssid"])} &mdash; {n["signal"]}%'
+            f'{"" if n["secured"] else ", open"}</option>'
+            for n in networks
+        )
+        # A datalist-backed text field: pick a scanned network *or* type
+        # one in. An empty scan (the norm in AP mode) is no longer a dead
+        # end, and hidden networks work too.
         return f"""<h2>Wi-Fi</h2>
 <form method="POST" action="/wifi"><fieldset><legend>Network</legend>
   <div class="status">{status}</div>
-  <div class="row"><label>Network</label><select name="wifi_ssid">{options}</select></div>
-  <div class="row"><label>Password</label><input type="password" name="wifi_password"></div>
-  <button type="submit" class="minor">Join network</button>
-  <p class="note">After joining, the device restarts on the new network and
-  its screen shows the new address.</p>
-</fieldset></form>"""
+  {last}
+  <div class="row"><label>Network name</label>
+    <input name="wifi_ssid" list="ssids" autocapitalize="none"
+           autocorrect="off" spellcheck="false" required
+           placeholder="pick or type a name"></div>
+  <datalist id="ssids">{options}</datalist>
+  <div class="row"><label>Password</label>
+    <input type="password" name="wifi_password" autocapitalize="none"
+           autocorrect="off" spellcheck="false"></div>
+  <div class="row"><label>Hidden network</label>
+    <input type="checkbox" name="wifi_hidden" value="1" style="width:auto"></div>
+  <p class="note">{hint}</p>
+  <button type="submit">Join network</button>
+</fieldset></form>
+<form method="POST" action="/wifi/rescan">
+  <button type="submit" class="minor">Rescan for networks</button>
+  <span class="note">only works when the setup hotspot is off</span>
+</form>"""
 
     def _updates_section(self) -> str:
         e = html.escape
@@ -790,10 +845,18 @@ are generated automatically; blank per-person thresholds inherit the defaults.</
         if post_path == "/wifi":
             ssid = form.get("wifi_ssid", "").strip()
             password = form.get("wifi_password", "")
+            hidden = bool(form.get("wifi_hidden"))
             if not ssid:
-                self._send(b"missing ssid", "text/plain", 400)
+                body = (
+                    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                    f"<style>{PAGE_STYLE}</style></head><body>"
+                    "<h1>No network name</h1><p>Pick a network from the list or"
+                    " type its name, then try again.</p>"
+                    '<p><a href="/settings">Back to settings</a></p>'
+                    "</body></html>"
+                ).encode()
+                self._send(body, "text/html; charset=utf-8", 400)
                 return
-            synclog.add("network", "system", f"joining Wi-Fi '{ssid}'")
             hotspot_pw = self.server.store.get_params("__network").get(
                 "hotspot_password", "")
 
@@ -803,7 +866,7 @@ are generated automatically; blank per-person thresholds inherit the defaults.</
                 # phone's connection — give the response below a moment
                 # to reach it first.
                 time.sleep(2)
-                ok, _ = network.connect_wifi(ssid, password)
+                ok, _ = network.connect_wifi(ssid, password, hidden)
                 if ok:
                     # Reboot so every service starts fresh on the new
                     # network and the screen never shows a stale address.
@@ -811,22 +874,40 @@ are generated automatically; blank per-person thresholds inherit the defaults.</
                 elif hotspot_pw:
                     # Bring the setup hotspot straight back for a retry
                     # instead of waiting on the watcher's slow checks.
-                    network.start_hotspot(hotspot_pw)
+                    # prescan=False: the join just scanned, and every
+                    # extra second here is a second with no way in.
+                    network.start_hotspot(hotspot_pw, prescan=False)
 
             threading.Thread(target=join_then_reboot, daemon=True).start()
             body = (
                 "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,"
+                " initial-scale=1'>"
                 f"<style>{PAGE_STYLE}</style></head><body>"
                 f"<h1>Joining {html.escape(ssid)}&hellip;</h1>"
-                "<p>If the password is right, the device restarts on the new"
-                " network and its screen shows the new address."
-                " Reconnect your phone to the same network and open that"
-                " address.</p>"
-                "<p>If the password was wrong, the setup hotspot comes back"
-                " shortly — rejoin it and try again.</p>"
+                "<p>This takes up to a minute. The setup hotspot drops while"
+                " the device tries to connect, so your phone will lose this"
+                " page — that is expected.</p>"
+                "<p><b>If it worked:</b> the device restarts and its screen"
+                " shows the new address. Put your phone back on your home"
+                " Wi-Fi and open that address.</p>"
+                "<p><b>If it failed:</b> the setup hotspot comes back within"
+                " a minute or two. Rejoin it, reopen the settings page, and"
+                " the reason for the failure is shown at the top of the Wi-Fi"
+                " section. The device's screen shows it too.</p>"
                 "</body></html>"
             ).encode()
             self._send(body, "text/html; charset=utf-8")
+            return
+        if post_path == "/wifi/rescan":
+            # Only meaningful with the radio in station mode; in AP mode
+            # the scan cache from before the hotspot came up is all there is.
+            threading.Thread(
+                target=network.refresh_scan, kwargs={"force": True}, daemon=True
+            ).start()
+            import time
+            time.sleep(4)  # usually enough to have fresh results to render
+            self._send(b"", "text/html", 303, {"Location": "/settings"})
             return
         if post_path == "/update/check":
             state = updater.check_and_maybe_force(self.server.store)

@@ -90,6 +90,20 @@ back to 8080.
 | `/screen.png` | What the physical screen shows right now |
 | `/api/dashboard.json` | The dashboard's data, as JSON |
 
+## Wi-Fi setup
+
+A device with no network opens its own `SugarCube-Setup` hotspot and shows
+a QR code that joins a phone to it. From there the settings page lists the
+networks it saw before the hotspot came up — pick one, or type a name for
+a hidden or missing network — and enter the password.
+
+The hotspot drops while the device tries to connect, so the phone loses
+that page; that is expected. If the join succeeds the device reboots and
+its screen shows the new address. If it fails, the hotspot comes back
+within a minute or two and **the reason appears both on the device's own
+screen and at the top of the settings page** (wrong password, network not
+found, and so on) — no SSH needed to find out what went wrong.
+
 ## Updates
 
 The device checks GitHub for new [releases](https://github.com/The-Carted-Horse/SugarCube/releases)

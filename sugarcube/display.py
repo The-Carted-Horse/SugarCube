@@ -643,6 +643,39 @@ class Display:
             self._hotspot_state = (active, time.monotonic())
         return active
 
+    def _draw_wifi_error(self, screen, cx, h, s):
+        """Bottom-of-screen notice after a failed join.
+
+        When Wi-Fi setup fails there is no network to serve a web page
+        over, so the panel itself has to say what went wrong.
+        """
+        wifi = self.store.get_params("__wifi")
+        if wifi.get("state") == "joining":
+            ssid = str(wifi.get("ssid", ""))
+            self.text(screen, f"trying to join {ssid}…", int(s * 0.038),
+                      self.pal.dim, midtop=(cx, int(h * 0.90)))
+            return
+        if wifi.get("state") != "failed":
+            return
+        ssid = str(wifi.get("ssid", ""))
+        reason = str(wifi.get("error", "unknown error"))
+        self.text(screen, f"last attempt: {ssid} failed", int(s * 0.04),
+                  self.pal.low, midtop=(cx, int(h * 0.875)))
+        # Long nmcli reasons get wrapped rather than clipped at the bezel.
+        max_chars = max(24, int(screen.get_width() / (s * 0.036 * 0.62)))
+        words, line, lines = reason.split(), "", []
+        for word in words:
+            candidate = f"{line} {word}".strip()
+            if len(candidate) > max_chars:
+                lines.append(line)
+                line = word
+            else:
+                line = candidate
+        lines.append(line)
+        for index, text in enumerate(lines[:2]):
+            self.text(screen, text, int(s * 0.036), self.pal.dim,
+                      midtop=(cx, int(h * 0.915) + index * int(s * 0.045)))
+
     def draw_hotspot_screen(self):
         screen = self.screen
         w, h = screen.get_width(), screen.get_height()
@@ -679,6 +712,7 @@ class Display:
                     int(s * 0.04), self.pal.fg,
                     midtop=(cx, info_y + int(s * 0.065)),
                 )
+            self._draw_wifi_error(screen, cx, h, s)
             return
 
         # Stage 1: nothing has joined yet — show the Wi-Fi join QR.
@@ -686,6 +720,7 @@ class Display:
                   self.pal.fg, kind="num", midtop=(cx, int(h * 0.035)))
         self.text(screen, "1.  Scan to join the setup hotspot", int(s * 0.045),
                   self.pal.dim, midtop=(cx, int(h * 0.15)))
+        self._draw_wifi_error(screen, cx, h, s)
 
         qr = self._qr_surface(f"WIFI:T:WPA;S:{ssid};P:{pw};;", int(s * 0.42))
         if qr:
