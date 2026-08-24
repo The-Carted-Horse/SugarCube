@@ -132,6 +132,8 @@ def main() -> int:
     # Wi-Fi provisioning: with no network at all, a setup hotspot comes up
     # and the screen switches to a join-QR. Password persists across boots.
     import secrets as secrets_mod
+    from . import network as network_mod
+    network_mod.init(store)   # scan cache + join results live in the store
     net_params = store.get_params("__network")
     if not net_params.get("hotspot_password"):
         net_params["hotspot_password"] = secrets_mod.token_hex(4)

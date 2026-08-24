@@ -3,6 +3,7 @@ python3-qrcode
 network-manager
 wpasupplicant
 dnsmasq-base
+polkitd
 avahi-daemon
 libegl1
 libgles2
