@@ -13,3 +13,8 @@ install -m 644 "${FILES}/sugarcube.service" \
 
 install -D -m 644 "${FILES}/50-sugarcube.rules" \
 	"${ROOTFS_DIR}/etc/polkit-1/rules.d/50-sugarcube.rules"
+
+# Captive portal: resolve every name to the device while the setup
+# hotspot is up, so a phone that joins opens the setup page by itself.
+install -D -m 644 "${FILES}/sugarcube-captive.conf" \
+	"${ROOTFS_DIR}/etc/NetworkManager/dnsmasq-shared.d/sugarcube-captive.conf"
