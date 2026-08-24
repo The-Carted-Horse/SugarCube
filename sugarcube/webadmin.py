@@ -960,9 +960,14 @@ version of this page.</p>
         if post_path == "/api/source/test":
             self._test_source(raw_body)
             return
+        # keep_blank_values matters: the person loops below scan for
+        # u0_name, u1_name, ... and a dropped blank would end the scan
+        # early, silently discarding everyone after it. Blank also means
+        # "unchanged" for the credential fields.
         form = {
             k: v[0]
-            for k, v in parse_qs(raw_body.decode()).items()
+            for k, v in parse_qs(raw_body.decode(),
+                                 keep_blank_values=True).items()
         }
         if onboarding.handles(post_path):
             onboarding.do_post(self, post_path, form)
@@ -1127,9 +1132,17 @@ shows it too.</p>""").encode()
             if form.get(f"u{idx}_remove"):
                 continue
             name = form[f"u{idx}_name"].strip()
+            previous_name = form.get(f"u{idx}_prev_name", "").strip()
             if not name:
-                raise ValueError(f"person {idx + 1} needs a name")
-            prior = previous.get(form.get(f"u{idx}_prev_name", "").strip()) or {}
+                if previous_name:
+                    # Clearing a saved person's name is much more likely to
+                    # be a slip than a request to delete them and their
+                    # data source; that is what Remove is for.
+                    raise ValueError(
+                        f"{previous_name} still needs a name — use Remove to "
+                        "take them off the display")
+                continue  # a row that was added and never filled in
+            prior = previous.get(previous_name) or {}
             prior_source = prior.get("source") or {}
             stype = form.get(f"u{idx}_source")
             # The port is only shown for push people; for everyone else it

@@ -30,12 +30,18 @@ board, and recent treatments.
   responsive, with light/dark themes. Settings (people, sources, thresholds)
   and a sync log are managed from the browser too; no SSH needed after
   install. Works great through a Cloudflare tunnel.
-- **Touchscreen light/dark mode** — tap the sun/moon on the display.
+- **Touchscreen light/dark mode** — tap the sun/moon on the display. The
+  panel is read directly from `/dev/input`, so this works on the
+  ready-made image as well as on a manual install; there is a switch on
+  the settings page too.
 - **Per-person thresholds** — low/high/urgent ranges per person, with
   global defaults.
-- **QR-code onboarding** — a fresh device shows a QR code that takes a phone
-  to the setup page; with no network at all it opens its own setup hotspot
-  first so you can connect the Pi to Wi-Fi from your phone. Once a network
+- **Guided setup from a phone** — a fresh device shows a QR code that opens
+  a step-by-step wizard: Wi-Fi, who it's for, where each person's data comes
+  from, and the credentials for it, one question per screen. Credentials are
+  tested before they're saved, and nothing is written until the last step.
+  With no network at all the device opens its own setup hotspot — join it
+  and the wizard opens by itself, no second QR code to scan. Once a network
   is chosen the device reboots onto it and shows its new address (also
   reachable as `http://sugarcube.local/` on the ready-made image).
 
@@ -85,6 +91,7 @@ back to 8080.
 | Path | What |
 |---|---|
 | `/` | Live dashboard (auto-refreshes every 30s) |
+| `/setup` | Guided setup, one question per screen |
 | `/settings` | People, data sources, thresholds, Wi-Fi |
 | `/log` | Sync activity from every data source |
 | `/screen.png` | What the physical screen shows right now |
@@ -93,16 +100,21 @@ back to 8080.
 ## Wi-Fi setup
 
 A device with no network opens its own `SugarCube-Setup` hotspot and shows
-a QR code that joins a phone to it. From there the settings page lists the
-networks it saw before the hotspot came up — pick one, or type a name for
-a hidden or missing network — and enter the password.
+a QR code that joins a phone to it. Once the phone is on that hotspot the
+setup page opens by itself — the device answers the connectivity check
+every phone makes on joining a network, which is what makes the "sign in
+to network" sheet appear. The page lists the networks the device saw
+before the hotspot came up: tap one, or choose **Other network** for a
+hidden or out-of-range one, and enter the password (with a Show button,
+so you can check it before committing).
 
 The hotspot drops while the device tries to connect, so the phone loses
-that page; that is expected. If the join succeeds the device reboots and
-its screen shows the new address. If it fails, the hotspot comes back
-within a minute or two and **the reason appears both on the device's own
-screen and at the top of the settings page** (wrong password, network not
-found, and so on) — no SSH needed to find out what went wrong.
+that page; that is expected. If the join succeeds the device reboots, its
+screen shows the new address, and reopening setup picks up where you left
+off. If it fails, the hotspot comes back within a minute or two and **the
+reason appears both on the device's own screen and at the top of the page**
+(wrong password, network not found, and so on) — no SSH needed to find out
+what went wrong.
 
 ## Updates
 
@@ -132,8 +144,14 @@ pip install pygame qrcode
 python -m sugarcube --demo --windowed
 ```
 
-`--no-display` runs the servers headless; `--screenshot out.png` renders one
-frame and exits. The only runtime dependencies are `pygame` and `qrcode`
+`--no-display` runs the servers headless — useful for working on the web UI,
+since nothing it serves needs pygame. `--screenshot out.png` renders one
+frame and exits.
+
+If the touchscreen is mounted rotated relative to the panel, correct it
+with `SUGARCUBE_TOUCH_TRANSFORM` — a comma-separated list of `swap`,
+`invx` and `invy` — in the systemd unit. `SUGARCUBE_TOUCH=off` disables
+reading the panel altogether. The only runtime dependencies are `pygame` and `qrcode`
 (both from apt on the Pi); everything else is the Python standard library.
 The display and web app are typeset in
 [Space Grotesk](https://github.com/floriankarsten/space-grotesk) and
