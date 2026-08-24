@@ -50,11 +50,17 @@ def current_version() -> str:
 
 
 def parse_version(s: str) -> tuple | None:
-    """'v1.2.3' -> (1, 2, 3); None when it isn't a plain version."""
-    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)", (s or "").strip())
+    """'v1.2.3' -> ((1, 2, 3), (1,)); None when it isn't a version we read.
+
+    The second half is the rank: a pre-release ('v1.2.3-rc.4', what the dev
+    branch publishes) carries the same numbers but ranks below the finished
+    version, so a device running an rc is offered the real 1.2.3.
+    """
+    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)(?:-rc\.(\d+))?", (s or "").strip())
     if not m:
         return None
-    return tuple(int(part) for part in m.group(1).split("."))
+    nums = tuple(int(part) for part in m.group(1).split("."))
+    return nums, (1,) if m.group(2) is None else (0, int(m.group(2)))
 
 
 def is_newer(candidate: str, current: str) -> bool:
@@ -62,10 +68,13 @@ def is_newer(candidate: str, current: str) -> bool:
     if cand is None or cur is None:
         return False
     # (1, 0) == (1, 0, 0)
-    length = max(len(cand), len(cur))
-    cand += (0,) * (length - len(cand))
-    cur += (0,) * (length - len(cur))
-    return cand > cur
+    length = max(len(cand[0]), len(cur[0]))
+
+    def key(parsed):
+        nums, rank = parsed
+        return nums + (0,) * (length - len(nums)), rank
+
+    return key(cand) > key(cur)
 
 
 def fetch_latest() -> dict:

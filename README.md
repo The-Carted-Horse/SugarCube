@@ -55,8 +55,8 @@ Grab `glucocube-<version>.img.xz` from the
 flash it with Raspberry Pi Imager (or `dd`), boot the Pi, and follow the
 QR codes on screen. That's the whole install.
 
-(Images are built by the `Build SD card image` GitHub Actions workflow —
-push a `v*` tag or run it manually.)
+(Images are built by the `Build and release` GitHub Actions workflow, which
+runs on every push to `main` — see [Cutting a release](#cutting-a-release).)
 
 ### Option B: install on an existing Raspberry Pi OS
 
@@ -142,9 +142,23 @@ Updates** (the display restarts, data is untouched). A release whose notes
 contain `[force-update]` installs itself automatically at the device's next
 check — use that for fixes every device should have.
 
-Cutting a release: push a `v*` tag (or run the `Build SD card image`
-workflow). The tag both builds the flashable image and becomes the update
-that existing devices see.
+### Cutting a release
+
+Releases are cut by pushing, not by tagging:
+
+- **Push to `dev`** — builds an image and publishes `vX.Y.Z-rc.N` as a
+  GitHub *pre-release*. Devices never see it: the updater asks for the
+  latest release and GitHub leaves pre-releases out of that. Flash the
+  attached image to try it. Each further push to `dev` bumps `N`.
+- **Push to `main`** — builds an image and publishes `vX.Y.Z` as a full
+  release. This is the one existing devices offer under Settings → Updates.
+  It takes the version the `dev` rcs were rehearsing (`2.0.1-rc.3` →
+  `2.0.1`), or bumps the patch number if `dev` never rehearsed one.
+
+Both create their tag at the commit that was pushed, so there is no tag to
+push by hand. For a minor or major bump — or to run either channel off
+another branch — run the workflow manually and pick the part to increment
+and the channel.
 
 ## Enclosure
 
