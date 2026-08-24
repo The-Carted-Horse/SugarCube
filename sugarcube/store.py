@@ -233,11 +233,17 @@ class Store:
     # ---- therapy parameters (ISF/CR/DIA from profile sources) ----
 
     def set_params(self, user: str, params: dict) -> None:
+        """Merge non-empty values into the stored record (profile sources
+        arrive piecemeal, so blanks must never clobber known values)."""
         merged = {**self.get_params(user), **{k: v for k, v in params.items() if v}}
+        self.replace_params(user, merged)
+
+    def replace_params(self, user: str, params: dict) -> None:
+        """Overwrite the record — for state where False/absent matter."""
         with self._lock:
             self._db.execute(
                 "INSERT OR REPLACE INTO params (user, raw) VALUES (?, ?)",
-                (user, json.dumps(merged)),
+                (user, json.dumps(params)),
             )
             self._db.commit()
 

@@ -75,8 +75,10 @@ finishes by printing the URL and API secret for each person's uploader.
 
 ## The web app
 
-Everything is served on plain HTTP port 80 — just open `http://<pi-ip>/`
-(HTTP Basic auth; the login is shown on the device's setup screen). When
+Everything is served on plain HTTP port 80 — open `http://sugarcube.local/`
+(or the IP shown on the device's screen; HTTP Basic auth, login shown
+there too). The `.local` name needs mDNS — iPhones, Macs, Windows, and
+Android 12+ all resolve it; on older Android type the IP instead. When
 port 80 isn't available (e.g. running by hand on a dev machine) it falls
 back to 8080.
 
@@ -87,6 +89,19 @@ back to 8080.
 | `/log` | Sync activity from every data source |
 | `/screen.png` | What the physical screen shows right now |
 | `/api/dashboard.json` | The dashboard's data, as JSON |
+
+## Updates
+
+The device checks GitHub for new [releases](https://github.com/The-Carted-Horse/SugarCube/releases)
+every 6 hours. When one is available it shows up on the display footer, the
+web dashboard, and the settings page — install it from **Settings →
+Updates** (the display restarts, data is untouched). A release whose notes
+contain `[force-update]` installs itself automatically at the device's next
+check — use that for fixes every device should have.
+
+Cutting a release: push a `v*` tag (or run the `Build SD card image`
+workflow). The tag both builds the flashable image and becomes the update
+that existing devices see.
 
 ## Enclosure
 

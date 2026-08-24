@@ -9,6 +9,10 @@ User=sugar
 Group=sugar
 SupplementaryGroups=video render input netdev
 WorkingDirectory=/opt/sugarcube
+# Boot guard: counts starts (the app clears the counter once healthy);
+# a missing package or three failed starts restores the previous version
+# the updater kept as sugarcube.prev.
+ExecStartPre=/bin/sh -c 'R=/opt/sugarcube; F=$${R}/.boot-fails; N=$$(($$(cat $${F} 2>/dev/null || echo 0)+1)); echo $${N} > $${F}; if [ ! -d $${R}/sugarcube ] && [ -d $${R}/sugarcube.prev ]; then mv $${R}/sugarcube.prev $${R}/sugarcube; echo 0 > $${F}; elif [ $${N} -ge 3 ] && [ -d $${R}/sugarcube.prev ]; then rm -rf $${R}/sugarcube.bad; mv $${R}/sugarcube $${R}/sugarcube.bad; mv $${R}/sugarcube.prev $${R}/sugarcube; echo 0 > $${F}; fi'
 ExecStart=/usr/bin/python3 -m sugarcube --config /home/sugar/config.json
 Restart=always
 RestartSec=3

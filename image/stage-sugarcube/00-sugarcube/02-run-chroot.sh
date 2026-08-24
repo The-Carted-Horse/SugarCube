@@ -1,7 +1,8 @@
 #!/bin/bash -e
 # The first user ("sugar") is created by pi-gen (username input in the
-# workflow); config and database live in its home so /opt stays pristine.
-chown -R root:root /opt/sugarcube
+# workflow); config and database live in its home. The service user owns
+# /opt/sugarcube so the built-in updater can swap the package in place.
+chown -R 1000:1000 /opt/sugarcube
 
 systemctl enable sugarcube.service
 systemctl set-default multi-user.target

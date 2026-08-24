@@ -191,6 +191,7 @@ class Display:
         self._lan_ip = ("", 0.0)  # (ip, fetched-at monotonic time)
         self._hotspot_pw = store.get_params("__network").get("hotspot_password", "")
         self._hotspot_state = (False, 0.0)  # (active, checked-at monotonic time)
+        self._update_state: tuple[dict, float] = ({}, 0.0)
 
     def toggle_theme(self):
         # Touchscreens can deliver a tap as both finger and mouse events;
@@ -525,16 +526,34 @@ class Display:
             pygame.draw.rect(surface, self.pal.urgent, rect.inflate(-6, -6), 3,
                              border_radius=12)
 
+    def _pending_update(self) -> dict:
+        state, checked = self._update_state
+        if time.monotonic() - checked > 60:
+            state = self.store.get_params("__updates")
+            self._update_state = (state, time.monotonic())
+        return state if state.get("available") else {}
+
     def draw_footer(self, rect: pygame.Rect):
-        """Date/time left; NIGHT/DAY theme toggle right."""
+        """Date/time left (plus update notice); NIGHT/DAY toggle right."""
         surface = self.screen
         pygame.draw.line(surface, self.pal.line,
                          (rect.left, rect.top), (rect.right, rect.top))
         pad = int(surface.get_width() * 0.028)
         px = max(11, int(rect.height * 0.30))
         when = time.strftime("%a %d %b · %H:%M").upper()
-        self.label(surface, when, px, self.pal.dim,
-                   midleft=(rect.left + pad, rect.centery))
+        when_rect = self.label(surface, when, px, self.pal.dim,
+                               midleft=(rect.left + pad, rect.centery))
+        update = self._pending_update()
+        if update:
+            notice = f"UPDATE {update.get('latest', '')}"
+            # Mono glyph ≈ 0.6em + 0.22em tracking; skip the notice when
+            # it would run into the theme toggle (narrow/portrait screens
+            # still surface updates in the web UI).
+            notice_w = int(len(notice) * px * 0.85)
+            x = when_rect.right + int(px * 2.2)
+            if x + notice_w < rect.right - int(px * 10):
+                self.label(surface, notice, px, self.pal.high,
+                           midleft=(x, rect.centery))
 
         icon_r = max(6, int(rect.height * 0.14))
         icon_c = (rect.right - pad - icon_r, rect.centery)
@@ -712,11 +731,16 @@ class Display:
                           midtop=(cx, int(h * 0.52)))
             return
 
-        url = admin_url(ip, self.config.admin_port, "/settings")
+        # The .local name leads: mDNS keeps working when the address
+        # changes, and it reaches the device over IPv6 on networks that
+        # filter client-to-client IPv4.
+        ip_url = admin_url(ip, self.config.admin_port, "/settings")
+        primary = mdns or ip_url
         self.text(screen, "Scan from a phone on this network to set up",
                   int(s * 0.045), self.pal.dim, midtop=(cx, int(h * 0.17)))
 
-        qr = self._qr_surface(url, int(s * 0.46)) if self.config.admin_port else None
+        qr = (self._qr_surface(primary, int(s * 0.46))
+              if self.config.admin_port else None)
         if qr:
             rect = qr.get_rect(center=(cx, int(h * 0.52)))
             screen.blit(qr, rect)
@@ -724,10 +748,10 @@ class Display:
         else:
             info_y = int(h * 0.45)
 
-        self.text(screen, url, int(s * 0.05), self.pal.fg, midtop=(cx, info_y))
+        self.text(screen, primary, int(s * 0.05), self.pal.fg, midtop=(cx, info_y))
         line_y = info_y + int(s * 0.065)
         if mdns:
-            self.text(screen, f"or  {mdns}", int(s * 0.038), self.pal.dim,
+            self.text(screen, f"or  {ip_url}", int(s * 0.038), self.pal.dim,
                       midtop=(cx, line_y))
             line_y += int(s * 0.06)
         if self.config.admin_password:
