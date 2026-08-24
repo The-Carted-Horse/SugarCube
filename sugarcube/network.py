@@ -165,6 +165,33 @@ def hotspot_active() -> bool:
     return code == 0 and HOTSPOT_CONN in out.splitlines()
 
 
+_hotspot_cache = (False, 0.0)
+
+
+def hotspot_active_cached(ttl: float = 5.0) -> bool:
+    """hotspot_active(), memoised.
+
+    The web layer asks this on every request — including the captive
+    portal's answer to a phone's connectivity probe — and each real call
+    shells out to nmcli. SUGARCUBE_FAKE_HOTSPOT=1 forces it on, which is
+    the only way to exercise the setup-hotspot paths off-device; it is
+    read from the environment, so it can never be set on an image.
+    """
+    global _hotspot_cache
+    value, checked = _hotspot_cache
+    if time.monotonic() - checked > ttl:
+        import os
+        if os.environ.get("SUGARCUBE_FAKE_HOTSPOT") == "1":
+            value = True
+        else:
+            try:
+                value = available() and hotspot_active()
+            except Exception:  # noqa: BLE001 - never fail a page render
+                value = False
+        _hotspot_cache = (value, time.monotonic())
+    return value
+
+
 def start_hotspot(password: str, prescan: bool = True) -> bool:
     # One last scan while the radio can still hear: the settings page
     # served over this hotspot has no other way to list networks.
