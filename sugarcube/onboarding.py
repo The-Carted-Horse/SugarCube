@@ -347,13 +347,16 @@ def _render_wifi(draft_handler, draft, step, banner) -> str:
 
 def _render_people(handler, draft, step, banner) -> str:
     people = draft.get("people") or []
+    # One spare slot beyond whoever is already here, so a second person can
+    # be named without the JavaScript-only "add another" button.
+    slots = [person.get("name", "") for person in people] + [""]
     rows = "".join(
-        ui.row(f"Person {i + 1}",
-               ui.text_input(f"name{i}", person.get("name", ""),
-                             input_id=f"name{i}",
-                             placeholder="their name"),
+        ui.row(f"Person {i + 1}" if i < len(people) else "Another person",
+               ui.text_input(f"name{i}", name, input_id=f"name{i}",
+                             placeholder="their name"
+                             if i < len(people) else "leave blank if not needed"),
                inline=False, for_id=f"name{i}")
-        for i, person in enumerate(people)
+        for i, name in enumerate(slots)
     )
     template = ui.row("Another person",
                       ui.text_input("name__I__", "", input_id="name__I__",
@@ -645,21 +648,24 @@ def do_post(handler, path: str, form: dict) -> None:
         _start_join(handler, draft, form)
         return
     elif step == "people":
-        names = []
+        # Keep the original position with each name: a blank first slot
+        # must not shift the second person onto the first one's port and
+        # credentials.
+        named = []
         index = 0
         while f"name{index}" in form:
             name = form[f"name{index}"].strip()
             if name:
-                names.append(name)
+                named.append((index, name))
             index += 1
-        if not names:
+        if not named:
             handler._send(render(handler, draft, "people", banner=ui.banner(
                 "err", "At least one person needs a name.")).encode(),
                 "text/html; charset=utf-8", 400)
             return
         people = draft.get("people") or []
         merged = []
-        for position, name in enumerate(names):
+        for position, name in named:
             existing = people[position] if position < len(people) else {}
             merged.append({**{"port": None, "api_secret": "", "source": None,
                               "thresholds": {}}, **existing, "name": name})
