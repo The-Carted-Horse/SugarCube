@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# One-shot installer for SugarCube on a Raspberry Pi.
+# One-shot installer for GlucoCube on a Raspberry Pi.
 #
 # Run from a checkout:   ./install.sh
-# Or with nothing yet:   curl -sSL https://raw.githubusercontent.com/The-Carted-Horse/SugarCube/main/install.sh | bash
+# Or with nothing yet:   curl -sSL https://raw.githubusercontent.com/The-Carted-Horse/GlucoCube/main/install.sh | bash
 #
 # Installs all dependencies, generates config.json with random API secrets,
 # disables console screen blanking, and enables + starts the boot service.
 set -euo pipefail
 
-REPO_URL="${SUGARCUBE_REPO:-https://github.com/The-Carted-Horse/SugarCube.git}"
+REPO_URL="${GLUCOCUBE_REPO:-https://github.com/The-Carted-Horse/GlucoCube.git}"
 
 SUDO=""
 if [ "$(id -u)" -ne 0 ]; then
@@ -20,9 +20,9 @@ log() { echo "==> $*"; }
 # --- Locate (or fetch) the repo -------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd)"
-if [ ! -f "$SCRIPT_DIR/sugarcube/__main__.py" ]; then
+if [ ! -f "$SCRIPT_DIR/glucocube/__main__.py" ]; then
     # Piped from curl or run outside a checkout: clone and continue from there.
-    REPO_DIR="$HOME/SugarCube"
+    REPO_DIR="$HOME/GlucoCube"
     if [ ! -d "$REPO_DIR/.git" ]; then
         log "Cloning $REPO_URL to $REPO_DIR"
         command -v git >/dev/null || { $SUDO apt-get update; $SUDO apt-get install -y git; }
@@ -87,7 +87,7 @@ done
 
 if [ -d /etc/polkit-1/rules.d ]; then
     log "Allowing $RUN_USER to manage Wi-Fi and reboot (polkit rule)"
-    $SUDO tee /etc/polkit-1/rules.d/50-sugarcube.rules > /dev/null <<POLKITEOF
+    $SUDO tee /etc/polkit-1/rules.d/50-glucocube.rules > /dev/null <<POLKITEOF
 polkit.addRule(function(action, subject) {
     if (subject.user != "$RUN_USER") {
         return polkit.Result.NOT_HANDLED;
@@ -112,8 +112,8 @@ fi
 if [ -d /etc/NetworkManager ]; then
     log "Installing the setup-hotspot captive portal DNS rule"
     $SUDO install -d /etc/NetworkManager/dnsmasq-shared.d
-    $SUDO tee /etc/NetworkManager/dnsmasq-shared.d/sugarcube-captive.conf > /dev/null <<'CAPTIVEEOF'
-# Captive portal for the SugarCube setup hotspot; see the project README.
+    $SUDO tee /etc/NetworkManager/dnsmasq-shared.d/glucocube-captive.conf > /dev/null <<'CAPTIVEEOF'
+# Captive portal for the GlucoCube setup hotspot; see the project README.
 address=/#/10.42.0.1
 CAPTIVEEOF
 fi
@@ -123,16 +123,16 @@ fi
 log "Installing systemd service (user: $RUN_USER, path: $REPO_DIR)"
 sed -e "s|^User=.*|User=$RUN_USER|" \
     -e "s|^Group=.*|Group=$RUN_USER|" \
-    -e "s|/home/pi/SugarCube|$REPO_DIR|g" \
-    "$REPO_DIR/systemd/sugarcube.service" \
-    | $SUDO tee /etc/systemd/system/sugarcube.service > /dev/null
+    -e "s|/home/pi/GlucoCube|$REPO_DIR|g" \
+    "$REPO_DIR/systemd/glucocube.service" \
+    | $SUDO tee /etc/systemd/system/glucocube.service > /dev/null
 
 $SUDO systemctl daemon-reload
-$SUDO systemctl enable sugarcube.service
+$SUDO systemctl enable glucocube.service
 
 if [ -d /dev/dri ]; then
-    log "Starting sugarcube"
-    $SUDO systemctl restart sugarcube.service || true
+    log "Starting glucocube"
+    $SUDO systemctl restart glucocube.service || true
 else
     log "No display hardware detected; service will start on next boot"
 fi
@@ -142,7 +142,7 @@ fi
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo
 echo "============================================================"
-echo " SugarCube installed."
+echo " GlucoCube installed."
 echo
 echo " Enter these in each Trio under Settings -> Services -> Nightscout:"
 python3 - "$REPO_DIR" "${IP:-<pi-ip>}" <<'PYEOF'
@@ -169,8 +169,8 @@ if admin.get("password"):
 PYEOF
 echo
 echo " Edit the names in $REPO_DIR/config.json, then:"
-echo "   sudo systemctl restart sugarcube"
+echo "   sudo systemctl restart glucocube"
 echo
-echo " Logs: journalctl -u sugarcube -f"
+echo " Logs: journalctl -u glucocube -f"
 echo " If screen blanking was just disabled, reboot once for it to apply."
 echo "============================================================"

@@ -6,11 +6,11 @@ the settings page, web dashboard, and display footer surface it. Updates
 are applied from the settings page — except releases whose notes contain
 the marker ``[force-update]``, which install themselves automatically.
 
-Applying an update swaps the ``sugarcube`` package in place:
+Applying an update swaps the ``glucocube`` package in place:
   - a git checkout (install.sh installs) fetches and checks out the tag;
   - anything else (the SD-card image) downloads the release tarball,
     syntax-checks it, and atomically swaps the package directory, keeping
-    the previous version next to it as ``sugarcube.prev``.
+    the previous version next to it as ``glucocube.prev``.
 Either way the process then exits so systemd restarts it on the new code
 (the same restart-on-exit pattern the settings page uses).
 """
@@ -31,9 +31,9 @@ from pathlib import Path
 
 from . import __version__, synclog
 
-log = logging.getLogger("sugarcube.updater")
+log = logging.getLogger("glucocube.updater")
 
-REPO = "The-Carted-Horse/SugarCube"
+REPO = "The-Carted-Horse/GlucoCube"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 TARBALL_URL = f"https://github.com/{REPO}/archive/refs/tags/{{tag}}.tar.gz"
 FORCE_MARKER = "[force-update]"
@@ -70,7 +70,7 @@ def fetch_latest() -> dict:
     request = urllib.request.Request(
         API_LATEST,
         headers={
-            "User-Agent": f"SugarCube/{current_version()}",
+            "User-Agent": f"GlucoCube/{current_version()}",
             "Accept": "application/vnd.github+json",
         },
     )
@@ -130,7 +130,7 @@ def _apply_tarball(root: Path, pkg: Path, tag: str) -> None:
     try:
         url = TARBALL_URL.format(tag=tag)
         request = urllib.request.Request(
-            url, headers={"User-Agent": f"SugarCube/{current_version()}"})
+            url, headers={"User-Agent": f"GlucoCube/{current_version()}"})
         tar_path = workdir / "release.tar.gz"
         with urllib.request.urlopen(request, timeout=120) as response, \
                 open(tar_path, "wb") as out:
@@ -142,9 +142,9 @@ def _apply_tarball(root: Path, pkg: Path, tag: str) -> None:
                 # Python < 3.11.4 has no filter= yet; the archive comes
                 # from our own release, so plain extraction is acceptable.
                 tar.extractall(workdir)
-        candidates = list(workdir.glob("*/sugarcube/__init__.py"))
+        candidates = list(workdir.glob("*/glucocube/__init__.py"))
         if not candidates:
-            raise RuntimeError("release tarball has no sugarcube package")
+            raise RuntimeError("release tarball has no glucocube package")
         new_pkg = candidates[0].parent
         _stamp_version(new_pkg, tag.lstrip("v"))
         proc = subprocess.run(
@@ -154,7 +154,7 @@ def _apply_tarball(root: Path, pkg: Path, tag: str) -> None:
         if proc.returncode != 0:
             raise RuntimeError(
                 f"new version failed a syntax check: {proc.stdout.strip()}")
-        prev = root / "sugarcube.prev"
+        prev = root / "glucocube.prev"
         if prev.exists():
             shutil.rmtree(prev)
         os.replace(pkg, prev)
@@ -216,7 +216,7 @@ def mark_boot_ok_later() -> None:
     """Clear the failed-boot counter once the app has survived startup.
 
     The systemd unit's ExecStartPre guard increments the counter on every
-    start; three strikes restore ``sugarcube.prev``. Clearing it after
+    start; three strikes restore ``glucocube.prev``. Clearing it after
     ~90s of healthy runtime is what makes a good boot "count".
     """
     def _ok():

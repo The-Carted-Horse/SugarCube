@@ -1,7 +1,7 @@
 """Wi-Fi provisioning via NetworkManager (nmcli).
 
 When the Pi has no network at all, we bring up a setup hotspot
-("SugarCube-Setup"). The display shows a WIFI: QR code that joins a
+("GlucoCube-Setup"). The display shows a WIFI: QR code that joins a
 phone to that hotspot, where the settings page offers a list of nearby
 networks so the user can hand the Pi their home Wi-Fi credentials.
 
@@ -30,10 +30,10 @@ import time
 
 from . import synclog
 
-log = logging.getLogger("sugarcube.network")
+log = logging.getLogger("glucocube.network")
 
-HOTSPOT_SSID = "SugarCube-Setup"
-HOTSPOT_CONN = "sugarcube-hotspot"
+HOTSPOT_SSID = "GlucoCube-Setup"
+HOTSPOT_CONN = "glucocube-hotspot"
 HOTSPOT_ADDR = "10.42.0.1"
 
 STATE_KEY = "__wifi"        # persisted scan cache + last join attempt
@@ -173,7 +173,7 @@ def hotspot_active_cached(ttl: float = 5.0) -> bool:
 
     The web layer asks this on every request — including the captive
     portal's answer to a phone's connectivity probe — and each real call
-    shells out to nmcli. SUGARCUBE_FAKE_HOTSPOT=1 forces it on, which is
+    shells out to nmcli. GLUCOCUBE_FAKE_HOTSPOT=1 forces it on, which is
     the only way to exercise the setup-hotspot paths off-device; it is
     read from the environment, so it can never be set on an image.
     """
@@ -181,7 +181,7 @@ def hotspot_active_cached(ttl: float = 5.0) -> bool:
     value, checked = _hotspot_cache
     if time.monotonic() - checked > ttl:
         import os
-        if os.environ.get("SUGARCUBE_FAKE_HOTSPOT") == "1":
+        if os.environ.get("GLUCOCUBE_FAKE_HOTSPOT") == "1":
             value = True
         else:
             try:

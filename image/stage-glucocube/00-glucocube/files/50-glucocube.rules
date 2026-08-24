@@ -1,5 +1,5 @@
 polkit.addRule(function(action, subject) {
-    if (subject.user != "sugar") {
+    if (subject.user != "gluco") {
         return polkit.Result.NOT_HANDLED;
     }
     // Wi-Fi provisioning (scan, hotspot, join) via nmcli.

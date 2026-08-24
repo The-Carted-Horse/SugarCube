@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from . import nspull, tidepool
 
-log = logging.getLogger("sugarcube.verify")
+log = logging.getLogger("glucocube.verify")
 
 DEFAULT_TIMEOUT = 10.0
 MIN_INTERVAL = 3.0          # per identity; Tidepool locks accounts out
@@ -176,4 +176,4 @@ def source(config: dict, timeout: float = DEFAULT_TIMEOUT) -> Result:
                                config.get("api_secret") or config.get("token")
                                or "", timeout)
     return Result(True, "Nothing to test — this person's device uploads to "
-                        "SugarCube directly.")
+                        "GlucoCube directly.")

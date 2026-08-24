@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlparse
 from . import config as config_mod
 from . import network, ui, verify
 
-log = logging.getLogger("sugarcube.onboarding")
+log = logging.getLogger("glucocube.onboarding")
 
 SETUP_KEY = "__setup"
 DRAFT_VERSION = 1
@@ -199,7 +199,7 @@ def _progress(draft: dict, step: str) -> str:
 def _shell(draft: dict, step: str, heading: str, body: str, *,
            script: str = "") -> str:
     return ui.page(
-        f"SugarCube setup — {TITLES.get(step.partition(':')[0], 'Setup')}",
+        f"GlucoCube setup — {TITLES.get(step.partition(':')[0], 'Setup')}",
         f"{_progress(draft, step)}<h1>{ui.esc(heading)}</h1>{body}",
         script=script,
     )
@@ -311,7 +311,7 @@ minutes.</p>
   {_actions("Start")}
 </form>
 <p class="note"><a href="/settings">Skip and use the full settings page</a></p>"""
-    return _shell(draft, step, "Set up SugarCube", body)
+    return _shell(draft, step, "Set up GlucoCube", body)
 
 
 def _render_wifi(draft_handler, draft, step, banner) -> str:
@@ -441,7 +441,7 @@ Nightscout</b> and enter these two. Nothing else is needed here.</p>
                                        source.get("api_secret", ""),
                                        input_id="api_secret"),
                      inline=False, for_id="api_secret",
-                     hint="Either works — SugarCube works out which.")
+                     hint="Either works — GlucoCube works out which.")
         )
         lede = "Where your existing Nightscout site lives."
     test_button = ('<button type="button" class="test secondary" '
@@ -537,7 +537,7 @@ def _render_done(handler, draft) -> str:
 <p><a class="btn" href="/">Open the dashboard</a></p>
 <p class="note">Readings appear as soon as the first ones arrive. The
 <a href="/log">sync log</a> shows what is coming in.</p>"""
-    return ui.page("SugarCube is set up",
+    return ui.page("GlucoCube is set up",
                    f"<h1>All set</h1>{body}", script=DONE_SCRIPT)
 
 

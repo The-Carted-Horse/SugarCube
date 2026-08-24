@@ -1,0 +1,27 @@
+[Unit]
+Description=GlucoCube glucose display
+# An appliance display must never stop retrying.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+# video/render for KMS/DRM output, input for the touchscreen/keyboard
+SupplementaryGroups=video render input
+WorkingDirectory=/home/pi/GlucoCube
+# Boot guard: counts starts (the app clears the counter once healthy);
+# a missing package or three failed starts restores the previous version
+# the updater kept as glucocube.prev.
+ExecStartPre=/bin/sh -c 'R=/home/pi/GlucoCube; F=$${R}/.boot-fails; N=$$(($$(cat $${F} 2>/dev/null || echo 0)+1)); echo $${N} > $${F}; if [ ! -d $${R}/glucocube ] && [ -d $${R}/glucocube.prev ]; then mv $${R}/glucocube.prev $${R}/glucocube; echo 0 > $${F}; elif [ $${N} -ge 3 ] && [ -d $${R}/glucocube.prev ]; then rm -rf $${R}/glucocube.bad; mv $${R}/glucocube $${R}/glucocube.bad; mv $${R}/glucocube.prev $${R}/glucocube; echo 0 > $${F}; fi'
+ExecStart=/usr/bin/python3 -m glucocube --config /home/pi/GlucoCube/config.json
+Restart=always
+RestartSec=3
+# The web admin serves plain http on port 80.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=SDL_AUDIODRIVER=dummy
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

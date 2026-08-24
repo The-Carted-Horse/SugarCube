@@ -92,7 +92,7 @@ class FramebufferPresenter:
 
     Bypasses SDL's EGL/GLES scanout path entirely — the same route the
     text console uses, so if boot text is visible, this works. Selected
-    with SUGARCUBE_DISPLAY=fbdev (SDL renders into a dummy surface and we
+    with GLUCOCUBE_DISPLAY=fbdev (SDL renders into a dummy surface and we
     copy the pixels out once a second).
     """
 
@@ -163,7 +163,7 @@ class Display:
         pygame.mouse.set_visible(False)
         dc = config.display
         self.fb: FramebufferPresenter | None = None
-        if os.environ.get("SUGARCUBE_DISPLAY") == "fbdev":
+        if os.environ.get("GLUCOCUBE_DISPLAY") == "fbdev":
             self.fb = FramebufferPresenter()
             dc.width, dc.height = self.fb.width, self.fb.height
             # Never pass FULLSCREEN to the dummy driver: it substitutes its
@@ -174,7 +174,7 @@ class Display:
         else:
             flags = 0 if (windowed or not dc.fullscreen) else pygame.FULLSCREEN
             self.screen = pygame.display.set_mode((dc.width, dc.height), flags)
-        pygame.display.set_caption("SugarCube")
+        pygame.display.set_caption("GlucoCube")
         self.clock = pygame.time.Clock()
         self._fonts: dict[tuple[str, int], pygame.font.Font] = {}
         saved = store.get_params(THEME_STATE_USER).get("theme", "dark")
@@ -192,9 +192,9 @@ class Display:
         self._update_state: tuple[dict, float] = ({}, 0.0)
         # SDL's dummy video driver (forced by the fbdev path) pumps no
         # events at all, so the panel has to be read directly. kmsdrm
-        # already delivers taps; SUGARCUBE_TOUCH=evdev forces the reader
+        # already delivers taps; GLUCOCUBE_TOUCH=evdev forces the reader
         # there too, and toggle_theme() debounces any double delivery.
-        want_touch = os.environ.get("SUGARCUBE_TOUCH", "").lower()
+        want_touch = os.environ.get("GLUCOCUBE_TOUCH", "").lower()
         if want_touch != "off" and (self.fb is not None or want_touch == "evdev"):
             reader = touch.TouchReader(dc.width, dc.height, self._on_touch)
             if reader.start():
@@ -761,7 +761,7 @@ class Display:
             return
 
         # Stage 1: nothing has joined yet — show the Wi-Fi join QR.
-        self.text(screen, "Connect SugarCube to Wi-Fi", int(s * 0.075),
+        self.text(screen, "Connect GlucoCube to Wi-Fi", int(s * 0.075),
                   self.pal.fg, kind="num", midtop=(cx, int(h * 0.035)))
         self.text(screen, "1.  Scan to join the setup hotspot", int(s * 0.045),
                   self.pal.dim, midtop=(cx, int(h * 0.15)))
@@ -795,7 +795,7 @@ class Display:
         cx = w // 2
         s = min(w, h)  # scale text by the smaller dimension (portrait-safe)
 
-        self.text(screen, "SugarCube", int(s * 0.09), self.pal.fg,
+        self.text(screen, "GlucoCube", int(s * 0.09), self.pal.fg,
                   kind="num", midtop=(cx, int(h * 0.045)))
 
         ip = self._cached_lan_ip()

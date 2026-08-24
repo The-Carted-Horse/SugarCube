@@ -1,10 +1,10 @@
 #!/bin/bash -e
-# The first user ("sugar") is created by pi-gen (username input in the
+# The first user ("gluco") is created by pi-gen (username input in the
 # workflow); config and database live in its home. The service user owns
-# /opt/sugarcube so the built-in updater can swap the package in place.
-chown -R 1000:1000 /opt/sugarcube
+# /opt/glucocube so the built-in updater can swap the package in place.
+chown -R 1000:1000 /opt/glucocube
 
-systemctl enable sugarcube.service
+systemctl enable glucocube.service
 systemctl set-default multi-user.target
 
 # Unblock Wi-Fi: without a regulatory country rfkill blocks the radio,
@@ -12,7 +12,7 @@ systemctl set-default multi-user.target
 # pi-gen's WPA_COUNTRY handling.)
 raspi-config nonint do_wifi_country US || true
 
-# mDNS: reach the device as http://sugarcube.local without knowing
+# mDNS: reach the device as http://glucocube.local without knowing
 # its IP.
 systemctl enable avahi-daemon.service
 

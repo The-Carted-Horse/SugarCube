@@ -1,6 +1,6 @@
 """Touchscreen input read straight from evdev.
 
-The shipped image runs the display with ``SUGARCUBE_DISPLAY=fbdev``, which
+The shipped image runs the display with ``GLUCOCUBE_DISPLAY=fbdev``, which
 forces SDL's *dummy* video driver (see ``__main__.py``). That driver pumps
 no events and never opens ``/dev/input``, so pygame sees no taps at all —
 which is exactly why the NIGHT/DAY toggle stopped working on the image
@@ -16,7 +16,7 @@ install where SDL delivers events anyway — ``start()`` is a logged no-op
 and nothing else in the app changes.
 
 Panel orientation can be corrected without code changes via
-``SUGARCUBE_TOUCH_TRANSFORM``, a comma-separated list of ``swap``,
+``GLUCOCUBE_TOUCH_TRANSFORM``, a comma-separated list of ``swap``,
 ``invx`` and ``invy`` (applied in that order).
 """
 
@@ -29,7 +29,7 @@ import select
 import struct
 import threading
 
-log = logging.getLogger("sugarcube.touch")
+log = logging.getLogger("glucocube.touch")
 
 # ---- kernel constants (linux/input-event-codes.h) ----
 
@@ -111,7 +111,7 @@ def _abs_range(fd: int, code: int, fallback: int) -> tuple[int, int]:
 
 
 def _transform() -> tuple[bool, bool, bool]:
-    raw = os.environ.get("SUGARCUBE_TOUCH_TRANSFORM", "")
+    raw = os.environ.get("GLUCOCUBE_TOUCH_TRANSFORM", "")
     parts = {p.strip().lower() for p in raw.split(",") if p.strip()}
     return "swap" in parts, "invx" in parts, "invy" in parts
 
