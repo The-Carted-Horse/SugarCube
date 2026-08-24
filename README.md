@@ -119,6 +119,22 @@ what went wrong.
 
 ## Updates
 
+### Upgrading from 1.x (SugarCube)
+
+**Re-flash the card.** Version 2 renames the Python package, the service and
+the paths, and 1.x's updater cannot install it: it looks for a package by the
+old name. What happens when you press Install depends on how 1.x was put on:
+
+- **From the ready-made image** — the update fails before anything is
+  touched. The device carries on running 1.x, and simply never updates again.
+- **From `install.sh` (a git checkout)** — do not press Install. The checkout
+  succeeds, the service is left pointing at a module that no longer exists,
+  and it restart-loops with no automatic way back. Recovering needs SSH.
+
+Flashing a version 2 image is the supported route, and settings are entered
+again through the setup wizard. To keep a 1.x device exactly as it is, leave
+it alone — it will offer the update but cannot complete it.
+
 The device checks GitHub for new [releases](https://github.com/The-Carted-Horse/SugarCube/releases)
 every 6 hours. When one is available it shows up on the display footer, the
 web dashboard, and the settings page — install it from **Settings →
