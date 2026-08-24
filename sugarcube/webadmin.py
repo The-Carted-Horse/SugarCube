@@ -10,7 +10,6 @@ Protected with HTTP Basic auth when config.admin.password is set.
 """
 
 import base64
-import html
 import json
 import logging
 import os
@@ -21,85 +20,22 @@ from urllib.parse import parse_qs, urlparse
 import secrets as secrets_mod
 
 from . import config as config_mod
-from . import network, predict, synclog, updater
+from . import network, predict, synclog, ui, updater, verify
 from .server import DualStackServer
 from .config import SCREEN_PNG, Config, merged_thresholds
 from .store import Store
 
 log = logging.getLogger("sugarcube.webadmin")
 
-PAGE_STYLE = """
-:root, [data-theme=dark] { color-scheme: dark;
-  --bg:#0d1117; --card:#161b22; --line:#2d333b; --fg:#ebeef1; --dim:#9aa4af;
-  --faint:#6e7681; --accent:#58a6ff; --btn:#238636; --danger:#f85149; }
-[data-theme=light] { color-scheme: light;
-  --bg:#f4f6f8; --card:#ffffff; --line:#c6ccd3; --fg:#1a2027; --dim:#5c6670;
-  --faint:#8a939c; --accent:#0969da; --btn:#1a7f37; --danger:#ce2626; }
-body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
-       color: var(--fg); max-width: 760px; margin: 1.5rem auto; padding: 0 1rem; }
-h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin-top: 1.8rem; color: var(--dim); }
-nav { display:flex; gap:.7rem; align-items:center; margin-bottom:1rem; flex-wrap:wrap; }
-nav a, nav button.link { color: var(--dim); background:none; border:1px solid var(--line);
-  border-radius:8px; padding:.3rem .7rem; font-size:.85rem; text-decoration:none;
-  cursor:pointer; margin:0; }
-fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 1rem 0; padding: 1rem; }
-legend { padding: 0 .5rem; color: var(--accent); }
-label { display: inline-block; width: 11rem; color: var(--dim); }
-input, select { background: var(--card); color: var(--fg); border: 1px solid var(--line);
-        border-radius: 6px; padding: .35rem .5rem; margin: .2rem 0; width: 16rem; }
-input.short { width: 6rem; }
-.row { margin: .15rem 0; }
-button { background: var(--btn); color: white; border: 0; border-radius: 6px;
-         padding: .6rem 1.4rem; font-size: 1rem; cursor: pointer; margin-top: 1rem; }
-button.minor { background: none; border: 1px solid var(--line); color: var(--dim);
-         padding: .3rem .8rem; font-size: .85rem; margin-top: .5rem; }
-button.danger { border-color: var(--danger); color: var(--danger); }
-img.screen { width: 100%; border: 1px solid var(--line); border-radius: 8px; margin-top: .5rem; }
-.status { color: var(--dim); font-size: .9rem; margin: .2rem 0; }
-.status.err { color: var(--danger); }
-pre.detail { background: var(--card); border: 1px solid var(--line);
-  border-radius: 6px; padding: .5rem; font-size: .75rem; overflow-x: auto;
-  white-space: pre-wrap; word-break: break-word; color: var(--dim); }
-.note { color: var(--faint); font-size: .85rem; }
-table { width:100%; border-collapse:collapse; font-size:.85rem; }
-td, th { padding:.35rem .5rem; border-bottom:1px solid var(--line); text-align:left; }
-th { color: var(--dim); font-weight:600; }
-td.err { color: var(--danger); }
-td.time { white-space:nowrap; color: var(--dim); }
-"""
-
-THEME_SCRIPT = """<script>
-(function(){
-  const t = localStorage.theme ||
-    (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-  document.documentElement.dataset.theme = t;
-  window.toggleTheme = function(){
-    const n = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-    localStorage.theme = n;
-    document.documentElement.dataset.theme = n;
-  };
-})();
-</script>"""
-
-NAV_HTML = """<nav><a href="/">Dashboard</a><a href="/settings">Settings</a>
-<a href="/log">Sync log</a>
-<button class="link" type="button" onclick="toggleTheme()">Theme</button></nav>"""
-
 SETTINGS_SCRIPT = """<script>
 setInterval(() => {
   const img = document.getElementById('screen');
   if (img) img.src = '/screen.png?t=' + Date.now();
 }, 5000);
-function updateSrc(sel) {
-  document.querySelectorAll('.srcgrp[data-i="' + sel.dataset.i + '"]').forEach(g => {
-    g.style.display = g.dataset.kind.split(' ').includes(sel.value) ? '' : 'none';
-  });
-}
-function initSrc(sel) { sel.addEventListener('change', () => updateSrc(sel)); updateSrc(sel); }
-document.querySelectorAll('.srcsel').forEach(initSrc);
+
 function removePerson(i) {
   document.querySelector('[name=u' + i + '_remove]').value = '1';
-  document.getElementById('fs' + i).style.display = 'none';
+  document.getElementById('fs' + i).hidden = true;
 }
 function addPerson() {
   let maxI = -1, maxPort = 1336;
@@ -112,19 +48,66 @@ function addPerson() {
   const markup = document.getElementById('person-template').innerHTML
     .replaceAll('__I__', i).replaceAll('__PORT__', maxPort + 1);
   document.getElementById('people').insertAdjacentHTML('beforeend', markup);
-  initSrc(document.querySelector('#fs' + i + ' .srcsel'));
+  window.sugarSync();
+}
+
+// "Test connection": check the credentials before saving, rather than
+// finding out from the sync log hours later that a letter was wrong.
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('button.test');
+  if (!button) return;
+  const i = button.dataset.i;
+  const out = document.getElementById('testresult' + i);
+  const value = (field) => {
+    const el = document.querySelector('[name="u' + i + '_' + field + '"]');
+    return el ? el.value : '';
+  };
+  const picked = document.querySelector('[name="u' + i + '_source"]:checked');
+  out.hidden = false;
+  out.className = 'banner info';
+  out.textContent = 'Testing\u2026';
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/source/test', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        index: i, type: picked ? picked.value : 'push',
+        email: value('tp_email'), password: value('tp_password'),
+        url: value('ns_url'), api_secret: value('ns_key'),
+      }),
+    });
+    const result = await response.json();
+    out.className = 'banner ' + (result.ok ? 'ok' : 'err');
+    out.textContent = result.message;
+  } catch (err) {
+    out.className = 'banner err';
+    out.textContent = 'Could not run the test.';
+  }
+  button.disabled = false;
+});
+
+// A rescan runs in the background; the page asks whether it has finished
+// instead of the server holding the request open while it waits.
+if (location.search.indexOf('scanning=1') >= 0) {
+  const tick = async () => {
+    try {
+      const r = await fetch('/api/wifi.json', {cache: 'no-store'});
+      if (!(await r.json()).scanning) { location.replace('/settings'); return; }
+    } catch (err) {}
+    setTimeout(tick, 1500);
+  };
+  setTimeout(tick, 1500);
 }
 </script>"""
 
-LOG_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SugarCube sync log</title>__THEME__<style>__STYLE__</style></head><body>
-__NAV__
-<h1>Sync log</h1>
+LOG_BODY = """<h1>Sync log</h1>
 <p class="note">Most recent first. Cleared when the app restarts.</p>
-<table><thead><tr><th>Time</th><th>Person</th><th>Source</th><th>Event</th></tr></thead>
-<tbody id="rows"><tr><td colspan="4">loading&hellip;</td></tr></tbody></table>
-<script>
+<div class="tablewrap"><table>
+<thead><tr><th>Time</th><th>Person</th><th>Source</th><th>Event</th></tr></thead>
+<tbody id="rows"><tr><td colspan="4">loading&hellip;</td></tr></tbody>
+</table></div>"""
+
+LOG_SCRIPT = """<script>
 async function refreshLog(){
   try {
     const r = await fetch('/api/log.json', {cache:'no-store'});
@@ -139,7 +122,7 @@ async function refreshLog(){
 }
 refreshLog();
 setInterval(refreshLog, 15000);
-</script></body></html>"""
+</script>"""
 
 
 DASHBOARD_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -475,13 +458,20 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         if "Cache-Control" not in (extra or {}):
             self.send_header("Cache-Control", "no-store")
-        if getattr(self, "_grant_cookie", False):
+        cookie = getattr(self, "_cookie_value", None)
+        if cookie is None and getattr(self, "_grant_cookie", False):
+            cookie = self.server.password
+        if cookie:
+            # After a password change this has to carry the NEW one, or the
+            # browser is locked out the instant the process restarts — on a
+            # page the user has already navigated away from.
             self.send_header(
                 "Set-Cookie",
-                f"sugarcube_key={self.server.password}; Path=/;"
+                f"sugarcube_key={cookie}; Path=/;"
                 " Max-Age=604800; SameSite=Lax",
             )
             self._grant_cookie = False
+            self._cookie_value = None
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -525,9 +515,15 @@ class AdminHandler(BaseHTTPRequestHandler):
         elif path == "/settings":
             self._send(self._render_page().encode(), "text/html; charset=utf-8")
         elif path == "/log":
-            page = (LOG_HTML.replace("__THEME__", THEME_SCRIPT)
-                    .replace("__STYLE__", PAGE_STYLE).replace("__NAV__", NAV_HTML))
+            page = ui.page("SugarCube sync log", LOG_BODY, nav=True,
+                           script=LOG_SCRIPT)
             self._send(page.encode(), "text/html; charset=utf-8")
+        elif path == "/api/wifi.json":
+            self._send(json.dumps({
+                "scanning": network.scan_in_progress(),
+                "networks": network.cached_networks(),
+                "age": network.scan_age_seconds(),
+            }).encode(), "application/json")
         elif path == "/api/log.json":
             self._send(
                 json.dumps({"entries": synclog.recent()}).encode(),
@@ -556,7 +552,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             else:
                 self._send(b"not found", "text/plain", 404)
         else:
-            self._send(b"not found", "text/plain", 404)
+            self._send(ui.page("Not found", "<h1>Not found</h1>"
+                               '<p><a href="/settings">Back to settings</a></p>'
+                               ).encode(), "text/html; charset=utf-8", 404)
 
     def _dashboard_data(self) -> dict:
         import time
@@ -608,152 +606,245 @@ class AdminHandler(BaseHTTPRequestHandler):
             },
             "users": users,
         }
+    SOURCE_CARDS = (
+        ("push", "Trio, or another uploader",
+         "The pump app sends readings to this device"),
+        ("tidepool", "twiist",
+         "Pulled from the wearer's Tidepool account"),
+        ("nightscout", "A Nightscout site",
+         "Pulled from an existing cloud Nightscout"),
+    )
 
     def _user_fieldset(self, i, user: dict, status: str, defaults: dict) -> str:
-        e = html.escape
         source = user.get("source") or {}
         stype = source.get("type") or "push"
-        selected = lambda kind: "selected" if stype == kind else ""
-        ns_key = source.get("api_secret") or source.get("token") or ""
+        control = f"src{i}"
         th = user.get("thresholds") or {}
-        th_val = lambda k: e(str(th[k])) if th.get(k) else ""
-        legend = e(user.get("name") or "New person")
+        th_val = lambda key: str(th[key]) if th.get(key) else ""
+
+        # The port and the push secret belong to the push source and to
+        # nothing else — someone on twiist was being asked for a "Port
+        # (Nightscout API)" they will never use. They stay in the form
+        # (hidden inputs still submit, so the port round-trips) but they
+        # are only *shown* for the source that needs them.
+        # Built by hand rather than via admin_url(): the "add a person"
+        # template carries __PORT__ here, which the browser substitutes.
+        push_url = f"http://{self._lan_ip()}:{user.get('port', '')}"
+        push = (
+            ui.row("Port", ui.text_input(f"u{i}_port", user.get("port", ""),
+                                         kind="number",
+                                         input_id=f"u{i}_port"),
+                   for_id=f"u{i}_port",
+                   hint="The uploader connects to this port on this device.")
+            + ui.row("URL for the uploader",
+                     ui.copy_input(f"u{i}_url", push_url,
+                                   input_id=f"u{i}_url"))
+            + ui.row("API secret",
+                     ui.copy_input(f"u{i}_secret", user.get("api_secret", ""),
+                                   input_id=f"u{i}_secret"),
+                     for_id=f"u{i}_secret",
+                     hint="Enter both in Trio under Settings &rarr; Services"
+                          " &rarr; Nightscout.")
+        )
+        tidepool = (
+            ui.row("Tidepool email",
+                   ui.text_input(f"u{i}_tp_email", source.get("email", "")
+                                 if stype == "tidepool" else "",
+                                 kind="email", input_id=f"u{i}_tp_email",
+                                 extra='autocapitalize="none" autocorrect="off"'
+                                       ' spellcheck="false"'),
+                   for_id=f"u{i}_tp_email")
+            # Stored credentials are never rendered back into the page:
+            # blank means "keep what is saved".
+            + ui.row("Tidepool password",
+                     ui.password_input(f"u{i}_tp_password", "",
+                                       placeholder=self._secret_placeholder(
+                                           stype == "tidepool",
+                                           source.get("password")),
+                                       input_id=f"u{i}_tp_password"),
+                     for_id=f"u{i}_tp_password")
+        )
+        ns_key = source.get("api_secret") or source.get("token") or ""
+        nightscout = (
+            ui.row("Nightscout address",
+                   ui.text_input(f"u{i}_ns_url", source.get("url", "")
+                                 if stype == "nightscout" else "",
+                                 kind="url", placeholder="mysite.example.com",
+                                 input_id=f"u{i}_ns_url",
+                                 extra='autocapitalize="none" autocorrect="off"'
+                                       ' spellcheck="false"'),
+                   for_id=f"u{i}_ns_url")
+            + ui.row("API secret or token",
+                     ui.password_input(f"u{i}_ns_key", "",
+                                       placeholder=self._secret_placeholder(
+                                           stype == "nightscout", ns_key),
+                                       input_id=f"u{i}_ns_key"),
+                     for_id=f"u{i}_ns_key",
+                     hint="Either works — SugarCube works out which.")
+        )
+        pull_extra = (
+            ui.row("Check every", ui.text_input(
+                f"u{i}_poll", source.get("poll_seconds", 60), kind="number",
+                input_id=f"u{i}_poll"), for_id=f"u{i}_poll", hint="seconds")
+            + '<button type="button" class="test secondary" data-i="{}"'
+              ' data-needs-js hidden>Test connection</button>'.format(i)
+            + f'<div class="banner" id="testresult{i}" hidden></div>'
+        )
         return f"""
-<fieldset class="person" data-i="{i}" id="fs{i}"><legend>{legend}</legend>
+<fieldset class="person" data-i="{i}" id="fs{i}">
+  <legend>{ui.esc(user.get("name") or "New person")}</legend>
   <input type="hidden" name="u{i}_remove" value="">
-  <div class="status">{status}</div>
-  <div class="row"><label>Name</label><input name="u{i}_name" value="{e(user.get('name', ''))}"></div>
-  <div class="row"><label>Port (Nightscout API)</label><input class="short" name="u{i}_port" value="{user.get('port', '')}"></div>
-  <div class="row"><label>API secret</label><input name="u{i}_secret" value="{e(user.get('api_secret', ''))}" placeholder="(blank = generate)"></div>
-  <div class="row"><label>Low / High</label>
-    <input class="short" name="u{i}_th_low" value="{th_val('low')}" placeholder="{defaults['low']:g}">
-    <input class="short" name="u{i}_th_high" value="{th_val('high')}" placeholder="{defaults['high']:g}"></div>
-  <div class="row"><label>Urgent low / high</label>
-    <input class="short" name="u{i}_th_urgent_low" value="{th_val('urgent_low')}" placeholder="{defaults['urgent_low']:g}">
-    <input class="short" name="u{i}_th_urgent_high" value="{th_val('urgent_high')}" placeholder="{defaults['urgent_high']:g}"></div>
-  <div class="row"><label>Data source</label>
-    <select name="u{i}_source" class="srcsel" data-i="{i}">
-      <option value="push" {selected('push')}>Push (Trio / Nightscout upload)</option>
-      <option value="tidepool" {selected('tidepool')}>Pull from Tidepool (twiist)</option>
-      <option value="nightscout" {selected('nightscout')}>Pull from a Nightscout site</option>
-    </select></div>
-  <div class="srcgrp" data-i="{i}" data-kind="tidepool">
-    <div class="row"><label>Tidepool email</label><input name="u{i}_tp_email" value="{e(source.get('email', ''))}"></div>
-    <div class="row"><label>Tidepool password</label><input type="password" name="u{i}_tp_password" value="{e(source.get('password', ''))}"></div>
-  </div>
-  <div class="srcgrp" data-i="{i}" data-kind="nightscout">
-    <div class="row"><label>Nightscout URL</label><input name="u{i}_ns_url" value="{e(source.get('url', ''))}" placeholder="https://mysite.example.com"></div>
-    <div class="row"><label>API secret or token</label><input type="password" name="u{i}_ns_key" value="{e(ns_key if stype == 'nightscout' else '')}"></div>
-  </div>
-  <div class="srcgrp" data-i="{i}" data-kind="tidepool nightscout">
-    <div class="row"><label>Poll every (seconds)</label><input class="short" name="u{i}_poll" value="{source.get('poll_seconds', 60)}"></div>
-  </div>
-  <button type="button" class="minor danger" onclick="removePerson('{i}')">Remove</button>
+  <input type="hidden" name="u{i}_prev_name" value="{ui.esc(user.get("name", ""))}">
+  <p class="note">{ui.esc(status)}</p>
+  {ui.row("Name", ui.text_input(f"u{i}_name", user.get("name", ""),
+                                input_id=f"u{i}_name"), for_id=f"u{i}_name")}
+  <label class="lbl">Where the data comes from</label>
+  {ui.choice_cards(f"u{i}_source", self.SOURCE_CARDS, stype, controls=control)}
+  {ui.group(control, "push", push, current=stype)}
+  {ui.group(control, "tidepool", tidepool, current=stype)}
+  {ui.group(control, "nightscout", nightscout, current=stype)}
+  {ui.group(control, ["tidepool", "nightscout"], pull_extra, current=stype)}
+  {ui.row("Low / high", f'<div class="pair">'
+          + ui.text_input(f"u{i}_th_low", th_val("low"), kind="number",
+                          placeholder=f"{defaults['low']:g}")
+          + ui.text_input(f"u{i}_th_high", th_val("high"), kind="number",
+                          placeholder=f"{defaults['high']:g}") + "</div>")}
+  {ui.row("Urgent low / high", f'<div class="pair">'
+          + ui.text_input(f"u{i}_th_urgent_low", th_val("urgent_low"),
+                          kind="number",
+                          placeholder=f"{defaults['urgent_low']:g}")
+          + ui.text_input(f"u{i}_th_urgent_high", th_val("urgent_high"),
+                          kind="number",
+                          placeholder=f"{defaults['urgent_high']:g}")
+          + "</div>", hint="Blank uses the defaults below.")}
+  <button type="button" class="danger" onclick="removePerson('{i}')">Remove this person</button>
 </fieldset>"""
+
+    def _lan_ip(self) -> str:
+        """One lookup per page render, not one per person."""
+        if not getattr(self, "_lan_ip_cache", ""):
+            self._lan_ip_cache = network.get_lan_ip()
+        return self._lan_ip_cache
+
+    @staticmethod
+    def _secret_placeholder(is_current: bool, stored) -> str:
+        if is_current and stored:
+            return "(unchanged — type to replace)"
+        return ""
 
     def _wifi_section(self) -> str:
         if not network.available():
             return ""
-        e = html.escape
-        # Everything here reads cached state — scanning inline would block
-        # the page for the full nmcli timeout while the hotspot is up.
         hotspot = network.hotspot_active()
-        status = ("setup hotspot active — choose your home network below"
-                  if hotspot else f"connectivity: {network.connectivity()}")
-
         wifi = network.state()
-        last = ""
+        notices = []
+        if hotspot:
+            notices.append(ui.banner(
+                "info", "Setup hotspot is on — pick your home network below."))
         if wifi.get("state") == "failed":
-            last = (f'<div class="status err">Last attempt: could not join '
-                    f'<b>{e(str(wifi.get("ssid", "")))}</b> — '
-                    f'{e(str(wifi.get("error", "unknown error")))}</div>')
+            notices.append(ui.banner(
+                "err", f"Could not join <b>{ui.esc(wifi.get('ssid', ''))}</b> — "
+                       f"{ui.esc(wifi.get('error', 'unknown error'))}"))
             if wifi.get("detail"):
-                last += (f'<details><summary class="note">technical detail'
-                         f'</summary><pre class="detail">'
-                         f'{e(str(wifi["detail"]))}</pre></details>')
+                notices.append("<details><summary>Technical detail</summary>"
+                               f"<pre class=\"detail\">{ui.esc(wifi['detail'])}"
+                               "</pre></details>")
         elif wifi.get("state") == "joining":
-            last = ('<div class="status">Attempting to join '
-                    f'<b>{e(str(wifi.get("ssid", "")))}</b>&hellip;</div>')
+            notices.append(ui.banner(
+                "info", f"Joining <b>{ui.esc(wifi.get('ssid', ''))}</b>&hellip;"))
         elif wifi.get("state") == "ok" and not hotspot:
-            last = ('<div class="status">Connected to '
-                    f'<b>{e(str(wifi.get("ssid", "")))}</b></div>')
+            notices.append(ui.banner(
+                "ok", f"Connected to <b>{ui.esc(wifi.get('ssid', ''))}</b>"))
         if wifi.get("reboot_error"):
-            last += ('<div class="status err">Could not reboot automatically: '
-                     f'{e(str(wifi["reboot_error"]))} — power-cycle the device '
-                     'to finish.</div>')
+            notices.append(ui.banner(
+                "err", "Could not restart automatically: "
+                       f"{ui.esc(wifi['reboot_error'])} — power-cycle the "
+                       "device to finish."))
         if wifi.get("hotspot_error"):
-            last += ('<div class="status err">Setup hotspot could not start: '
-                     f'{e(str(wifi["hotspot_error"]))}</div>')
+            notices.append(ui.banner(
+                "err", "Setup hotspot could not start: "
+                       f"{ui.esc(wifi['hotspot_error'])}"))
 
         networks = network.cached_networks()
         age = network.scan_age_seconds()
-        if networks:
+        if network.scan_in_progress():
+            hint = "Scanning&hellip;"
+        elif networks:
             when = ("just now" if age is None or age < 90
                     else f"{int(age // 60)} min ago")
-            hint = f"{len(networks)} networks found, scanned {when}"
+            hint = f"{len(networks)} networks found, scanned {when}."
         else:
-            hint = ("no scan results yet — type your network's name below"
-                    if hotspot else "no networks found; try Rescan")
-        options = "".join(
-            f'<option value="{e(n["ssid"])}">'
-            f'{e(n["ssid"])} &mdash; {n["signal"]}%'
-            f'{"" if n["secured"] else ", open"}</option>'
-            for n in networks
+            hint = ("No scan results — use “Other network” and type the name."
+                    if hotspot else "No networks found; try Rescan.")
+        rescan = (
+            '<form method="POST" action="/wifi/rescan">'
+            '<button type="submit" class="quiet">Rescan</button></form>'
+            if not hotspot else
+            '<p class="note">The radio cannot scan while the setup hotspot is '
+            'running, so this is the list from just before it started.</p>'
         )
-        # A datalist-backed text field: pick a scanned network *or* type
-        # one in. An empty scan (the norm in AP mode) is no longer a dead
-        # end, and hidden networks work too.
         return f"""<h2>Wi-Fi</h2>
-<form method="POST" action="/wifi"><fieldset><legend>Network</legend>
-  <div class="status">{status}</div>
-  {last}
-  <div class="row"><label>Network name</label>
-    <input name="wifi_ssid" list="ssids" autocapitalize="none"
-           autocorrect="off" spellcheck="false" required
-           placeholder="pick or type a name"></div>
-  <datalist id="ssids">{options}</datalist>
-  <div class="row"><label>Password</label>
-    <input type="password" name="wifi_password" autocapitalize="none"
-           autocorrect="off" spellcheck="false"></div>
-  <div class="row"><label>Hidden network</label>
-    <input type="checkbox" name="wifi_hidden" value="1" style="width:auto"></div>
+{''.join(notices)}
+<form method="POST" action="/wifi">
+  {ui.network_picker(networks, selected=wifi.get("ssid", ""))}
+  {ui.row("Password", ui.password_input("wifi_password", "",
+                                        input_id="wifi_password"),
+          inline=False, for_id="wifi_password")}
   <p class="note">{hint}</p>
-  <button type="submit">Join network</button>
-</fieldset></form>
-<form method="POST" action="/wifi/rescan">
-  <button type="submit" class="minor">Rescan for networks</button>
-  <span class="note">only works when the setup hotspot is off</span>
+  <div class="actions"><button type="submit">Join network</button></div>
+</form>
+{rescan}"""
+
+    def _screen_section(self) -> str:
+        """Live screen, plus a way to switch its theme from here.
+
+        The sun/moon on the device is the usual way; this is the fallback
+        for a panel whose touch controller we cannot read.
+        """
+        theme = self.server.store.get_params("__display").get("theme", "dark")
+        other, label = (("light", "Switch to Day")
+                        if theme == "dark" else ("dark", "Switch to Night"))
+        return f"""<h2>The screen</h2>
+<img class="screen" id="screen" src="/screen.png" alt="what the display shows"
+     onerror="this.hidden=true">
+<form method="POST" action="/display/theme">
+  <input type="hidden" name="theme" value="{other}">
+  <div class="actions">
+    <button type="submit" class="secondary">{label}</button>
+    <span class="note">Currently {"night" if theme == "dark" else "day"}.
+      You can also tap the sun or moon on the device.</span>
+  </div>
 </form>"""
 
     def _updates_section(self) -> str:
-        e = html.escape
-        st = self.server.store.get_params(updater.PARAMS_KEY)
+        state = self.server.store.get_params(updater.PARAMS_KEY)
         current = updater.current_version()
-        if st.get("checked_at"):
+        if state.get("checked_at"):
             import time
-            checked = time.strftime("%H:%M", time.localtime(st["checked_at"] / 1000))
-            if st.get("error"):
-                status = f"last check at {checked} failed: {e(str(st['error']))}"
-            elif st.get("available"):
-                status = (f'version <b>{e(st.get("latest", "?"))}</b> is '
-                          f'available (checked {checked}) — '
-                          f'<a href="{e(st.get("url", ""))}">release notes</a>')
+            checked = time.strftime("%H:%M",
+                                    time.localtime(state["checked_at"] / 1000))
+            if state.get("error"):
+                status = f"last check at {checked} failed: {ui.esc(state['error'])}"
+            elif state.get("available"):
+                status = (f"version <b>{ui.esc(state.get('latest', '?'))}</b> is "
+                          f"available (checked {checked}) — "
+                          f"<a href=\"{ui.esc(state.get('url', ''))}\">release notes</a>")
             else:
                 status = f"up to date (checked {checked})"
         else:
             status = "not checked yet — checks run every 6 hours"
         install = ""
-        if st.get("available"):
+        if state.get("available"):
             install = f"""
-  <form method="POST" action="/update/apply" style="display:inline">
-    <input type="hidden" name="tag" value="{e(st.get('latest_tag', ''))}">
-    <button type="submit">Install {e(st.get('latest', ''))}</button>
+  <form method="POST" action="/update/apply">
+    <input type="hidden" name="tag" value="{ui.esc(state.get('latest_tag', ''))}">
+    <button type="submit">Install {ui.esc(state.get('latest', ''))}</button>
   </form>"""
         return f"""<h2>Updates</h2>
 <fieldset><legend>Software</legend>
-  <div class="status">SugarCube {e(current)} &mdash; {status}</div>
-  <form method="POST" action="/update/check" style="display:inline">
-    <button type="submit" class="minor">Check now</button>
+  <p>SugarCube {ui.esc(current)} — {status}</p>
+  <form method="POST" action="/update/check">
+    <button type="submit" class="quiet">Check now</button>
   </form>{install}
   <p class="note">Updates install from GitHub releases and restart the
   display (about a minute). A release marked <code>[force-update]</code>
@@ -773,64 +864,71 @@ class AdminHandler(BaseHTTPRequestHandler):
         fieldsets = []
         for i, user in enumerate(raw.get("users", [])):
             snap = self.server.store.snapshot(user["name"])
+            source = user.get("source") or {}
             if snap.sgv_date:
                 mins = int((now_ms - snap.sgv_date) / 60000)
                 status = f"last reading {snap.sgv:.0f} mg/dL, {mins}m ago"
+            elif source.get("type") and not self._source_ready(source):
+                status = ("source chosen but not running — its credentials "
+                          "are missing")
             else:
                 status = "no data yet"
             fieldsets.append(self._user_fieldset(i, user, status, defaults))
         template = self._user_fieldset(
             "__I__", {"port": "__PORT__"}, "not saved yet", defaults
         )
-        return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SugarCube settings</title>{THEME_SCRIPT}<style>{PAGE_STYLE}</style></head><body>
-{NAV_HTML}
-<h1>Settings</h1>
-<h2>Live display</h2>
-<img class="screen" id="screen" src="/screen.png" alt="live display">
+        body = f"""<h1>Settings</h1>
+<p class="lede"><a href="/setup">Run guided setup</a> for a step-by-step
+version of this page.</p>
+{self._screen_section()}
 {self._wifi_section()}
 {self._updates_section()}
 <form method="POST" action="/save">
 <h2>People</h2>
-<div id="people">
-{''.join(fieldsets)}
-</div>
-<button type="button" class="minor" onclick="addPerson()">+ Add person</button>
+<div id="people">{''.join(fieldsets)}</div>
+<button type="button" class="secondary" onclick="addPerson()">Add a person</button>
 <template id="person-template">{template}</template>
 <h2>Display defaults</h2>
-<fieldset><legend>Thresholds (mg/dL) — used unless a person overrides them</legend>
-  <div class="row"><label>Low</label><input class="short" name="low" value="{d('low', 70)}"></div>
-  <div class="row"><label>High</label><input class="short" name="high" value="{d('high', 180)}"></div>
-  <div class="row"><label>Urgent low</label><input class="short" name="urgent_low" value="{d('urgent_low', 55)}"></div>
-  <div class="row"><label>Urgent high</label><input class="short" name="urgent_high" value="{d('urgent_high', 250)}"></div>
-  <div class="row"><label>Stale after (minutes)</label><input class="short" name="stale_minutes" value="{d('stale_minutes', 12)}"></div>
+<fieldset><legend>Used unless a person overrides them (mg/dL)</legend>
+  {ui.row("Low", ui.text_input("low", d('low', 70), kind="number"))}
+  {ui.row("High", ui.text_input("high", d('high', 180), kind="number"))}
+  {ui.row("Urgent low", ui.text_input("urgent_low", d('urgent_low', 55), kind="number"))}
+  {ui.row("Urgent high", ui.text_input("urgent_high", d('urgent_high', 250), kind="number"))}
+  {ui.row("Stale after", ui.text_input("stale_minutes", d('stale_minutes', 12),
+                                       kind="number"), hint="minutes")}
 </fieldset>
 <h2>Admin</h2>
 <fieldset><legend>Web access</legend>
-  <div class="row"><label>New admin password</label>
-    <input type="password" name="admin_password" value="" placeholder="(leave blank to keep current)"></div>
-  <p class="note">Protects this web interface and the API (username: admin).
-  After saving with a new password, your browser will ask you to log in again.</p>
+  {ui.row("New password", ui.password_input("admin_password", "",
+          placeholder="(leave blank to keep the current one)",
+          input_id="admin_password"), for_id="admin_password",
+          hint="Protects this page and the API. The username is"
+               " <b>admin</b>. You will be asked to log in again.")}
 </fieldset>
-<button type="submit">Save &amp; Apply</button>
-<p class="note">Saving restarts the display (takes ~5 seconds). Blank API secrets
-are generated automatically; blank per-person thresholds inherit the defaults.</p>
-</form>
-{SETTINGS_SCRIPT}</body></html>"""
+<div class="actions stick">
+  <button type="submit">Save &amp; apply</button>
+  <span class="note">Restarts the display, about 5 seconds.</span>
+</div>
+</form>"""
+        return ui.page("SugarCube settings", body, nav=True,
+                       script=SETTINGS_SCRIPT)
+
+    @staticmethod
+    def _source_ready(source: dict) -> bool:
+        """Same check start_pollers applies, so the page can say so."""
+        kind = source.get("type")
+        if kind == "tidepool":
+            return bool(source.get("email") and source.get("password"))
+        if kind == "nightscout":
+            return bool(source.get("url"))
+        return True
 
     @staticmethod
     def _updating_page(version: str) -> bytes:
-        return (
-            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-            "<meta http-equiv='refresh' content='45;url=/settings'>"
-            f"<style>{PAGE_STYLE}</style></head><body>"
-            f"<h1>Installing {html.escape(version)}&hellip;</h1>"
-            "<p>The display restarts on the new version — this page"
-            " reloads in about a minute.</p></body></html>"
-        ).encode()
-
-    # ---- POST ----
+        return ui.page(
+            "Installing", f"<h1>Installing {ui.esc(version)}&hellip;</h1>"
+            "<p>The display restarts on the new version — this page reloads"
+            " in about a minute.</p>", refresh="45;url=/settings").encode()
 
     def do_POST(self):
         if not self._authorized():
@@ -838,24 +936,37 @@ are generated automatically; blank per-person thresholds inherit the defaults.</
             return
         post_path = self.path.split("?")[0]
         length = int(self.headers.get("Content-Length") or 0)
+        raw_body = self.rfile.read(length) if length else b""
+        if post_path == "/api/source/test":
+            self._test_source(raw_body)
+            return
         form = {
             k: v[0]
-            for k, v in parse_qs(self.rfile.read(length).decode()).items()
+            for k, v in parse_qs(raw_body.decode()).items()
         }
+        if post_path == "/display/theme":
+            theme = form.get("theme")
+            if theme in ("dark", "light"):
+                # The display picks this up on its next frame.
+                self.server.store.set_params("__display", {"theme": theme})
+            self._send(b"", "text/html", 303, {"Location": "/settings"})
+            return
         if post_path == "/wifi":
-            ssid = form.get("wifi_ssid", "").strip()
+            # A typed name always wins: it is only filled in when the
+            # person chose "Other network".
+            ssid = (form.get("wifi_other_ssid", "").strip()
+                    or form.get("wifi_ssid", "").strip())
+            if ssid == "__other__":
+                ssid = ""
             password = form.get("wifi_password", "")
             hidden = bool(form.get("wifi_hidden"))
             if not ssid:
-                body = (
-                    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-                    f"<style>{PAGE_STYLE}</style></head><body>"
-                    "<h1>No network name</h1><p>Pick a network from the list or"
-                    " type its name, then try again.</p>"
-                    '<p><a href="/settings">Back to settings</a></p>'
-                    "</body></html>"
-                ).encode()
-                self._send(body, "text/html; charset=utf-8", 400)
+                self._send(ui.page(
+                    "No network chosen",
+                    "<h1>No network chosen</h1><p>Tap a network in the list, "
+                    "or choose <b>Other network</b> and type its name.</p>"
+                    '<p><a href="/settings">Back to settings</a></p>',
+                ).encode(), "text/html; charset=utf-8", 400)
                 return
             hotspot_pw = self.server.store.get_params("__network").get(
                 "hotspot_password", "")
@@ -879,35 +990,16 @@ are generated automatically; blank per-person thresholds inherit the defaults.</
                     network.start_hotspot(hotspot_pw, prescan=False)
 
             threading.Thread(target=join_then_reboot, daemon=True).start()
-            body = (
-                "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-                "<meta name='viewport' content='width=device-width,"
-                " initial-scale=1'>"
-                f"<style>{PAGE_STYLE}</style></head><body>"
-                f"<h1>Joining {html.escape(ssid)}&hellip;</h1>"
-                "<p>This takes up to a minute. The setup hotspot drops while"
-                " the device tries to connect, so your phone will lose this"
-                " page — that is expected.</p>"
-                "<p><b>If it worked:</b> the device restarts and its screen"
-                " shows the new address. Put your phone back on your home"
-                " Wi-Fi and open that address.</p>"
-                "<p><b>If it failed:</b> the setup hotspot comes back within"
-                " a minute or two. Rejoin it, reopen the settings page, and"
-                " the reason for the failure is shown at the top of the Wi-Fi"
-                " section. The device's screen shows it too.</p>"
-                "</body></html>"
-            ).encode()
-            self._send(body, "text/html; charset=utf-8")
+            self._send(self._joining_page(ssid), "text/html; charset=utf-8")
             return
         if post_path == "/wifi/rescan":
             # Only meaningful with the radio in station mode; in AP mode
             # the scan cache from before the hotspot came up is all there is.
-            threading.Thread(
-                target=network.refresh_scan, kwargs={"force": True}, daemon=True
-            ).start()
-            import time
-            time.sleep(4)  # usually enough to have fresh results to render
-            self._send(b"", "text/html", 303, {"Location": "/settings"})
+            # The scan runs in the background and the page asks when it is
+            # done, rather than the handler sleeping on it.
+            network.refresh_scan_async(force=True)
+            self._send(b"", "text/html", 303,
+                       {"Location": "/settings?scanning=1"})
             return
         if post_path == "/update/check":
             state = updater.check_and_maybe_force(self.server.store)
@@ -929,9 +1021,11 @@ are generated automatically; blank per-person thresholds inherit the defaults.</
                 self._send(self._updating_page(detail),
                            "text/html; charset=utf-8")
             else:
-                body = (f"<h1>Update failed</h1><p>{html.escape(detail)}</p>"
-                        '<p><a href="/settings">Back</a></p>').encode()
-                self._send(body, "text/html; charset=utf-8", 500)
+                self._send(ui.page(
+                    "Update failed",
+                    f"<h1>Update failed</h1><p>{ui.esc(detail)}</p>"
+                    '<p><a href="/settings">Back to settings</a></p>',
+                ).encode(), "text/html; charset=utf-8", 500)
             return
         if post_path != "/save":
             self._send(b"not found", "text/plain", 404)
@@ -939,27 +1033,69 @@ are generated automatically; blank per-person thresholds inherit the defaults.</
         try:
             self._save(form)
         except Exception as exc:
-            body = (
-                f"<h1>Invalid configuration</h1><p>{html.escape(str(exc))}</p>"
-                '<p><a href="/">Back</a></p>'
-            ).encode()
-            self._send(body, "text/html; charset=utf-8", 400)
+            self._send(ui.page(
+                "That did not save",
+                f"<h1>That did not save</h1><p>{ui.esc(exc)}</p>"
+                '<p><a href="/settings">Back to settings</a></p>',
+            ).encode(), "text/html; charset=utf-8", 400)
             return
-        body = (
-            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-            "<meta http-equiv='refresh' content='8;url=/settings'>"
-            f"<style>{PAGE_STYLE}</style></head><body>"
-            "<h1>Saved</h1><p>Restarting the display&hellip; "
-            "this page reloads in a few seconds.</p></body></html>"
-        ).encode()
-        self._send(body, "text/html; charset=utf-8")
-        # Exit shortly after the response flushes; systemd restarts us with
-        # the new config (Restart=always).
+        self._send(ui.page(
+            "Saved", "<h1>Saved</h1><p>Restarting the display&hellip; this "
+            "page reloads in a few seconds.</p>", refresh="8;url=/settings",
+        ).encode(), "text/html; charset=utf-8")
         log.info("Config saved from web admin; restarting")
-        threading.Timer(0.8, lambda: os._exit(0)).start()
+        restart_soon()
+
+    @staticmethod
+    def _joining_page(ssid: str) -> bytes:
+        return ui.page("Joining " + ssid, f"""
+<h1>Joining {ui.esc(ssid)}&hellip;</h1>
+<p>This takes up to a minute. The setup hotspot drops while the device
+tries to connect, so your phone will lose this page — that is expected.</p>
+<h2>If it worked</h2>
+<p>The device restarts and its screen shows its new address. Put your phone
+back on your home Wi-Fi, then open that address.</p>
+<h2>If it did not</h2>
+<p>The setup hotspot comes back within a minute or two. Rejoin it and the
+reason is shown at the top of the Wi-Fi section — the device's own screen
+shows it too.</p>""").encode()
+
+    def _test_source(self, raw_body: bytes) -> None:
+        """Check one person's credentials without saving anything."""
+        try:
+            body = json.loads(raw_body or b"{}")
+        except ValueError:
+            self._send(b'{"ok": false, "message": "bad request"}',
+                       "application/json", 400)
+            return
+        source = {"type": body.get("type"),
+                  "email": (body.get("email") or "").strip(),
+                  "password": body.get("password") or "",
+                  "url": (body.get("url") or "").strip(),
+                  "api_secret": (body.get("api_secret") or "").strip()}
+        # Blank means "unchanged" in the form, so fall back to what is
+        # saved — otherwise testing an untouched person always fails.
+        stored = self._stored_source(body.get("index"))
+        if stored.get("type") == source["type"]:
+            for field in ("email", "password", "url", "api_secret"):
+                if not source[field]:
+                    source[field] = stored.get(field) or (
+                        stored.get("token") if field == "api_secret" else "")
+        result = verify.source(source)
+        self._send(json.dumps(result.as_dict()).encode(), "application/json")
+
+    def _stored_source(self, index) -> dict:
+        try:
+            raw = json.loads(open(self.server.config_path).read())
+            return raw["users"][int(index)].get("source") or {}
+        except (OSError, ValueError, KeyError, IndexError, TypeError):
+            return {}
 
     def _save(self, form: dict) -> None:
         raw = json.loads(open(self.server.config_path).read())
+        # Keyed by the name the form was rendered with, so a blank
+        # credential field can inherit the saved value.
+        previous = {u.get("name"): u for u in raw.get("users", [])}
         users = []
         i = 0
         while f"u{i}_name" in form:
@@ -970,11 +1106,19 @@ are generated automatically; blank per-person thresholds inherit the defaults.</
             name = form[f"u{idx}_name"].strip()
             if not name:
                 raise ValueError(f"person {idx + 1} needs a name")
+            prior = previous.get(form.get(f"u{idx}_prev_name", "").strip()) or {}
+            prior_source = prior.get("source") or {}
+            stype = form.get(f"u{idx}_source")
+            # The port is only shown for push people; for everyone else it
+            # arrives from a hidden input, or not at all on a brand new
+            # person. assign_ports() fills the gaps below.
+            port = (form.get(f"u{idx}_port") or "").strip()
             user = {
                 "name": name,
-                "port": int(form[f"u{idx}_port"]),
-                "api_secret": form.get(f"u{idx}_secret", "").strip()
-                              or secrets_mod.token_hex(12),
+                "port": int(port) if port.isdigit() else prior.get("port"),
+                "api_secret": (form.get(f"u{idx}_secret", "").strip()
+                               or prior.get("api_secret")
+                               or secrets_mod.token_hex(12)),
             }
             thresholds = {}
             for key in ("low", "high", "urgent_low", "urgent_high"):
@@ -983,13 +1127,17 @@ are generated automatically; blank per-person thresholds inherit the defaults.</
                     thresholds[key] = float(value)
             if thresholds:
                 user["thresholds"] = thresholds
-            stype = form.get(f"u{idx}_source")
             poll = int(form.get(f"u{idx}_poll", 60) or 60)
             if stype == "tidepool":
                 user["source"] = {
                     "type": "tidepool",
                     "email": form.get(f"u{idx}_tp_email", "").strip(),
-                    "password": form.get(f"u{idx}_tp_password", ""),
+                    # Blank means "keep what is saved": stored secrets are
+                    # never rendered back into the page, so an untouched
+                    # field must not wipe them.
+                    "password": (form.get(f"u{idx}_tp_password", "")
+                                 or self._kept_secret(prior_source, "tidepool",
+                                                      "password")),
                     "poll_seconds": poll,
                 }
             elif stype == "nightscout":
@@ -1001,12 +1149,18 @@ are generated automatically; blank per-person thresholds inherit the defaults.</
                 user["source"] = {
                     "type": "nightscout",
                     "url": url,
-                    "api_secret": form.get(f"u{idx}_ns_key", "").strip(),
+                    "api_secret": (form.get(f"u{idx}_ns_key", "").strip()
+                                   or self._kept_secret(prior_source,
+                                                        "nightscout",
+                                                        "api_secret", "token")),
                     "poll_seconds": poll,
                 }
             users.append(user)
         if not users:
             raise ValueError("at least one person is required")
+        # Ports stay unique even though most people never see one; a
+        # duplicate would make config.load() reject the file at boot.
+        config_mod.assign_ports(users, reserved={self.server.config.admin_port})
         raw["users"] = users
         display = raw.setdefault("display", {})
         for key in ("low", "high", "urgent_low", "urgent_high", "stale_minutes"):
@@ -1016,15 +1170,31 @@ are generated automatically; blank per-person thresholds inherit the defaults.</
         new_admin_password = form.get("admin_password", "").strip()
         if new_admin_password:
             if len(new_admin_password) < 6:
-                raise ValueError("admin password must be at least 6 characters")
+                raise ValueError("the admin password must be at least 6 characters")
             raw.setdefault("admin", {})["password"] = new_admin_password
+            # Otherwise this browser's cookie stops matching the moment the
+            # new process starts, and the page it was just on is gone.
+            self._cookie_value = new_admin_password
 
-        tmp = self.server.config_path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(raw, f, indent=2)
-            f.write("\n")
-        config_mod.load(tmp)  # validate before replacing the live file
-        os.replace(tmp, self.server.config_path)
+        config_mod.write_atomic(raw, self.server.config_path)
+
+    @staticmethod
+    def _kept_secret(prior_source: dict, kind: str, *keys: str) -> str:
+        if prior_source.get("type") != kind:
+            return ""
+        for key in keys:
+            if prior_source.get(key):
+                return prior_source[key]
+        return ""
+
+
+def restart_soon(delay: float = 0.8) -> None:
+    """Exit once the response has flushed; systemd restarts us (Restart=always).
+
+    Config changes take effect by starting over: ports, pollers and the
+    display all read the file once at startup.
+    """
+    threading.Timer(delay, lambda: os._exit(0)).start()
 
 
 def start_admin(config: Config, config_path, store: Store) -> AdminServer | None:

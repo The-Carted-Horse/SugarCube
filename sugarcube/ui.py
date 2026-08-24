@@ -91,11 +91,17 @@ button.quiet { background:none; border-color:var(--line); color:var(--dim);
 button.danger { background:none; border-color:var(--danger); color:var(--danger);
   min-height:38px; padding:.4rem .9rem; font-size:.85rem; }
 button[disabled] { opacity:.55; cursor:default; }
-.actions { position:sticky; bottom:0; z-index:5; display:flex; gap:.6rem;
-  align-items:center; margin-top:1.4rem;
+.actions { display:flex; gap:.6rem .8rem; align-items:center; flex-wrap:wrap;
+  margin-top:1.2rem; }
+/* Only the page's primary action bar follows you down the page; a second
+   sticky bar mid-page reads as a floating button with no context. */
+.actions.stick { position:sticky; bottom:0; z-index:5;
   padding:.9rem 0 calc(.9rem + env(safe-area-inset-bottom));
-  background:linear-gradient(to top, var(--bg) 72%, transparent); }
+  background:var(--bg); box-shadow:0 -12px 16px -12px rgba(0,0,0,.45); }
 .actions .grow { flex:1 1 auto; }
+/* On a phone the note goes above a full-width button rather than
+   squeezing it into whatever is left. */
+.actions .note { flex:1 0 100%; order:-1; margin:0; }
 .actions button[type=submit], .actions .primary { flex:1 1 auto; }
 
 /* ---- password / copy field ---- */
@@ -178,6 +184,7 @@ td.time { white-space:nowrap; color:var(--dim); }
   .row.inline > .note { grid-column:2; }
   .actions button[type=submit], .actions .primary { flex:0 0 auto;
     min-width:11rem; }
+  .actions .note { flex:1 1 auto; order:0; }
 }
 """
 
@@ -274,7 +281,14 @@ SCRIPT = """<script>
     }
   }
 
-  function sync(){ syncCards(); syncGroups(); }
+  // Affordances that only work with JS should not exist without it.
+  function enable(){
+    var b = d.querySelectorAll('button.reveal[hidden], button.copy[hidden],'
+                               + ' [data-needs-js][hidden]');
+    for (var i = 0; i < b.length; i++) b[i].hidden = false;
+  }
+
+  function sync(){ enable(); syncCards(); syncGroups(); }
   d.addEventListener('change', sync);
   d.addEventListener('input', syncGroups);
   sync();
@@ -356,7 +370,7 @@ def password_input(name: str, value: str = "", *, placeholder: str = "",
         f' value="{esc(value)}"{ph} autocapitalize="none" autocorrect="off"'
         f' autocomplete="off" spellcheck="false" {extra}>'
         f'<button type="button" class="reveal" data-reveal="{esc(ident)}"'
-        ' aria-pressed="false">Show</button></div>'
+        ' aria-pressed="false" hidden>Show</button></div>'
     )
 
 
@@ -367,7 +381,7 @@ def copy_input(name: str, value: str, *, input_id: str = "") -> str:
         '<div class="withbtn">'
         f'<input type="text" id="{esc(ident)}" name="{esc(name)}"'
         f' value="{esc(value)}" readonly>'
-        f'<button type="button" class="copy" data-copy="{esc(ident)}">Copy</button>'
+        f'<button type="button" class="copy" data-copy="{esc(ident)}" hidden>Copy</button>'
         "</div>"
     )
 
