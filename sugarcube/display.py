@@ -9,18 +9,24 @@ trend arrow + delta, a FORECAST 2H header row, a 5-hour chart (3h history,
 2h forecast with a confidence cone), and an IOB/COB/CARBS/BOLUS stat row.
 A footer spans the screen with the date/time and the NIGHT/DAY toggle.
 Numerals are Space Grotesk; labels are JetBrains Mono (bundled, OFL).
+
+Taps reach the toggle two ways: SDL events (kmsdrm, or a dev window) and,
+because SDL's dummy driver used by the fbdev path delivers none, the
+evdev reader in ``touch.py``.
 """
 
 import math
 import os
+import queue
 import socket
 import sys
+import threading
 import time
 from dataclasses import dataclass
 
 import pygame
 
-from . import network, predict
+from . import network, predict, touch
 from .config import SCREEN_PNG, Config, admin_url, merged_thresholds
 from .store import Store, UserSnapshot
 
@@ -185,13 +191,26 @@ class Display:
         self._fonts: dict[tuple[str, int], pygame.font.Font] = {}
         saved = store.get_params(THEME_STATE_USER).get("theme", "dark")
         self.pal = THEMES.get(saved, DARK)
-        self._toggle_rect = pygame.Rect(0, 0, 0, 0)
+        self._toggle_rect = self._toggle_rect_for(self._footer_rect())
         self._last_toggle = 0.0
+        self._tap_flash = -99.0        # monotonic time of the last toggle
+        self._taps: queue.SimpleQueue = queue.SimpleQueue()
+        self._wake = threading.Event()  # set by the touch thread to redraw now
+        self._touch: touch.TouchReader | None = None
         self._qr_cache: tuple[str, pygame.Surface | None] | None = None
         self._lan_ip = ("", 0.0)  # (ip, fetched-at monotonic time)
         self._hotspot_pw = store.get_params("__network").get("hotspot_password", "")
         self._hotspot_state = (False, 0.0)  # (active, checked-at monotonic time)
         self._update_state: tuple[dict, float] = ({}, 0.0)
+        # SDL's dummy video driver (forced by the fbdev path) pumps no
+        # events at all, so the panel has to be read directly. kmsdrm
+        # already delivers taps; SUGARCUBE_TOUCH=evdev forces the reader
+        # there too, and toggle_theme() debounces any double delivery.
+        want_touch = os.environ.get("SUGARCUBE_TOUCH", "").lower()
+        if want_touch != "off" and (self.fb is not None or want_touch == "evdev"):
+            reader = touch.TouchReader(dc.width, dc.height, self._on_touch)
+            if reader.start():
+                self._touch = reader
 
     def toggle_theme(self):
         # Touchscreens can deliver a tap as both finger and mouse events;
@@ -200,8 +219,46 @@ class Display:
         if now - self._last_toggle < 0.5:
             return
         self._last_toggle = now
+        self._tap_flash = now
         self.pal = LIGHT if self.pal.name == "dark" else DARK
         self.store.set_params(THEME_STATE_USER, {"theme": self.pal.name})
+
+    def _sync_theme(self) -> None:
+        """Adopt a theme set elsewhere (the web UI writes the same key)."""
+        name = self.store.get_params(THEME_STATE_USER).get("theme")
+        if name in THEMES and name != self.pal.name:
+            self.pal = THEMES[name]
+
+    # ---- taps ----
+
+    def _on_touch(self, x: float, y: float) -> None:
+        """Called from the evdev reader thread; wakes the draw loop."""
+        self._taps.put((x, y))
+        self._wake.set()
+
+    def _handle_tap(self, pos) -> None:
+        if self._toggle_rect.collidepoint(pos):
+            self.toggle_theme()
+
+    def _footer_rect(self) -> pygame.Rect:
+        full_h = self.screen.get_height()
+        return pygame.Rect(0, full_h - max(26, int(full_h * 0.072)),
+                           self.screen.get_width(), max(26, int(full_h * 0.072)))
+
+    def _toggle_rect_for(self, footer: pygame.Rect) -> pygame.Rect:
+        """Touch target for the NIGHT/DAY control.
+
+        Derived from the footer geometry rather than the rendered label:
+        taps are tested before the frame is drawn, so the target must not
+        depend on text metrics measured during the *previous* frame — that
+        is why the first tap after boot used to do nothing.
+        """
+        px = max(11, int(footer.height * 0.30))
+        rect = pygame.Rect(0, 0, max(120, px * 11), max(44, footer.height * 2))
+        rect.midright = (footer.right, footer.centery)
+        if rect.top < 0:
+            rect.top = 0
+        return rect
 
     # ---- type ----
 
@@ -538,6 +595,11 @@ class Display:
         surface = self.screen
         pygame.draw.line(surface, self.pal.line,
                          (rect.left, rect.top), (rect.right, rect.top))
+        if time.monotonic() - self._tap_flash < 0.35:
+            # Momentary highlight so a tap is visibly acknowledged.
+            pygame.draw.rect(surface, self.pal.band,
+                             self._toggle_rect.clip(rect).inflate(-2, -6),
+                             border_radius=8)
         pad = int(surface.get_width() * 0.028)
         px = max(11, int(rect.height * 0.30))
         when = time.strftime("%a %d %b · %H:%M").upper()
@@ -558,7 +620,7 @@ class Display:
         icon_r = max(6, int(rect.height * 0.14))
         icon_c = (rect.right - pad - icon_r, rect.centery)
         mode = "NIGHT" if self.pal.name == "dark" else "DAY"
-        mode_rect = self.label(
+        self.label(
             surface, mode, px, self.pal.dim,
             midright=(icon_c[0] - icon_r - int(px * 0.9), rect.centery),
         )
@@ -579,11 +641,6 @@ class Display:
             pygame.draw.circle(surface, self.pal.bg,
                                (icon_c[0] + icon_r * 0.45,
                                 icon_c[1] - icon_r * 0.3), icon_r * 0.7)
-        # Generous touch target around label + icon.
-        self._toggle_rect = pygame.Rect(
-            mode_rect.left - rect.height, rect.top - rect.height // 2,
-            (rect.right - mode_rect.left) + rect.height * 2, rect.height * 2,
-        )
 
     # ---- first-boot setup screens ----
 
@@ -797,8 +854,12 @@ class Display:
             )
 
     def draw(self):
+        self._sync_theme()
         self.screen.fill(self.pal.bg)
         if self._hotspot_is_active():
+            # No toggle on the setup screens: clear the target so taps
+            # there can't hit a rect left over from the dashboard.
+            self._toggle_rect = pygame.Rect(0, 0, 0, 0)
             self.draw_hotspot_screen()
             pygame.display.flip()
             if self.fb:
@@ -807,6 +868,7 @@ class Display:
         users = self.config.users
         snaps = [self.store.snapshot(user.name) for user in users]
         if self.is_unconfigured(snaps):
+            self._toggle_rect = pygame.Rect(0, 0, 0, 0)
             self.draw_setup_screen()
             pygame.display.flip()
             if self.fb:
@@ -814,8 +876,9 @@ class Display:
             return
         full_w = self.screen.get_width()
         full_h = self.screen.get_height()
-        footer_h = max(26, int(full_h * 0.072))
-        body_h = full_h - footer_h
+        footer = self._footer_rect()
+        self._toggle_rect = self._toggle_rect_for(footer)
+        body_h = footer.top
         portrait = full_h > full_w
         for i, (user, snap) in enumerate(zip(users, snaps)):
             if portrait:
@@ -833,7 +896,7 @@ class Display:
                                      (rect.left, int(body_h * 0.05)),
                                      (rect.left, body_h - int(body_h * 0.03)))
             self.draw_panel(rect, user, snap)
-        self.draw_footer(pygame.Rect(0, body_h, full_w, footer_h))
+        self.draw_footer(footer)
         pygame.display.flip()
         if self.fb:
             self.fb.present(self.screen)
@@ -851,6 +914,9 @@ class Display:
         running = True
         last_snapshot = 0.0
         while running:
+            # Cleared before draining so a tap that lands mid-frame still
+            # wakes the next wait instead of being swallowed.
+            self._wake.clear()
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
@@ -861,21 +927,37 @@ class Display:
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_t:
                     self.toggle_theme()
                 elif event.type == pygame.MOUSEBUTTONDOWN:
-                    if self._toggle_rect.collidepoint(event.pos):
-                        self.toggle_theme()
+                    self._handle_tap(event.pos)
                 elif event.type == pygame.FINGERDOWN:
-                    x = event.x * self.screen.get_width()
-                    y = event.y * self.screen.get_height()
-                    if self._toggle_rect.collidepoint((x, y)):
-                        self.toggle_theme()
+                    self._handle_tap((event.x * self.screen.get_width(),
+                                      event.y * self.screen.get_height()))
+            while True:  # taps read straight from the panel
+                try:
+                    self._handle_tap(self._taps.get_nowait())
+                except queue.Empty:
+                    break
             self.draw()
             if time.time() - last_snapshot >= 5:
                 self.save_snapshot()
                 last_snapshot = time.time()
-            self.clock.tick(1)  # 1 fps is plenty for a glucose dashboard
+            # One frame a second is plenty for a glucose dashboard, but a
+            # tap must not wait for it: the reader wakes us immediately,
+            # and the tap highlight schedules its own frame to clear it.
+            timeout = 1.0
+            flash_left = 0.35 - (time.monotonic() - self._tap_flash)
+            if flash_left > 0:
+                timeout = min(timeout, flash_left + 0.02)
+            self._wake.wait(timeout)
+        self._stop_touch()
         pygame.quit()
+
+    def _stop_touch(self) -> None:
+        if self._touch:
+            self._touch.stop()
+            self._touch = None
 
     def screenshot(self, path: str):
         self.draw()
         pygame.image.save(self.screen, path)
+        self._stop_touch()
         pygame.quit()
