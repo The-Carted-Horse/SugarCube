@@ -34,6 +34,9 @@ board, and recent treatments.
   panel is read directly from `/dev/input`, so this works on the
   ready-made image as well as on a manual install; there is a switch on
   the settings page too.
+- **Update channels** — standard releases, or beta with the pre-releases
+  as well; switching channels moves the device onto that channel's newest
+  release straight away.
 - **Per-person thresholds** — low/high/urgent ranges per person, with
   global defaults.
 - **Guided setup from a phone** — a fresh device shows a QR code that opens
@@ -84,19 +87,36 @@ finishes by printing the URL and API secret for each person's uploader.
 
 Everything is served on plain HTTP port 80 — open `http://glucocube.local/`
 (or the IP shown on the device's screen; HTTP Basic auth, login shown
-there too). The `.local` name needs mDNS — iPhones, Macs, Windows, and
-Android 12+ all resolve it; on older Android type the IP instead. When
-port 80 isn't available (e.g. running by hand on a dev machine) it falls
-back to 8080.
+there too). The `.local` name needs mDNS — iPhones, Macs, Windows, and Android 12+
+all resolve it; on older Android type the IP instead. When port 80 isn't
+available (e.g. running by hand on a dev machine) it falls back to 8080.
 
 | Path | What |
 |---|---|
 | `/` | Live dashboard (auto-refreshes every 30s) |
 | `/setup` | Guided setup, one question per screen |
-| `/settings` | People, data sources, thresholds, Wi-Fi |
+| `/settings` | Everything else, one page per thing |
 | `/log` | Sync activity from every data source |
 | `/screen.png` | What the physical screen shows right now |
 | `/api/dashboard.json` | The dashboard's data, as JSON |
+
+Settings is a hub rather than one long form: each row says what it is set
+to now — who is configured and when their last reading arrived, the
+ranges, the network, the time zone, the version and channel — and opens a
+short page for that one thing. Every person has their own page, with only
+the fields their data source actually needs. Saving restarts the display
+(a few seconds) and the page waits for it to come back rather than
+guessing.
+
+| Page | What is on it |
+|---|---|
+| `/settings/screen` | Live view of the physical screen, and Day/Night |
+| `/settings/people` | One row per person, then a page each |
+| `/settings/ranges` | In-range and urgent thresholds, staleness |
+| `/settings/network` | Wi-Fi: what it is on, and what else is nearby |
+| `/settings/clock` | Time zone (with what your phone thinks it is) |
+| `/settings/updates` | Version, release channel, install |
+| `/settings/access` | Password, and a link that opens settings without one |
 
 ## Wi-Fi setup
 
@@ -142,14 +162,35 @@ Updates** (the display restarts, data is untouched). A release whose notes
 contain `[force-update]` installs itself automatically at the device's next
 check — use that for fixes every device should have.
 
+### Release channels
+
+**Settings → Updates** chooses which releases a device follows:
+
+- **Standard** — full releases only, the ones `main` publishes. The default.
+- **Beta** — the pre-releases `dev` publishes as well, for anyone happy to
+  find the rough edges first.
+
+Changing the channel installs that channel's newest release immediately,
+rather than waiting for the next thing to be published. Leaving Beta
+therefore steps *back* onto the last full release, which is the point: the
+channel decides which releases the device runs, not just which ones it is
+told about. A device that ends up on a pre-release with Standard selected
+says so on the settings page, and offers the way back.
+
+The channel is stored in `config.json`:
+
+```json
+{ "updates": { "channel": "beta" } }
+```
+
 ### Cutting a release
 
 Releases are cut by pushing, not by tagging:
 
 - **Push to `dev`** — builds an image and publishes `vX.Y.Z-rc.N` as a
-  GitHub *pre-release*. Devices never see it: the updater asks for the
-  latest release and GitHub leaves pre-releases out of that. Flash the
-  attached image to try it. Each further push to `dev` bumps `N`.
+  GitHub *pre-release*. Devices on the Standard channel never see it;
+  devices set to Beta are offered it at their next check, and the attached
+  image can be flashed to try it. Each further push to `dev` bumps `N`.
 - **Push to `main`** — builds an image and publishes `vX.Y.Z` as a full
   release. This is the one existing devices offer under Settings → Updates.
   It takes the version the `dev` rcs were rehearsing (`2.0.1-rc.3` →
