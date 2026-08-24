@@ -23,6 +23,7 @@ probe degrades to "unknown"/no-op so the rest of the app is unaffected.
 
 import logging
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -41,6 +42,23 @@ _store = None
 _lock = threading.Lock()
 _joining = threading.Event()    # a join is driving the radio right now
 _quiet_until = 0.0              # monotonic; watcher keeps off the radio
+_scanning = threading.Event()   # a background rescan is running right now
+
+
+def get_lan_ip() -> str:
+    """Best-effort LAN IP (no packets are actually sent).
+
+    Lives here rather than in display.py so the web UI can show a push
+    person the URL to type into Trio without importing pygame.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        sock.close()
 
 
 def init(store) -> None:
@@ -252,6 +270,31 @@ def refresh_scan(force: bool = False) -> list[dict]:
     if networks:
         _save(networks=networks, scanned_at=_now_ms())
     return networks or cached_networks()
+
+
+def scan_in_progress() -> bool:
+    return _scanning.is_set()
+
+
+def refresh_scan_async(force: bool = True) -> bool:
+    """Kick off a rescan without blocking the caller.
+
+    The settings page used to sleep four seconds inside the request
+    handler waiting for results; on a phone over a hotspot that reads as
+    a hung page. The page now polls for the answer instead.
+    """
+    if _scanning.is_set():
+        return False
+
+    def worker():
+        try:
+            refresh_scan(force=force)
+        finally:
+            _scanning.clear()
+
+    _scanning.set()
+    threading.Thread(target=worker, name="wifi-scan", daemon=True).start()
+    return True
 
 
 def cached_networks() -> list[dict]:

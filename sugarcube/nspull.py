@@ -70,33 +70,60 @@ def params_from_profile(docs: list) -> dict:
     return params
 
 
+def auth_modes(key: str) -> list[tuple[str, str]]:
+    """Auth styles to try, in order. A site accepts exactly one."""
+    key = (key or "").strip()
+    return [("sha1", key), ("token", key), ("raw", key)] if key else [("none", "")]
+
+
+def request(base: str, path: str, params: dict, mode: tuple,
+            timeout: float = 30) -> list:
+    """One request in one auth style.
+
+    The browser-ish User-Agent is required: hosted Nightscout sites
+    commonly sit behind Cloudflare, which rejects default urllib outright.
+    """
+    kind, key = mode
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    if kind == "sha1":
+        headers["api-secret"] = hashlib.sha1(key.encode()).hexdigest()
+    elif kind == "raw":
+        headers["api-secret"] = key
+    elif kind == "token":
+        params = {**params, "token": key}
+    url = f"{base.rstrip('/')}{path}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read())
+    return data if isinstance(data, list) else []
+
+
+def probe(base: str, key: str, timeout: float = 12) -> tuple[str, list]:
+    """(auth style the site accepted, newest entries). Raises if none work."""
+    last_error = None
+    for mode in auth_modes(key):
+        try:
+            return mode[0], request(base, "/api/v1/entries/sgv.json",
+                                    {"count": 1}, mode, timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (401, 403):
+                raise
+            last_error = exc
+    raise last_error
+
+
 class NightscoutPoller(BasePoller):
     def __init__(self, user: str, source: dict, store: Store):
         super().__init__("nightscout", user, source.get("poll_seconds", 60), store)
         self.base = source["url"].rstrip("/")
         key = (source.get("api_secret") or source.get("token") or "").strip()
         # Auth styles to attempt, in order; the first that works sticks.
-        if key:
-            self._modes = [("sha1", key), ("token", key), ("raw", key)]
-        else:
-            self._modes = [("none", "")]
+        self._modes = auth_modes(key)
         self._mode_idx = 0
         self._profile_countdown = 0
 
     def _request(self, path: str, params: dict, mode: tuple) -> list:
-        kind, key = mode
-        headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
-        if kind == "sha1":
-            headers["api-secret"] = hashlib.sha1(key.encode()).hexdigest()
-        elif kind == "raw":
-            headers["api-secret"] = key
-        elif kind == "token":
-            params = {**params, "token": key}
-        url = f"{self.base}{path}?{urllib.parse.urlencode(params)}"
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read())
-        return data if isinstance(data, list) else []
+        return request(self.base, path, params, mode)
 
     def _get(self, path: str, **params) -> list:
         last_error = None

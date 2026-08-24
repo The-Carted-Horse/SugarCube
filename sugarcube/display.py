@@ -135,18 +135,6 @@ class FramebufferPresenter:
                     dev.write(data[y * row:(y + 1) * row])
 
 
-def get_lan_ip() -> str:
-    """Best-effort LAN IP (no packets are actually sent)."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
-    except OSError:
-        return "127.0.0.1"
-    finally:
-        s.close()
-
-
 def age_compact(now_ms: int, then_ms: int | None) -> str:
     """'NOW', '4M', '1H07M', '2D' — the badge/stat style from the design."""
     if then_ms is None:
@@ -650,7 +638,7 @@ class Display:
         # retry quickly instead of caching a useless address for a minute.
         ttl = 60 if ip and ip != "127.0.0.1" else 3
         if not ip or time.monotonic() - fetched > ttl:
-            ip = get_lan_ip()
+            ip = network.get_lan_ip()
             self._lan_ip = (ip, time.monotonic())
         return ip
 

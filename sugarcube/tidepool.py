@@ -165,6 +165,37 @@ def params_from_pumpsettings(docs: list[dict]) -> dict:
     return params
 
 
+def login(email: str, password: str, timeout: float = 30) -> tuple[str, str]:
+    """Authenticate; return (session token, user id). Raises on failure.
+
+    The one place that knows how Tidepool login works, so the settings
+    page's "Test connection" exercises exactly the code the poller will.
+    """
+    creds = base64.b64encode(f"{email}:{password}".encode()).decode()
+    req = urllib.request.Request(
+        f"{API_BASE}/auth/login",
+        method="POST",
+        headers={"Authorization": f"Basic {creds}"},
+        data=b"",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        token = resp.headers.get("x-tidepool-session-token")
+        userid = (json.loads(resp.read()) or {}).get("userid")
+    if not token or not userid:
+        raise RuntimeError("Tidepool login gave no session token/userid")
+    return token, userid
+
+
+def latest_cbg(token: str, userid: str, timeout: float = 30) -> list[dict]:
+    """The newest glucose reading — proves data access, not just login."""
+    req = urllib.request.Request(
+        f"{API_BASE}/data/{userid}?type=cbg&latest=true",
+        headers={"x-tidepool-session-token": token},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read()) or []
+
+
 class TidepoolPoller(BasePoller):
     def __init__(self, user: str, source: dict, store: Store):
         super().__init__("tidepool", user, source.get("poll_seconds", 60), store)
@@ -177,18 +208,7 @@ class TidepoolPoller(BasePoller):
     # ---- HTTP ----
 
     def _login(self) -> None:
-        creds = base64.b64encode(f"{self.email}:{self.password}".encode()).decode()
-        req = urllib.request.Request(
-            f"{API_BASE}/auth/login",
-            method="POST",
-            headers={"Authorization": f"Basic {creds}"},
-            data=b"",
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            self._token = resp.headers.get("x-tidepool-session-token")
-            self._userid = json.loads(resp.read()).get("userid")
-        if not self._token or not self._userid:
-            raise RuntimeError("Tidepool login gave no session token/userid")
+        self._token, self._userid = login(self.email, self.password)
         log.info("[%s] logged in to Tidepool as %s", self.user, self.email)
 
     def _fetch(self) -> list[dict]:
