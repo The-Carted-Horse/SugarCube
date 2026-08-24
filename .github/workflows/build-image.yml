@@ -5,6 +5,11 @@ on:
   push:
     tags: ["v*"]
 
+# The release step needs to create releases; the org's default token
+# permissions are read-only.
+permissions:
+  contents: write
+
 jobs:
   build:
     # Native ARM runner: no QEMU emulation needed, and much faster builds.
