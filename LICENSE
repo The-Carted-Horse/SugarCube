@@ -1,0 +1,203 @@
+GlucoCube — a wall-mounted glucose dashboard
+https://github.com/The-Carted-Horse/GlucoCube
+
+Required Notice: Copyright 2026 The Carted Horse
+                 (https://github.com/The-Carted-Horse/GlucoCube)
+
+GlucoCube is free to use for personal and other noncommercial purposes,
+under the PolyForm Noncommercial License 1.0.0, reproduced in full below.
+Commercial use needs written permission — open an issue on the repository
+to ask for it.
+
+
+WHAT THESE TERMS COVER
+======================
+
+They cover the GlucoCube software in this repository. They do not cover the
+following, each of which carries its own terms and is not the licensor's to
+place under these.
+
+  The bundled fonts — glucocube/fonts/
+
+      JetBrains Mono (Copyright 2020 The JetBrains Mono Project Authors) and
+      Space Grotesk (Copyright 2020 The Space Grotesk Project Authors) are
+      licensed solely under the SIL Open Font License 1.1, whose text sits
+      beside them in OFL-JetBrainsMono.txt and OFL-SpaceGrotesk.txt. That
+      license requires the fonts to be distributed entirely under it and
+      under no other license, so nothing here reaches them: your rights in
+      the fonts, including using them commercially, are unaffected by
+      anything below.
+
+  The enclosure — enclosure/
+
+      Designed by Sarah Sabanis and licensed separately under the Creative
+      Commons Attribution-NonCommercial-ShareAlike 4.0 International
+      License. See enclosure/LICENSE.
+
+  The SD card image
+
+      A GlucoCube image is Raspberry Pi OS, which is Debian: hundreds of
+      packages under the GPL, the LGPL and various permissive licenses,
+      plus redistributable Raspberry Pi firmware. Each keeps its own terms,
+      and these terms reach only the GlucoCube layer on top of them — no
+      noncommercial restriction is or could be imposed on any of it.
+      Sources for the Debian components are published at
+      https://sources.debian.org, and for the Raspberry Pi components by
+      Raspberry Pi Ltd.
+
+Names used to describe what GlucoCube talks to — Raspberry Pi, Nightscout,
+Trio, Tidepool, twiist, Loop, OpenAPS — belong to their respective owners
+and are used only to say what works with what. The glucose forecast
+reimplements the exponential insulin-activity model from oref0
+(https://github.com/openaps/oref0) in Python, with thanks.
+
+
+NOT A MEDICAL DEVICE
+====================
+
+GlucoCube is a convenience display. It is not a medical device. It has not
+been reviewed or approved by any regulator, and it must not be used to make
+treatment decisions. Its forecasts are estimates — including the ones that
+come from the pump or AID system itself. It raises no alarms and must not
+be relied upon for any. Use the CGM's own application and alerts for
+anything that matters.
+
+The software is provided as is and without warranty of any kind, as set out
+under "No Liability" below.
+
+
+================================================================================
+The license follows, unmodified.
+================================================================================
+
+# PolyForm Noncommercial License 1.0.0
+
+<https://polyformproject.org/licenses/noncommercial/1.0.0>
+
+## Acceptance
+
+In order to get any license under these terms, you must agree
+to them as both strict obligations and conditions to all
+your licenses.
+
+## Copyright License
+
+The licensor grants you a copyright license for the
+software to do everything you might do with the software
+that would otherwise infringe the licensor's copyright
+in it for any permitted purpose.  However, you may
+only distribute the software according to [Distribution
+License](#distribution-license) and make changes or new works
+based on the software according to [Changes and New Works
+License](#changes-and-new-works-license).
+
+## Distribution License
+
+The licensor grants you an additional copyright license
+to distribute copies of the software.  Your license
+to distribute covers distributing the software with
+changes and new works permitted by [Changes and New Works
+License](#changes-and-new-works-license).
+
+## Notices
+
+You must ensure that anyone who gets a copy of any part of
+the software from you also gets a copy of these terms or the
+URL for them above, as well as copies of any plain-text lines
+beginning with `Required Notice:` that the licensor provided
+with the software.  For example:
+
+> Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
+
+## Changes and New Works License
+
+The licensor grants you an additional copyright license to
+make changes and new works based on the software for any
+permitted purpose.
+
+## Patent License
+
+The licensor grants you a patent license for the software that
+covers patent claims the licensor can license, or becomes able
+to license, that you would infringe by using the software.
+
+## Noncommercial Purposes
+
+Any noncommercial purpose is a permitted purpose.
+
+## Personal Uses
+
+Personal use for research, experiment, and testing for
+the benefit of public knowledge, personal study, private
+entertainment, hobby projects, amateur pursuits, or religious
+observance, without any anticipated commercial application,
+is use for a permitted purpose.
+
+## Noncommercial Organizations
+
+Use by any charitable organization, educational institution,
+public research organization, public safety or health
+organization, environmental protection organization,
+or government institution is use for a permitted purpose
+regardless of the source of funding or obligations resulting
+from the funding.
+
+## Fair Use
+
+You may have "fair use" rights for the software under the
+law. These terms do not limit them.
+
+## No Other Rights
+
+These terms do not allow you to sublicense or transfer any of
+your licenses to anyone else, or prevent the licensor from
+granting licenses to anyone else.  These terms do not imply
+any other licenses.
+
+## Patent Defense
+
+If you make any written claim that the software infringes or
+contributes to infringement of any patent, your patent license
+for the software granted under these terms ends immediately. If
+your company makes such a claim, your patent license ends
+immediately for work on behalf of your company.
+
+## Violations
+
+The first time you are notified in writing that you have
+violated any of these terms, or done anything with the software
+not covered by your licenses, your licenses can nonetheless
+continue if you come into full compliance with these terms,
+and take practical steps to correct past violations, within
+32 days of receiving notice.  Otherwise, all your licenses
+end immediately.
+
+## No Liability
+
+***As far as the law allows, the software comes as is, without
+any warranty or condition, and the licensor will not be liable
+to you for any damages arising out of these terms or the use
+or nature of the software, under any kind of legal claim.***
+
+## Definitions
+
+The **licensor** is the individual or entity offering these
+terms, and the **software** is the software the licensor makes
+available under these terms.
+
+**You** refers to the individual or entity agreeing to these
+terms.
+
+**Your company** is any legal entity, sole proprietorship,
+or other kind of organization that you work for, plus all
+organizations that have control over, are under the control of,
+or are under common control with that organization.  **Control**
+means ownership of substantially all the assets of an entity,
+or the power to direct its management and policies by vote,
+contract, or otherwise.  Control can be direct or indirect.
+
+**Your licenses** are all the licenses granted to you for the
+software under these terms.
+
+**Use** means anything you do with the software requiring one
+of your licenses.
