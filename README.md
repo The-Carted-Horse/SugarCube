@@ -37,8 +37,9 @@ board, and recent treatments.
 - **Per-person thresholds** — low/high/urgent ranges per person, with
   global defaults.
 - **Guided setup from a phone** — a fresh device shows a QR code that opens
-  a step-by-step wizard: Wi-Fi, who it's for, where each person's data comes
-  from, and the credentials for it, one question per screen. Credentials are
+  a step-by-step wizard: Wi-Fi, where in the world it is so the clock is
+  right, who it's for, where each person's data comes from, and the
+  credentials for it, one question per screen. Credentials are
   tested before they're saved, and nothing is written until the last step.
   With no network at all the device opens its own setup hotspot — join it
   and the wizard opens by itself, no second QR code to scan. Once a network
