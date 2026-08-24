@@ -6,6 +6,10 @@ polkit.addRule(function(action, subject) {
     if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0) {
         return polkit.Result.YES;
     }
+    // Set the device's time zone from the setup wizard.
+    if (action.id == "org.freedesktop.timedate1.set-timezone") {
+        return polkit.Result.YES;
+    }
     // Reboot after Wi-Fi settings are applied.
     if (action.id == "org.freedesktop.login1.reboot" ||
         action.id == "org.freedesktop.login1.reboot-multiple-sessions") {

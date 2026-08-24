@@ -292,7 +292,7 @@ SCRIPT = """<script>
   d.addEventListener('change', sync);
   d.addEventListener('input', syncGroups);
   sync();
-  window.sugarSync = sync;   // for markup added after load
+  window.glucoSync = sync;   // for markup added after load
 })();
 </script>"""
 
@@ -384,6 +384,24 @@ def copy_input(name: str, value: str, *, input_id: str = "") -> str:
         f'<button type="button" class="copy" data-copy="{esc(ident)}" hidden>Copy</button>'
         "</div>"
     )
+
+
+def select(name: str, options, selected: str = "", *, input_id: str = "",
+           extra: str = "") -> str:
+    """A native <select>. Options are (value, label) pairs.
+
+    Native on purpose: a phone renders it as its own scrollable wheel with
+    type-ahead, which beats anything hand-rolled for a list this long.
+    """
+    ident = input_id or f"f_{name}"
+    body = "".join(
+        f'<option value="{esc(value)}"'
+        f'{" selected" if str(value) == str(selected) else ""}>{esc(label)}'
+        "</option>"
+        for value, label in options
+    )
+    return (f'<select id="{esc(ident)}" name="{esc(name)}" {extra}>'
+            f"{body}</select>")
 
 
 def checkbox(name: str, label: str, checked: bool = False, *,

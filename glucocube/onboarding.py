@@ -37,6 +37,7 @@ SOURCE_CARDS = (
 TITLES = {
     "welcome": "Welcome",
     "wifi": "Wi-Fi",
+    "timezone": "Where is it?",
     "people": "Who is this for?",
     "source": "Where the data comes from",
     "creds": "Connect the source",
@@ -129,6 +130,9 @@ def steps_for(draft: dict) -> list[str]:
     steps = ["welcome"]
     if wifi_needed(draft):
         steps.append("wifi")
+    # Before the people: everything after this shows times, and a device
+    # fresh off the image has no time zone at all, so it reads UTC.
+    steps.append("timezone")
     steps.append("people")
     for index in range(len(draft.get("people") or [])):
         steps += [f"source:{index}", f"creds:{index}"]
@@ -222,6 +226,58 @@ def _person_label(draft: dict, index: int) -> str:
     return f"Person {index + 1}"
 
 
+TIMEZONE_SCRIPT = """<script>
+(function(){
+  var zone = '';
+  try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; }
+  catch (err) {}
+  var card = document.getElementById('tzphone');
+  var field = document.getElementById('tz_detected');
+  var list = document.getElementById('timezone');
+  // Browsers report tzdata's retired names — Chromium says Asia/Calcutta,
+  // Europe/Kiev, America/Buenos_Aires — so the detected zone is often not
+  // one of the options below. Send it anyway and let the server map it:
+  // it holds the alias table, and falls back to this picker if it cannot.
+  // Filtering here instead would hide the one-tap answer from everyone in
+  // India, Ukraine and Argentina.
+  if (zone && list) {
+    for (var i = 0; i < list.options.length; i++) {
+      if (list.options[i].value === zone) { list.value = zone; break; }
+    }
+  }
+  // The phone knows where it is. Offer that first, but only once this has
+  // run — with no script there is nothing to detect, and the list below
+  // is the whole answer.
+  if (zone && card && field) {
+    field.value = zone;
+    document.getElementById('tzphonename').textContent = zone.replace(/_/g, ' ');
+    card.hidden = false;
+    card.querySelector('input').checked = true;
+    if (window.glucoSync) window.glucoSync();
+  }
+  function chosen(){
+    var mode = document.querySelector('[name=tzmode]:checked');
+    if (mode && mode.value === 'phone') return field ? field.value : '';
+    var list = document.getElementById('timezone');
+    return list ? list.value : '';
+  }
+  function preview(){
+    var out = document.getElementById('tzpreview');
+    if (!out) return;
+    var z = chosen();
+    if (!z) { out.textContent = 'The device keeps the time it has now.'; return; }
+    try {
+      out.textContent = 'It is ' + new Date().toLocaleString(undefined,
+        {timeZone: z, weekday: 'long', hour: 'numeric', minute: '2-digit'})
+        + ' there.';
+    } catch (err) { out.textContent = ''; }
+  }
+  document.addEventListener('change', preview);
+  preview();
+  setInterval(preview, 30000);
+})();
+</script>"""
+
 PEOPLE_SCRIPT = """<script>
 function addPerson(){
   const list = document.getElementById('people');
@@ -280,6 +336,8 @@ def render(handler, draft: dict, step: str, *, banner: str = "") -> str:
         return _render_welcome(handler, draft, step, banner)
     if kind == "wifi":
         return _render_wifi(handler, draft, step, banner)
+    if kind == "timezone":
+        return _render_timezone(handler, draft, step, banner)
     if kind == "people":
         return _render_people(handler, draft, step, banner)
     if kind == "source":
@@ -343,6 +401,40 @@ def _render_wifi(draft_handler, draft, step, banner) -> str:
   <button type="submit" class="quiet">This device is already online — skip</button>
 </form>"""
     return _shell(draft, step, "Connect to Wi-Fi", body)
+
+
+def _render_timezone(handler, draft, step, banner) -> str:
+    from .webadmin import timezone_options
+
+    current = (draft.get("display") or {}).get(
+        "timezone", handler.server.config.display.timezone)
+    phone_card = ui.option_card(
+        "tzmode", "phone", "Use this phone's setting", "",
+        controls="tzmode",
+        trail='<span class="sub" id="tzphonename"></span>')
+    # Hidden until the script fills in the zone it detected.
+    phone_card = phone_card.replace('<label class="opt"',
+                                    '<label class="opt" id="tzphone"'
+                                    ' data-needs-js hidden', 1)
+    list_card = ui.option_card("tzmode", "list", "Choose from a list", "",
+                               checked=True, controls="tzmode")
+    picker = ui.group(
+        "tzmode", "list",
+        ui.row("Time zone", ui.select("timezone", timezone_options(), current,
+                                      input_id="timezone"),
+               inline=False, for_id="timezone"),
+        current="list")
+    body = f"""{banner}
+<p class="lede">So the clock and the times on the chart are right. A device
+straight off the image has no time zone set, and reads UTC.</p>
+<form method="POST" action="/setup/timezone">
+  <input type="hidden" name="tz_detected" id="tz_detected" value="">
+  <div class="opts">{phone_card}{list_card}</div>
+  {picker}
+  <p class="note" id="tzpreview"></p>
+  {_actions("Continue")}
+</form>"""
+    return _shell(draft, step, "Where is it?", body, script=TIMEZONE_SCRIPT)
 
 
 def _render_people(handler, draft, step, banner) -> str:
@@ -610,8 +702,8 @@ def do_get(handler, path: str) -> None:
         draft = seed_draft(handler.server.config_path)
         save_draft(store, draft)
     step = path[len("/setup/"):]
-    if step not in ("welcome", "wifi", "people", "source", "creds",
-                    "thresholds", "password", "review"):
+    if step not in ("welcome", "wifi", "timezone", "people", "source",
+                    "creds", "thresholds", "password", "review"):
         _redirect(handler, "/setup")
         return
     if step in ("source", "creds"):
@@ -644,6 +736,27 @@ def do_post(handler, path: str, form: dict) -> None:
 
     if step == "welcome":
         mark_done(draft, "welcome")
+    elif step == "timezone":
+        mode = form.get("tzmode", "list")
+        asked = ((form.get("tz_detected") or "").strip() if mode == "phone"
+                 else (form.get("timezone") or "").strip())
+        chosen = config_mod.canonical_timezone(asked)
+        if asked and not chosen:
+            # The phone reported a name this device's tzdata has never
+            # heard of. That is the browser's doing, not the user's, so
+            # show the picker rather than an error page.
+            handler._send(render(handler, draft, "timezone", banner=ui.banner(
+                "warn", f"This device does not know a zone called "
+                        f"<b>{ui.esc(asked)}</b> — please pick the closest "
+                        "one below.")).encode(),
+                "text/html; charset=utf-8", 200)
+            return
+        draft["display"] = {**(draft.get("display") or {}),
+                            "timezone": chosen}
+        # Applied now rather than at the end, so every later step — and the
+        # device's own screen — is already telling the right time.
+        config_mod.apply_timezone(chosen)
+        mark_done(draft, "timezone")
     elif step == "wifi":
         _start_join(handler, draft, form)
         return

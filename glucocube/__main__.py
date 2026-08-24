@@ -109,6 +109,9 @@ def main() -> int:
                      "will show a setup QR code.", config_path)
         config_mod.create_default(config_path)
     config = config_mod.load(config_path)
+    # Before anything renders a clock: a fresh image has no time zone set,
+    # so without this every timestamp on the wall reads UTC.
+    config_mod.apply_timezone(config.display.timezone)
 
     store = Store(":memory:" if args.demo else config.database)
     if args.demo:

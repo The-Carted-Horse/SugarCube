@@ -95,6 +95,9 @@ polkit.addRule(function(action, subject) {
     if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0) {
         return polkit.Result.YES;
     }
+    if (action.id == "org.freedesktop.timedate1.set-timezone") {
+        return polkit.Result.YES;
+    }
     if (action.id == "org.freedesktop.login1.reboot" ||
         action.id == "org.freedesktop.login1.reboot-multiple-sessions") {
         return polkit.Result.YES;

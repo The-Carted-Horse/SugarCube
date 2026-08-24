@@ -49,7 +49,7 @@ function addPerson() {
   const markup = document.getElementById('person-template').innerHTML
     .replaceAll('__I__', i).replaceAll('__PORT__', maxPort + 1);
   document.getElementById('people').insertAdjacentHTML('beforeend', markup);
-  window.sugarSync();
+  window.glucoSync();
 }
 
 // "Test connection": check the credentials before saving, rather than
@@ -246,9 +246,12 @@ document.getElementById('theme').onclick = () => {
 };
 function tick(){
   const d = new Date();
-  const date = d.toLocaleDateString('en-GB',
+  // The viewer's own locale, not a hard-coded en-GB: this page is read
+  // from a phone that may be anywhere, and the device's own screen is the
+  // thing the configured time zone is for.
+  const date = d.toLocaleDateString(undefined,
     {weekday:'short', day:'2-digit', month:'short'}).replaceAll(',','');
-  const hm = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', hour12:false});
+  const hm = d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'});
   document.getElementById('when').textContent = (date + ' \\u00b7 ' + hm).toUpperCase();
   render();  // ages keep advancing even when the server is unreachable
 }
@@ -362,8 +365,8 @@ function card(u, th, now, idx){
   const urgent = !stale && u.sgv != null && (u.sgv <= th.urgent_low || u.sgv >= th.urgent_high);
   const tilde = u.forecast && u.forecast.source === 'est' ? '~' : '';
   const f2h = u.forecast && !stale ? u.forecast.horizons[120] : null;
-  const eta = new Date(now + 120*60000).toLocaleTimeString([],
-    {hour:'2-digit', minute:'2-digit', hour12:false});
+  const eta = new Date(now + 120*60000).toLocaleTimeString(undefined,
+    {hour:'2-digit', minute:'2-digit'});
   const fc = f2h != null
     ? `<span class="val" style="color:${colorFor(f2h, th, false)}">${tilde}${Math.round(f2h)}</span>
        <span class="eta">${eta}</span>` : '';
@@ -420,6 +423,13 @@ refresh();
 setInterval(refresh, 30000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 </script></body></html>"""
+
+
+def timezone_options() -> list[tuple[str, str]]:
+    """(value, label) pairs for a time zone <select>, blank option first."""
+    return [("", "Use whatever the device is set to")] + [
+        (zone, zone.replace("_", " ")) for zone in config_mod.available_timezones()
+    ]
 
 
 class AdminServer(DualStackServer):
@@ -925,6 +935,14 @@ version of this page.</p>
   {ui.row("Stale after", ui.text_input("stale_minutes", d('stale_minutes', 12),
                                        kind="number"), hint="minutes")}
 </fieldset>
+<h2>Clock</h2>
+<fieldset><legend>Time zone</legend>
+  {ui.row("Time zone", ui.select("timezone", timezone_options(),
+                                 display.get("timezone", ""),
+                                 input_id="timezone"), for_id="timezone",
+          hint="The device shows this zone. A fresh install has none set, "
+               "which is why the clock starts on UTC.")}
+</fieldset>
 <h2>Admin</h2>
 <fieldset><legend>Web access</legend>
   {ui.row("New password", ui.password_input("admin_password", "",
@@ -1211,6 +1229,13 @@ shows it too.</p>""").encode()
         for key in ("low", "high", "urgent_low", "urgent_high", "stale_minutes"):
             if form.get(key):
                 display[key] = float(form[key])
+        if "timezone" in form:
+            timezone = config_mod.canonical_timezone(form["timezone"])
+            if form["timezone"].strip() and not timezone:
+                raise ValueError(f"{timezone} is not a time zone this device "
+                                 "knows about")
+            # Set even when blank, so it can be cleared back to the system's.
+            display["timezone"] = timezone
 
         new_admin_password = form.get("admin_password", "").strip()
         if new_admin_password:

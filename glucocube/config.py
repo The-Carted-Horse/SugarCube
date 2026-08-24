@@ -1,10 +1,16 @@
 """Configuration loading for GlucoCube."""
 
 import json
+import logging
 import os
+import subprocess
 import tempfile
+import time
+import zoneinfo
 from dataclasses import dataclass, field
 from pathlib import Path
+
+log = logging.getLogger("glucocube.config")
 
 # Where the display loop drops live screenshots for the /screen.png endpoint.
 SCREEN_PNG = os.path.join(tempfile.gettempdir(), "glucocube-screen.png")
@@ -32,6 +38,10 @@ class DisplayConfig:
     width: int = 800
     height: int = 480
     units: str = "mg/dL"
+    # IANA name, e.g. "Europe/London". Blank leaves the system alone.
+    # A fresh image has no time zone set at all, so the clock reads UTC
+    # until someone says where the device is.
+    timezone: str = ""
     low: float = 70
     high: float = 180
     urgent_low: float = 55
@@ -104,6 +114,91 @@ def write_atomic(raw: dict, path: str | Path) -> "Config":
         raise
     os.replace(tmp, path)
     return config
+
+
+# Browsers still report tzdata's old names — Chromium says Asia/Calcutta
+# for Asia/Kolkata — and a system whose tzdata was built without the
+# backward-compatibility links does not know them. This covers the ones
+# that actually turn up; anything else falls through to the picker rather
+# than becoming a dead end.
+TIMEZONE_ALIASES = {
+    "Asia/Calcutta": "Asia/Kolkata",
+    "Asia/Saigon": "Asia/Ho_Chi_Minh",
+    "Asia/Rangoon": "Asia/Yangon",
+    "Asia/Katmandu": "Asia/Kathmandu",
+    "Asia/Ulan_Bator": "Asia/Ulaanbaatar",
+    "Asia/Chongqing": "Asia/Shanghai",
+    "Asia/Istanbul": "Europe/Istanbul",
+    "America/Buenos_Aires": "America/Argentina/Buenos_Aires",
+    "America/Godthab": "America/Nuuk",
+    "Europe/Kiev": "Europe/Kyiv",
+    "Atlantic/Faeroe": "Atlantic/Faroe",
+    "Pacific/Ponape": "Pacific/Pohnpei",
+    "Pacific/Truk": "Pacific/Chuuk",
+    "Australia/Canberra": "Australia/Sydney",
+}
+
+
+def canonical_timezone(name: str) -> str:
+    """The name this system actually knows, or "" if it knows nothing like it."""
+    name = (name or "").strip()
+    if not name:
+        return ""
+    if valid_timezone(name):
+        return name
+    alias = TIMEZONE_ALIASES.get(name)
+    return alias if alias and valid_timezone(alias) else ""
+
+
+def valid_timezone(name: str) -> bool:
+    try:
+        zoneinfo.ZoneInfo(name)
+        return True
+    except Exception:  # noqa: BLE001 - any failure means "not usable"
+        return False
+
+
+def available_timezones() -> list[str]:
+    """Every zone this system knows, sorted. Empty if tzdata is missing."""
+    try:
+        return sorted(zoneinfo.available_timezones())
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def apply_timezone(name: str) -> bool:
+    """Point the clock at a place. False if the name is unusable.
+
+    Two halves. This process's own zone changes immediately, which is what
+    every strftime and localtime in the app reads — the footer clock, the
+    forecast arrival time, the update-check time. Then the system is asked
+    to adopt it too, so journald and everything else on the device agree;
+    that half needs the polkit permission the image grants, and is best
+    effort everywhere else.
+    """
+    if not name:
+        return True
+    canonical = canonical_timezone(name)
+    if not canonical:
+        log.warning("Ignoring unknown time zone %r", name)
+        return False
+    name = canonical
+    os.environ["TZ"] = name
+    if hasattr(time, "tzset"):      # Unix only; a dev box on Windows skips it
+        time.tzset()
+    _set_system_timezone(name)
+    return True
+
+
+def _set_system_timezone(name: str) -> None:
+    try:
+        proc = subprocess.run(["timedatectl", "set-timezone", name],
+                              capture_output=True, text=True, timeout=15)
+        if proc.returncode != 0:
+            log.info("Could not set the system time zone: %s",
+                     (proc.stdout + proc.stderr).strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        log.info("Could not set the system time zone: %s", exc)
 
 
 READABLE_ALPHABET = "abcdefghjkmnpqrstuvwxyzACDEFGHJKMNPQRSTUVWXYZ23456789"
