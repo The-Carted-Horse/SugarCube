@@ -130,7 +130,9 @@ def main() -> int:
             and not args.demo and not args.screenshot):
         from .updater import UpdateChecker, mark_boot_ok_later
         mark_boot_ok_later()
-        UpdateChecker(store).start()
+        # The live config, not a copy of the channel: the settings page
+        # edits it in place when someone switches channel.
+        UpdateChecker(store, config).start()
 
     # Wi-Fi provisioning: with no network at all, a setup hotspot comes up
     # and the screen switches to a join-QR. Password persists across boots.

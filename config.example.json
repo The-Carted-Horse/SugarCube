@@ -14,5 +14,6 @@
     "urgent_high": 250,
     "stale_minutes": 12
   },
-  "database": "glucocube.db"
+  "database": "glucocube.db",
+  "updates": { "channel": "stable" }
 }
