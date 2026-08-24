@@ -15,13 +15,14 @@ import json
 import logging
 import os
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
 import secrets as secrets_mod
 
 from . import config as config_mod
-from . import network, predict, synclog
+from . import network, predict, synclog, updater
+from .server import DualStackServer
 from .config import SCREEN_PNG, Config, merged_thresholds
 from .store import Store
 
@@ -236,6 +237,7 @@ footer span, footer a, footer button { white-space:nowrap; }
   <span id="when"></span>
   <span id="updated"></span>
   <span class="grow"></span>
+  <a id="upgrade" href="/settings" style="display:none;color:var(--high)"></a>
   <a href="/log">Log</a>
   <a href="/settings">Settings</a>
   <button id="theme"></button>
@@ -412,6 +414,11 @@ async function refresh(){
     lastData = d;
     receivedAt = Date.now();
     render();
+    const up = document.getElementById('upgrade');
+    if (d.update && d.update.available) {
+      up.textContent = 'Update ' + d.update.latest;
+      up.style.display = '';
+    } else up.style.display = 'none';
     updated.textContent = '';
     updated.classList.remove('err');
   } catch (e) {
@@ -426,15 +433,12 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) refr
 </script></body></html>"""
 
 
-class AdminServer(ThreadingHTTPServer):
-    daemon_threads = True
-    allow_reuse_address = True
-
+class AdminServer(DualStackServer):
     FALLBACK_PORT = 8080
 
     def __init__(self, config: Config, config_path: str, store: Store):
         try:
-            super().__init__(("0.0.0.0", config.admin_port), AdminHandler)
+            self._bind_dual_stack(config.admin_port, AdminHandler)
         except OSError as exc:
             if config.admin_port == self.FALLBACK_PORT:
                 raise
@@ -447,7 +451,7 @@ class AdminServer(ThreadingHTTPServer):
                 config.admin_port, exc, self.FALLBACK_PORT,
             )
             config.admin_port = self.FALLBACK_PORT
-            super().__init__(("0.0.0.0", config.admin_port), AdminHandler)
+            self._bind_dual_stack(config.admin_port, AdminHandler)
         self.config = config
         self.config_path = str(config_path)
         self.password = config.admin_password
@@ -470,7 +474,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         if getattr(self, "_grant_cookie", False):
             self.send_header(
                 "Set-Cookie",
-                f"sugarcube_key={self.server.password}; Path=/; Max-Age=604800",
+                f"sugarcube_key={self.server.password}; Path=/;"
+                " Max-Age=604800; SameSite=Lax",
             )
             self._grant_cookie = False
         for k, v in (extra or {}).items():
@@ -583,9 +588,15 @@ class AdminHandler(BaseHTTPRequestHandler):
                     "source": source,
                 } if horizons else None,
             })
+        update_state = self.server.store.get_params(updater.PARAMS_KEY)
         return {
             "now": now_ms,
             "units": dc.units,
+            "update": {
+                "current": updater.current_version(),
+                "latest": update_state.get("latest"),
+                "available": bool(update_state.get("available")),
+            },
             "thresholds": {
                 "low": dc.low, "high": dc.high,
                 "urgent_low": dc.urgent_low, "urgent_high": dc.urgent_high,
@@ -659,6 +670,41 @@ class AdminHandler(BaseHTTPRequestHandler):
   its screen shows the new address.</p>
 </fieldset></form>"""
 
+    def _updates_section(self) -> str:
+        e = html.escape
+        st = self.server.store.get_params(updater.PARAMS_KEY)
+        current = updater.current_version()
+        if st.get("checked_at"):
+            import time
+            checked = time.strftime("%H:%M", time.localtime(st["checked_at"] / 1000))
+            if st.get("error"):
+                status = f"last check at {checked} failed: {e(str(st['error']))}"
+            elif st.get("available"):
+                status = (f'version <b>{e(st.get("latest", "?"))}</b> is '
+                          f'available (checked {checked}) — '
+                          f'<a href="{e(st.get("url", ""))}">release notes</a>')
+            else:
+                status = f"up to date (checked {checked})"
+        else:
+            status = "not checked yet — checks run every 6 hours"
+        install = ""
+        if st.get("available"):
+            install = f"""
+  <form method="POST" action="/update/apply" style="display:inline">
+    <input type="hidden" name="tag" value="{e(st.get('latest_tag', ''))}">
+    <button type="submit">Install {e(st.get('latest', ''))}</button>
+  </form>"""
+        return f"""<h2>Updates</h2>
+<fieldset><legend>Software</legend>
+  <div class="status">SugarCube {e(current)} &mdash; {status}</div>
+  <form method="POST" action="/update/check" style="display:inline">
+    <button type="submit" class="minor">Check now</button>
+  </form>{install}
+  <p class="note">Updates install from GitHub releases and restart the
+  display (about a minute). A release marked <code>[force-update]</code>
+  in its notes installs itself at the next check.</p>
+</fieldset>"""
+
     def _render_page(self) -> str:
         raw = json.loads(open(self.server.config_path).read())
         display = raw.get("display", {})
@@ -689,6 +735,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 <h2>Live display</h2>
 <img class="screen" id="screen" src="/screen.png" alt="live display">
 {self._wifi_section()}
+{self._updates_section()}
 <form method="POST" action="/save">
 <h2>People</h2>
 <div id="people">
@@ -716,6 +763,17 @@ class AdminHandler(BaseHTTPRequestHandler):
 are generated automatically; blank per-person thresholds inherit the defaults.</p>
 </form>
 {SETTINGS_SCRIPT}</body></html>"""
+
+    @staticmethod
+    def _updating_page(version: str) -> bytes:
+        return (
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<meta http-equiv='refresh' content='45;url=/settings'>"
+            f"<style>{PAGE_STYLE}</style></head><body>"
+            f"<h1>Installing {html.escape(version)}&hellip;</h1>"
+            "<p>The display restarts on the new version — this page"
+            " reloads in about a minute.</p></body></html>"
+        ).encode()
 
     # ---- POST ----
 
@@ -769,6 +827,30 @@ are generated automatically; blank per-person thresholds inherit the defaults.</
                 "</body></html>"
             ).encode()
             self._send(body, "text/html; charset=utf-8")
+            return
+        if post_path == "/update/check":
+            state = updater.check_and_maybe_force(self.server.store)
+            if state.get("forcing"):
+                self._send(self._updating_page(state.get("latest", "")),
+                           "text/html; charset=utf-8")
+            else:
+                self._send(b"", "text/html", 303, {"Location": "/settings"})
+            return
+        if post_path == "/update/apply":
+            state = self.server.store.get_params(updater.PARAMS_KEY)
+            tag = form.get("tag", "")
+            # Only the release the last check offered — nothing arbitrary.
+            if not state.get("available") or tag != state.get("latest_tag"):
+                self._send(b"no such update on offer", "text/plain", 400)
+                return
+            ok, detail = updater.apply_update(tag)
+            if ok:
+                self._send(self._updating_page(detail),
+                           "text/html; charset=utf-8")
+            else:
+                body = (f"<h1>Update failed</h1><p>{html.escape(detail)}</p>"
+                        '<p><a href="/settings">Back</a></p>').encode()
+                self._send(body, "text/html; charset=utf-8", 500)
             return
         if post_path != "/save":
             self._send(b"not found", "text/plain", 404)

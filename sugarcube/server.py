@@ -15,10 +15,12 @@ Writes require the ``api-secret`` header (SHA-1 of the configured secret)
 unless the user's secret is empty.
 """
 
+import errno
 import gzip
 import hashlib
 import json
 import logging
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -30,12 +32,46 @@ from .store import Store
 log = logging.getLogger("sugarcube.server")
 
 
-class NightscoutServer(ThreadingHTTPServer):
+class DualStackServer(ThreadingHTTPServer):
+    """HTTP server listening on IPv6 and IPv4 at once (like sshd).
+
+    mDNS clients frequently pick a host's IPv6 address first, and some
+    managed networks only deliver client-to-client traffic over one of
+    the two stacks — a v4-only listener reads as "connection refused"
+    there. Falls back to plain IPv4 where IPv6 isn't available.
+    """
+
     daemon_threads = True
     allow_reuse_address = True
+    address_family = socket.AF_INET6
 
-    def __init__(self, host: str, port: int, user: str, api_secret: str, store: Store):
-        super().__init__((host, port), NightscoutHandler)
+    def server_bind(self):
+        if self.address_family == socket.AF_INET6:
+            try:
+                self.socket.setsockopt(
+                    socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            except (AttributeError, OSError):
+                pass
+        super().server_bind()
+
+    def _bind_dual_stack(self, port: int, handler) -> None:
+        # Reset per attempt — a caller retrying another port must not
+        # inherit the AF_INET fallback with a "::" address.
+        self.address_family = socket.AF_INET6
+        if socket.has_ipv6:
+            try:
+                super().__init__(("::", port), handler)
+                return
+            except OSError as exc:
+                if exc.errno not in (errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL):
+                    raise
+        self.address_family = socket.AF_INET
+        super().__init__(("0.0.0.0", port), handler)
+
+
+class NightscoutServer(DualStackServer):
+    def __init__(self, port: int, user: str, api_secret: str, store: Store):
+        self._bind_dual_stack(port, NightscoutHandler)
         self.user = user
         self.secret_hash = (
             hashlib.sha1(api_secret.encode()).hexdigest() if api_secret else None
@@ -199,11 +235,11 @@ class NightscoutHandler(BaseHTTPRequestHandler):
             self._send_json({"status": 404, "message": "Not found"}, 404)
 
 
-def start_servers(users, store: Store, host: str = "0.0.0.0") -> list[NightscoutServer]:
+def start_servers(users, store: Store) -> list[NightscoutServer]:
     """Start one Nightscout server thread per configured user."""
     servers = []
     for user in users:
-        server = NightscoutServer(host, user.port, user.name, user.api_secret, store)
+        server = NightscoutServer(user.port, user.name, user.api_secret, store)
         thread = threading.Thread(
             target=server.serve_forever, name=f"ns-{user.name}", daemon=True
         )

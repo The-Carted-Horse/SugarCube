@@ -119,6 +119,16 @@ def main() -> int:
     from .webadmin import start_admin
     start_admin(config, config_path, store)
 
+    # Release checks (and forced-release self-installs) run only under
+    # systemd — a dev checkout must never have its working tree replaced
+    # underneath the developer. The settings page's "Check now" still
+    # works everywhere.
+    if (os.environ.get("INVOCATION_ID")
+            and not args.demo and not args.screenshot):
+        from .updater import UpdateChecker, mark_boot_ok_later
+        mark_boot_ok_later()
+        UpdateChecker(store).start()
+
     # Wi-Fi provisioning: with no network at all, a setup hotspot comes up
     # and the screen switches to a join-QR. Password persists across boots.
     import secrets as secrets_mod

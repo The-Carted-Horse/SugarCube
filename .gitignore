@@ -1,5 +1,9 @@
 __pycache__/
 *.pyc
+sugarcube/_version.py
+sugarcube.prev/
+.boot-fails
+image/stage-sugarcube/00-sugarcube/files/sugarcube/
 config.json
 *.db
 .venv/
