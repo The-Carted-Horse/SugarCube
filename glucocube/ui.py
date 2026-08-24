@@ -103,6 +103,10 @@ button[disabled] { opacity:.55; cursor:default; }
    squeezing it into whatever is left. */
 .actions .note { flex:1 0 100%; order:-1; margin:0; }
 .actions button[type=submit], .actions .primary { flex:1 1 auto; }
+/* Two buttons that belong side by side but need separate forms (check
+   and install, say) still have to share the row evenly. */
+.actions form { flex:1 1 auto; display:flex; margin:0; }
+.actions form button { flex:1 1 auto; }
 
 /* ---- password / copy field ---- */
 .withbtn { display:flex; gap:.5rem; align-items:stretch; }
@@ -153,6 +157,14 @@ pre.detail { background:var(--bg); border:1px solid var(--line); border-radius:8
   white-space:pre-wrap; word-break:break-word; }
 details summary { cursor:pointer; min-height:38px; display:flex;
                   align-items:center; color:var(--dim); font-size:.85rem; }
+/* display:flex on a summary drops the disclosure triangle, and a
+   heading nobody knows is tappable is worse than no heading. */
+details > summary::marker, details > summary::-webkit-details-marker
+  { content:""; display:none; }
+details > summary::before { content:"\\203A"; display:inline-block;
+  width:1em; font-size:1.15em; line-height:1; color:var(--faint);
+  transition:transform .15s ease; }
+details[open] > summary::before { transform:rotate(90deg); }
 
 /* ---- wizard progress ---- */
 .steps { display:flex; gap:.3rem; margin:1rem 0 .2rem; }
@@ -160,6 +172,37 @@ details summary { cursor:pointer; min-height:38px; display:flex;
 .steps i.done { background:var(--accent); }
 .stepno { color:var(--faint); font-size:.8rem; letter-spacing:.08em;
           text-transform:uppercase; }
+
+/* ---- settings hub: one tappable row per area ---- */
+.menu { display:grid; gap:.55rem; margin:.7rem 0 1.2rem; }
+.item { display:flex; align-items:center; gap:.85rem; min-height:62px;
+  padding:.7rem .9rem; background:var(--card); border:1px solid var(--line);
+  border-radius:12px; color:var(--fg); text-decoration:none; }
+.item:active { background:var(--raise); }
+.item .body { flex:1 1 auto; min-width:0; }
+.item .name { display:block; }
+.item .sub { display:block; color:var(--faint); font-size:.82rem;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.item .chev { flex:0 0 auto; color:var(--faint); font-size:1.4rem;
+  line-height:1; margin-left:.1rem; }
+.item .thumb { flex:0 0 auto; width:78px; display:block; border-radius:6px;
+  border:1px solid var(--line); }
+/* The live thumbnail, with the icon standing in until (or unless) it
+   loads — otherwise that row's text sits out of line with the rest. */
+.item .lead { flex:0 0 auto; display:flex; align-items:center; }
+.ico { flex:0 0 auto; width:22px; height:22px; color:var(--dim); }
+.pill { flex:0 0 auto; font-size:.72rem; line-height:1.5; padding:.1rem .55rem;
+  border:1px solid var(--line); border-radius:999px; color:var(--dim);
+  white-space:nowrap; }
+.pill.ok { color:var(--ok); border-color:var(--ok); }
+.pill.warn { color:var(--warn); border-color:var(--warn); }
+.pill.err { color:var(--danger); border-color:var(--danger); }
+
+/* ---- facts: a short read-only list, e.g. "version", "address" ---- */
+.facts { display:grid; gap:.35rem .9rem; margin:.6rem 0 1rem;
+  grid-template-columns:auto 1fr; font-size:.9rem; }
+.facts dt { color:var(--dim); }
+.facts dd { margin:0; overflow-wrap:anywhere; }
 
 /* ---- misc ---- */
 .sr-only { position:absolute; width:1px; height:1px; padding:0; overflow:hidden;
@@ -300,6 +343,80 @@ NAV = """<nav><a href="/">Dashboard</a><a href="/settings">Settings</a>
 <a href="/log">Sync log</a><span class="grow"></span>
 <button type="button" onclick="toggleTheme()">Theme</button></nav>"""
 
+# Stroke icons for the settings hub. Inline because every page has to
+# work with no internet at all, and currentColor because both themes
+# have to look deliberate.
+ICONS = {
+    "screen": '<rect x="2.6" y="4" width="18.8" height="13" rx="2"/>'
+              '<path d="M9 20.5h6M12 17v3.5"/>',
+    "people": '<circle cx="9" cy="8" r="3.2"/>'
+              '<path d="M3.4 19.2c0-3.1 2.5-5.2 5.6-5.2s5.6 2.1 5.6 5.2"/>'
+              '<path d="M16.2 6.3a3.2 3.2 0 0 1 0 6"/>'
+              '<path d="M17.4 14.4c2.1.7 3.2 2.4 3.2 4.6"/>',
+    "ranges": '<path d="M3.5 8h9M17 8h3.5M3.5 16h4M12 16h8.5"/>'
+              '<circle cx="14.7" cy="8" r="2.2"/><circle cx="9.7" cy="16" r="2.2"/>',
+    "wifi": '<path d="M2.9 9.1a13.6 13.6 0 0 1 18.2 0"/>'
+            '<path d="M6.1 12.5a9 9 0 0 1 11.8 0"/>'
+            '<path d="M9.3 15.9a4.4 4.4 0 0 1 5.4 0"/>'
+            '<circle cx="12" cy="19.2" r="1.1" fill="currentColor" stroke="none"/>',
+    "clock": '<circle cx="12" cy="12" r="8.6"/><path d="M12 6.8v5.5l3.6 2.1"/>',
+    "update": '<path d="M12 3.6v11M7.6 10.3 12 14.7l4.4-4.4"/>'
+              '<path d="M4.6 18.6h14.8"/>',
+    "lock": '<rect x="4.6" y="10.4" width="14.8" height="9.6" rx="2"/>'
+            '<path d="M8.1 10.4V7.9a3.9 3.9 0 0 1 7.8 0v2.5"/>',
+    "wizard": '<path d="M12 3.5 13.7 8l4.6 1.7-4.6 1.7L12 16l-1.7-4.6L5.7 9.7'
+              ' 10.3 8Z"/><path d="M18.5 15.5 19.3 18l2.5.8-2.5.9-.8 2.4'
+              '-.9-2.4-2.4-.9 2.4-.8Z"/>',
+    "log": '<path d="M5.5 4.5h13v15h-13z"/><path d="M8.5 9h7M8.5 12.5h7M8.5 16h4"/>',
+}
+
+
+def icon(name: str) -> str:
+    return (f'<svg class="ico" viewBox="0 0 24 24" fill="none"'
+            ' stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+            f' stroke-linejoin="round" aria-hidden="true">{ICONS.get(name, "")}'
+            "</svg>")
+
+
+def nav_html(back: str = "", back_label: str = "Settings") -> str:
+    """The page's chrome. A sub-page leads with the way back out of it."""
+    if not back:
+        return NAV
+    return (f'<nav><a href="{esc(back)}">&lsaquo; {esc(back_label)}</a>'
+            '<a href="/">Dashboard</a><span class="grow"></span>'
+            '<button type="button" onclick="toggleTheme()">Theme</button></nav>')
+
+
+def menu(items) -> str:
+    """A list of tappable rows — the settings hub, and the people list."""
+    return f'<div class="menu">{"".join(items)}</div>'
+
+
+def menu_item(href: str, title: str, sub: str = "", *, lead: str = "",
+              badge: str = "", badge_kind: str = "") -> str:
+    """One row of a menu: a whole-row tap target, with a state line.
+
+    The sub-line is the point of the pattern — it means the hub answers
+    most questions ("is it on Wi-Fi?", "when did that last update?")
+    without anyone opening the page that owns them.
+    """
+    badge_html = (f'<span class="pill {esc(badge_kind)}">{esc(badge)}</span>'
+                  if badge else "")
+    return (
+        f'<a class="item" href="{esc(href)}">{lead}'
+        f'<span class="body"><span class="name">{esc(title)}</span>'
+        + (f'<span class="sub">{esc(sub)}</span>' if sub else "")
+        + f"</span>{badge_html}"
+        '<span class="chev" aria-hidden="true">&rsaquo;</span></a>'
+    )
+
+
+def facts(pairs) -> str:
+    """Read-only label/value lines. Values may contain markup."""
+    body = "".join(f"<dt>{esc(label)}</dt><dd>{value}</dd>"
+                   for label, value in pairs)
+    return f'<dl class="facts">{body}</dl>'
+
 
 # ------------------------------------------------------------- helpers ----
 
@@ -308,7 +425,8 @@ def esc(value) -> str:
 
 
 def page(title: str, body: str, *, nav: bool = False, head: str = "",
-         script: str = "", refresh: str = "") -> str:
+         script: str = "", refresh: str = "", back: str = "",
+         back_label: str = "Settings") -> str:
     """A complete document. Every response goes through here.
 
     Previously the error and interstitial pages were emitted as bare
@@ -326,7 +444,8 @@ def page(title: str, body: str, *, nav: bool = False, head: str = "",
         '<noscript><style>[data-group][hidden]{display:block !important}'
         '.opt .tick{visibility:visible;color:var(--faint)}</style></noscript>'
         f"{head}</head><body><div class=\"wrap\">"
-        f"{NAV if nav else ''}{body}</div>{SCRIPT}{script}</body></html>"
+        f"{nav_html(back, back_label) if nav else ''}"
+        f"{body}</div>{SCRIPT}{script}</body></html>"
     )
 
 

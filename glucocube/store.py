@@ -247,6 +247,30 @@ class Store:
             )
             self._db.commit()
 
+    def rename_user(self, old: str, new: str) -> None:
+        """Carry someone's history over when they are renamed.
+
+        Every table is keyed by the display name, so without this a
+        rename looks exactly like a brand new person with no readings.
+        Anything already stored under the new name wins — the unique
+        indexes would reject the duplicate otherwise.
+        """
+        if not old or not new or old == new:
+            return
+        with self._lock:
+            for table, key in (("entries", "date"),
+                               ("devicestatus", "created_at")):
+                self._db.execute(
+                    f"DELETE FROM {table} WHERE user = ? AND {key} IN"
+                    f" (SELECT {key} FROM {table} WHERE user = ?)",
+                    (old, new),
+                )
+            for table in ("entries", "treatments", "devicestatus", "params"):
+                self._db.execute(
+                    f"UPDATE OR IGNORE {table} SET user = ? WHERE user = ?",
+                    (new, old))
+            self._db.commit()
+
     def get_params(self, user: str) -> dict:
         with self._lock:
             row = self._db.execute(

@@ -7,12 +7,13 @@ Design: near-black background, left-aligned type. Each panel shows the
 person's name with a source/freshness badge, a huge glucose number with
 trend arrow + delta, a FORECAST 2H header row, a 5-hour chart (3h history,
 2h forecast with a confidence cone), and an IOB/COB/CARBS/BOLUS stat row.
-A footer spans the screen with the date/time and the NIGHT/DAY toggle.
+A footer spans the screen with the date/time, a SETTINGS control that
+pops a QR code for the settings page, and the NIGHT/DAY toggle.
 Numerals are Space Grotesk; labels are JetBrains Mono (bundled, OFL).
 
-Taps reach the toggle two ways: SDL events (kmsdrm, or a dev window) and,
-because SDL's dummy driver used by the fbdev path delivers none, the
-evdev reader in ``touch.py``.
+Taps reach both controls two ways: SDL events (kmsdrm, or a dev window)
+and, because SDL's dummy driver used by the fbdev path delivers none,
+the evdev reader in ``touch.py``.
 """
 
 import math
@@ -66,6 +67,7 @@ LIGHT = Palette(
 )
 THEMES = {p.name: p for p in (DARK, LIGHT)}
 THEME_STATE_USER = "__display"     # params-table key for persisted UI state
+QR_OPEN_SECONDS = 120              # how long the settings QR stays up
 
 DIRECTION_ANGLES = {
     "DoubleUp": (-90, 2),
@@ -179,9 +181,12 @@ class Display:
         self._fonts: dict[tuple[str, int], pygame.font.Font] = {}
         saved = store.get_params(THEME_STATE_USER).get("theme", "dark")
         self.pal = THEMES.get(saved, DARK)
-        self._toggle_rect = self._toggle_rect_for(self._footer_rect())
+        self._qr_rect, self._toggle_rect = self._controls_for(
+            self._footer_rect())
         self._last_toggle = 0.0
         self._tap_flash = -99.0        # monotonic time of the last toggle
+        self._flash_rect = pygame.Rect(0, 0, 0, 0)
+        self._qr_open_until = 0.0      # monotonic; the QR overlay's deadline
         self._taps: queue.SimpleQueue = queue.SimpleQueue()
         self._wake = threading.Event()  # set by the touch thread to redraw now
         self._touch: touch.TouchReader | None = None
@@ -203,13 +208,32 @@ class Display:
     def toggle_theme(self):
         # Touchscreens can deliver a tap as both finger and mouse events;
         # debounce so one tap doesn't flip the theme twice.
-        now = time.monotonic()
-        if now - self._last_toggle < 0.5:
+        if not self._debounce():
             return
-        self._last_toggle = now
-        self._tap_flash = now
+        self._flash_rect = self._toggle_rect
         self.pal = LIGHT if self.pal.name == "dark" else DARK
         self.store.set_params(THEME_STATE_USER, {"theme": self.pal.name})
+
+    def toggle_qr(self):
+        """Show (or hide) the QR code that opens the settings page."""
+        if not self._debounce():
+            return
+        self._flash_rect = self._qr_rect
+        self._qr_open_until = (0.0 if self.qr_open()
+                               else time.monotonic() + QR_OPEN_SECONDS)
+
+    def qr_open(self) -> bool:
+        # Times out rather than latching: this hangs on a wall, and a
+        # dashboard covered by a QR code all afternoon helps nobody.
+        return time.monotonic() < self._qr_open_until
+
+    def _debounce(self) -> bool:
+        now = time.monotonic()
+        if now - self._last_toggle < 0.5:
+            return False
+        self._last_toggle = now
+        self._tap_flash = now
+        return True
 
     def _sync_theme(self) -> None:
         """Adopt a theme set elsewhere (the web UI writes the same key)."""
@@ -225,7 +249,15 @@ class Display:
         self._wake.set()
 
     def _handle_tap(self, pos) -> None:
-        if self._toggle_rect.collidepoint(pos):
+        if self.qr_open():
+            # Anywhere dismisses it. Someone who has just scanned the code
+            # should not have to find a small target to put it away.
+            self._qr_open_until = 0.0
+            self._wake.set()
+            return
+        if self._qr_rect.collidepoint(pos):
+            self.toggle_qr()
+        elif self._toggle_rect.collidepoint(pos):
             self.toggle_theme()
 
     def _footer_rect(self) -> pygame.Rect:
@@ -247,6 +279,25 @@ class Display:
         if rect.top < 0:
             rect.top = 0
         return rect
+
+    def _controls_for(self, footer: pygame.Rect) -> tuple:
+        """(QR, NIGHT/DAY) touch targets, packed in from the right.
+
+        The QR control gives way on a screen too narrow to hold both it
+        and the clock — the settings page is still reachable from any
+        phone on the network, and a control overlapping the date is worse
+        than no control.
+        """
+        toggle = self._toggle_rect_for(footer)
+        px = max(11, int(footer.height * 0.30))
+        # Wide enough for the word as well as the mark: "SETTINGS" at
+        # this size is about 8 characters of tracked mono, and a control
+        # that is only a glyph is a control nobody presses.
+        qr = pygame.Rect(0, 0, max(104, px * 10), toggle.height)
+        qr.midright = (toggle.left, footer.centery)
+        if qr.left < footer.left + int(footer.width * 0.34):
+            return pygame.Rect(0, 0, 0, 0), toggle
+        return qr, toggle
 
     # ---- type ----
 
@@ -598,14 +649,16 @@ class Display:
         return state if state.get("available") else {}
 
     def draw_footer(self, rect: pygame.Rect):
-        """Date/time left (plus update notice); NIGHT/DAY toggle right."""
+        """Date/time left (plus update notice); SETTINGS and NIGHT/DAY right."""
         surface = self.screen
         pygame.draw.line(surface, self.pal.line,
                          (rect.left, rect.top), (rect.right, rect.top))
-        if time.monotonic() - self._tap_flash < 0.35:
-            # Momentary highlight so a tap is visibly acknowledged.
+        if (time.monotonic() - self._tap_flash < 0.35
+                and self._flash_rect.width):
+            # Momentary highlight so a tap is visibly acknowledged, on
+            # whichever control was actually hit.
             pygame.draw.rect(surface, self.pal.band,
-                             self._toggle_rect.clip(rect).inflate(-2, -6),
+                             self._flash_rect.clip(rect).inflate(-2, -6),
                              border_radius=8)
         pad = int(surface.get_width() * 0.028)
         px = max(11, int(rect.height * 0.30))
@@ -631,14 +684,19 @@ class Display:
         mark_size = int(mark_px * 1.35)
         mark_w = mark_size + int(mark_px * 0.6) + int(len("GLUCOCUBE") * mark_px * 0.85)
         left_edge = rect.centerx - mark_w // 2
+        controls_left = (self._qr_rect.left if self._qr_rect.width
+                         else self._toggle_rect.left)
         if (not update
                 and left_edge > when_rect.right + px
-                and rect.centerx + mark_w // 2 < self._toggle_rect.left - px):
+                and rect.centerx + mark_w // 2 < controls_left - px):
             self.draw_logo(surface, (left_edge + mark_size // 2, rect.centery),
                            mark_size, self.pal.faint)
             self.label(surface, "GlucoCube", mark_px, self.pal.faint,
                        midleft=(left_edge + mark_size + int(mark_px * 0.6),
                                 rect.centery))
+
+        if self._qr_rect.width:
+            self.draw_qr_button(rect, px)
 
         icon_r = max(6, int(rect.height * 0.14))
         icon_c = (rect.right - pad - icon_r, rect.centery)
@@ -665,6 +723,104 @@ class Display:
                                (icon_c[0] + icon_r * 0.45,
                                 icon_c[1] - icon_r * 0.3), icon_r * 0.7)
 
+    # A miniature code, cell by cell: three finder squares and enough
+    # data specks to read as a QR at fourteen pixels. Drawn rather than
+    # set in a font because at this size a glyph turns to mush.
+    QR_GLYPH = (
+        "XXX.XXX",
+        "X.X.X.X",
+        "XXX.XXX",
+        "..X.X..",
+        "XXX..XX",
+        "X.X.X.X",
+        "XXX..X.",
+    )
+
+    def draw_qr_button(self, rect: pygame.Rect, px: int):
+        """The SETTINGS control: a small QR mark, labelled, in the footer."""
+        surface = self.screen
+        color = self.pal.dim
+        cell = max(2, int(rect.height * 0.5) // len(self.QR_GLYPH))
+        size = cell * len(self.QR_GLYPH)
+        box = pygame.Rect(0, 0, size, size)
+        box.midright = (self._qr_rect.right - int(px * 0.7), rect.centery)
+        for y, row in enumerate(self.QR_GLYPH):
+            for x, mark in enumerate(row):
+                if mark == "X":
+                    pygame.draw.rect(surface, color,
+                                     (box.left + x * cell, box.top + y * cell,
+                                      cell, cell))
+        label = "SETTINGS"
+        label_right = box.left - int(px * 0.8)
+        if label_right - int(len(label) * px * 0.85) >= self._qr_rect.left:
+            self.label(surface, label, px, color,
+                       midright=(label_right, rect.centery))
+
+    # ---- the settings QR overlay ----
+
+    def _settings_url(self, keyed: bool = True) -> str | None:
+        """Where the settings page lives, or None with no network yet.
+
+        The keyed form carries the admin password as ?key=, which the web
+        admin accepts and turns into a cookie — scanning the code has to
+        land on the settings page, not on a login box asking for a
+        password that is printed six inches away.
+        """
+        ip = self._cached_lan_ip()
+        mdns = self._mdns_url("")
+        if ip == "127.0.0.1" and not mdns:
+            return None
+        path = "/settings"
+        if keyed and self.config.admin_password:
+            path += f"?key={self.config.admin_password}"
+        if mdns:
+            return mdns + path
+        return admin_url(ip, self.config.admin_port, path)
+
+    def draw_settings_qr(self):
+        """Full-screen card holding a QR code for the settings page.
+
+        The same gesture as the sun and moon beside it: something you can
+        reach for on the device itself, rather than having to remember an
+        address and a password on the phone in your hand.
+        """
+        screen = self.screen
+        w, h = screen.get_width(), screen.get_height()
+        cx = w // 2
+        s = min(w, h)
+        # Painted over, not tinted: a phone camera wants a clean field
+        # around the code, and a ghost of a glucose number behind it is
+        # the one way this fails.
+        screen.fill(self.pal.bg)
+        self.text(screen, "Settings", int(s * 0.075), self.pal.fg,
+                  kind="num", midtop=(cx, int(h * 0.04)))
+        close = "tap anywhere to close"
+        self.text(screen, close, int(s * 0.035), self.pal.faint,
+                  midbottom=(cx, h - int(s * 0.035)))
+        url = self._settings_url()
+        if not url:
+            self.text(screen, "This device is not on a network yet",
+                      int(s * 0.05), self.pal.dim, midtop=(cx, int(h * 0.44)))
+            return
+        self.text(screen, "Scan from a phone on this network",
+                  int(s * 0.042), self.pal.dim, midtop=(cx, int(h * 0.15)))
+        qr = self._qr_surface(url, int(s * 0.44))
+        if qr:
+            qr_rect = qr.get_rect(center=(cx, int(h * 0.50)))
+            screen.blit(qr, qr_rect)
+            info_y = qr_rect.bottom + int(s * 0.03)
+        else:
+            info_y = int(h * 0.44)
+        # Without the key: this line is for someone typing it in, and the
+        # password below is the half they type second.
+        self.text(screen, self._settings_url(keyed=False) or "",
+                  int(s * 0.045), self.pal.fg, midtop=(cx, info_y))
+        if self.config.admin_password:
+            self.text(screen,
+                      f"login:  admin  /  {self.config.admin_password}",
+                      int(s * 0.038), self.pal.dim,
+                      midtop=(cx, info_y + int(s * 0.06)))
+
     # ---- first-boot setup screens ----
 
     def _cached_lan_ip(self) -> str:
@@ -686,6 +842,12 @@ class Display:
         if not host or host == "localhost":
             return None
         return admin_url(f"{host}.local", self.config.admin_port, path)
+
+    def _with_key(self, url: str) -> str:
+        """The same URL, but one a phone can open without a login box."""
+        if not self.config.admin_password:
+            return url
+        return f"{url}?key={self.config.admin_password}"
 
     def _qr_surface(self, url: str, target_px: int) -> pygame.Surface | None:
         if self._qr_cache and self._qr_cache[0] == url:
@@ -766,10 +928,8 @@ class Display:
         if network.hotspot_client_connected():
             # Stage 2: a phone has joined — offer a QR that opens the
             # settings page already logged in (?key= auto-auth).
-            url = admin_url(
-                network.HOTSPOT_ADDR, self.config.admin_port,
-                f"/setup?key={self.config.admin_password}",
-            )
+            url = self._with_key(admin_url(network.HOTSPOT_ADDR,
+                                           self.config.admin_port, "/setup"))
             self.text(screen, "Connected!  One more scan", int(s * 0.075),
                       self.pal.fg, kind="num", midtop=(cx, int(h * 0.035)))
             self.text(screen, "2.  Scan to open setup", int(s * 0.045),
@@ -854,7 +1014,10 @@ class Display:
         self.text(screen, "Scan from a phone on this network to set up",
                   int(s * 0.045), self.pal.dim, midtop=(cx, int(h * 0.17)))
 
-        qr = (self._qr_surface(primary, int(s * 0.46))
+        # The code carries the admin key so that scanning it opens setup
+        # outright. The address printed below deliberately does not: it
+        # is for typing, and the login for it is printed with it.
+        qr = (self._qr_surface(self._with_key(primary), int(s * 0.46))
               if self.config.admin_port else None)
         if qr:
             rect = qr.get_rect(center=(cx, int(h * 0.52)))
@@ -880,9 +1043,11 @@ class Display:
         self._sync_theme()
         self.screen.fill(self.pal.bg)
         if self._hotspot_is_active():
-            # No toggle on the setup screens: clear the target so taps
-            # there can't hit a rect left over from the dashboard.
-            self._toggle_rect = pygame.Rect(0, 0, 0, 0)
+            # No controls on the setup screens: clear the targets so taps
+            # there can't hit a rect left over from the dashboard, and
+            # put away an overlay that was up when the network dropped.
+            self._toggle_rect = self._qr_rect = pygame.Rect(0, 0, 0, 0)
+            self._qr_open_until = 0.0
             self.draw_hotspot_screen()
             pygame.display.flip()
             if self.fb:
@@ -891,7 +1056,8 @@ class Display:
         users = self.config.users
         snaps = [self.store.snapshot(user.name) for user in users]
         if self.is_unconfigured(snaps):
-            self._toggle_rect = pygame.Rect(0, 0, 0, 0)
+            self._toggle_rect = self._qr_rect = pygame.Rect(0, 0, 0, 0)
+            self._qr_open_until = 0.0
             self.draw_setup_screen()
             pygame.display.flip()
             if self.fb:
@@ -900,7 +1066,7 @@ class Display:
         full_w = self.screen.get_width()
         full_h = self.screen.get_height()
         footer = self._footer_rect()
-        self._toggle_rect = self._toggle_rect_for(footer)
+        self._qr_rect, self._toggle_rect = self._controls_for(footer)
         body_h = footer.top
         portrait = full_h > full_w
         for i, (user, snap) in enumerate(zip(users, snaps)):
@@ -920,6 +1086,8 @@ class Display:
                                      (rect.left, body_h - int(body_h * 0.03)))
             self.draw_panel(rect, user, snap)
         self.draw_footer(footer)
+        if self.qr_open():
+            self.draw_settings_qr()
         pygame.display.flip()
         if self.fb:
             self.fb.present(self.screen)
@@ -949,6 +1117,8 @@ class Display:
                     running = False
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_t:
                     self.toggle_theme()
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_s:
+                    self.toggle_qr()
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     self._handle_tap(event.pos)
                 elif event.type == pygame.FINGERDOWN:
@@ -970,6 +1140,10 @@ class Display:
             flash_left = 0.35 - (time.monotonic() - self._tap_flash)
             if flash_left > 0:
                 timeout = min(timeout, flash_left + 0.02)
+            if self.qr_open():
+                # Redraw promptly when the overlay's welcome runs out.
+                timeout = min(timeout,
+                              max(0.05, self._qr_open_until - time.monotonic()))
             self._wake.wait(timeout)
         self._stop_touch()
         pygame.quit()

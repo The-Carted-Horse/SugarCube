@@ -56,6 +56,22 @@ class Config:
     database: str = "glucocube.db"
     admin_port: int = 80            # 0 disables the web admin
     admin_password: str = ""        # empty disables Basic auth
+    # Which releases this device updates from: "stable" (full releases
+    # only) or "beta" (pre-releases too). Read live by the update
+    # checker, so flipping it on the settings page takes effect at once.
+    update_channel: str = "stable"
+
+
+# Kept here rather than in updater.py so config.load() can normalise the
+# channel without importing the updater (which pulls in the network).
+UPDATE_CHANNELS = ("stable", "beta")
+CHANNEL_LABELS = {"stable": "Standard", "beta": "Beta"}
+
+
+def normalize_channel(name) -> str:
+    """A channel name we know, or "stable" — never a typo from a form."""
+    name = str(name or "").strip().lower()
+    return name if name in UPDATE_CHANNELS else "stable"
 
 
 def admin_url(host: str, port: int, path: str = "") -> str:
@@ -264,10 +280,12 @@ def load(path: str | Path) -> Config:
         database = str(path.parent / database)
 
     admin = raw.get("admin", {})
+    updates = raw.get("updates", {})
     return Config(
         users=users,
         display=display,
         database=database,
         admin_port=int(admin.get("port", 80)),
         admin_password=admin.get("password", ""),
+        update_channel=normalize_channel(updates.get("channel")),
     )

@@ -1,33 +1,134 @@
-name: Build SD card image
+name: Build and release
 
+# Releases are cut from branches, not from hand-pushed tags:
+#   push to dev  -> vX.Y.Z-rc.N  marked as a pre-release
+#   push to main -> vX.Y.Z       a full release devices will offer
+# The tag is created by the release step at the pushed commit, so there
+# is nothing to tag by hand.
 on:
   workflow_dispatch:
+    inputs:
+      bump:
+        description: "Part to increment when starting a new version"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      channel:
+        description: "Release channel"
+        type: choice
+        options: [auto, prerelease, release]
+        default: auto
   push:
-    tags: ["v*"]
+    branches: [main, dev]
 
-# The release step needs to create releases; the org's default token
-# permissions are read-only.
+# The release step needs to create releases and tags; the org's default
+# token permissions are read-only.
 permissions:
   contents: write
+
+# Two releases racing for the same version number would both pick it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     # Native ARM runner: no QEMU emulation needed, and much faster builds.
     runs-on: ubuntu-24.04-arm
     steps:
+      # Tags are what the next version number is derived from, so the
+      # full history (and with it every tag) has to come down.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # Bake the release version into the image so the updater can
-      # compare it against future releases. Only plain vX.Y.Z tags: a
-      # device stamped with an unparseable version stops seeing updates.
-      - name: Stamp release version
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Work out the next version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          CHANNEL: ${{ inputs.channel }}
         run: |
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+(\.[0-9]+)*$ ]]; then
-            echo "Tag '$GITHUB_REF_NAME' is not a plain vX.Y.Z tag" >&2
+          set -euo pipefail
+          level="${BUMP:-patch}"
+          channel="${CHANNEL:-auto}"
+          if [ "$channel" = "auto" ]; then
+            case "$GITHUB_REF_NAME" in
+              dev) channel=prerelease ;;
+              *)   channel=release ;;
+            esac
+          fi
+
+          # v1.2 and v1.2.0 are the same version; compare them as one shape.
+          norm() {
+            local v="${1#v}" a b c
+            IFS=. read -r a b c <<<"$v"
+            echo "${a:-0}.${b:-0}.${c:-0}"
+          }
+          bump() {
+            local a b c
+            IFS=. read -r a b c <<<"$1"
+            case "$2" in
+              major) echo "$((a + 1)).0.0" ;;
+              minor) echo "$a.$((b + 1)).0" ;;
+              *)     echo "$a.$b.$((c + 1))" ;;
+            esac
+          }
+          # "is $1 strictly newer than $2", by version order not string order.
+          newer() {
+            [ "$1" != "$2" ] &&
+              [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
+          }
+
+          git fetch --tags --force --quiet origin
+
+          latest=$(git tag -l 'v*' \
+            | grep -E '^v[0-9]+(\.[0-9]+){0,2}$' | sort -V | tail -n1 || true)
+          current=$(norm "${latest:-v0.0.0}")
+
+          # A version already being rehearsed on dev: main promotes that one
+          # rather than opening a second unreleased version alongside it.
+          pending=""
+          for tag in $(git tag -l 'v*' \
+            | grep -E '^v[0-9]+(\.[0-9]+){0,2}-rc\.[0-9]+$' || true); do
+            base=$(norm "${tag%%-rc.*}")
+            newer "$base" "$current" || continue
+            if [ -z "$pending" ] || newer "$base" "$pending"; then
+              pending="$base"
+            fi
+          done
+
+          version="${pending:-$(bump "$current" "$level")}"
+          if [ "$channel" = "prerelease" ]; then
+            n=1
+            while git rev-parse -q --verify "refs/tags/v$version-rc.$n" >/dev/null; do
+              n=$((n + 1))
+            done
+            tag="v$version-rc.$n"
+          else
+            # Re-running main with no new dev work must not reuse a tag.
+            while git rev-parse -q --verify "refs/tags/v$version" >/dev/null; do
+              version=$(bump "$version" patch)
+            done
+            tag="v$version"
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$([ "$channel" = prerelease ] && echo true || echo false)" \
+            >> "$GITHUB_OUTPUT"
+          echo "Previous release $current -> $tag ($channel)"
+
+      # Bake the release version into the image so the updater can compare
+      # it against future releases. The updater only understands vX.Y.Z and
+      # vX.Y.Z-rc.N: a device stamped with anything else stops seeing updates.
+      - name: Stamp release version
+        run: |
+          version='${{ steps.version.outputs.version }}'
+          if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+)*(-rc\.[0-9]+)?$ ]]; then
+            echo "Computed version '$version' is not a version the updater reads" >&2
             exit 1
           fi
-          echo "__version__ = \"${GITHUB_REF_NAME#v}\"" > glucocube/_version.py
+          echo "__version__ = \"$version\"" > glucocube/_version.py
 
       # pi-gen only sees the stage directory, so the app source must be
       # inside it before the build starts.
@@ -61,10 +162,13 @@ jobs:
           name: glucocube-image
           path: ${{ steps.build.outputs.image-path }}
 
-      - name: Attach image to release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          # The tag does not exist yet; cut it at the commit that was pushed.
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
           files: ${{ steps.build.outputs.image-path }}
           # Releases were going out with an empty description; the commit
           # log is a better starting point than nothing.

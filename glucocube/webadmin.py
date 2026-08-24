@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
@@ -28,51 +29,40 @@ from .store import Store
 
 log = logging.getLogger("glucocube.webadmin")
 
-SETTINGS_SCRIPT = """<script>
+SCREEN_SCRIPT = """<script>
+// Keep every live screenshot on the page current (the hub thumbnail and
+// the full preview are the same image).
 setInterval(() => {
-  const img = document.getElementById('screen');
-  if (img) img.src = '/screen.png?t=' + Date.now();
-}, 5000);
-
-function removePerson(i) {
-  document.querySelector('[name=u' + i + '_remove]').value = '1';
-  document.getElementById('fs' + i).hidden = true;
-}
-function addPerson() {
-  let maxI = -1, maxPort = 1336;
-  document.querySelectorAll('fieldset.person').forEach(fs => {
-    maxI = Math.max(maxI, +fs.dataset.i || 0);
-    const p = fs.querySelector('[name$=_port]');
-    if (p && +p.value) maxPort = Math.max(maxPort, +p.value);
+  document.querySelectorAll('img.live').forEach(img => {
+    img.src = '/screen.png?t=' + Date.now();
   });
-  const i = maxI + 1;
-  const markup = document.getElementById('person-template').innerHTML
-    .replaceAll('__I__', i).replaceAll('__PORT__', maxPort + 1);
-  document.getElementById('people').insertAdjacentHTML('beforeend', markup);
-  window.glucoSync();
-}
+}, 5000);
+</script>"""
 
+PERSON_SCRIPT = """<script>
 // "Test connection": check the credentials before saving, rather than
 // finding out from the sync log hours later that a letter was wrong.
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('button.test');
   if (!button) return;
-  const i = button.dataset.i;
-  const out = document.getElementById('testresult' + i);
-  const value = (field) => {
-    const el = document.querySelector('[name="u' + i + '_' + field + '"]');
+  event.preventDefault();
+  const form = button.closest('form');
+  const out = document.getElementById('testresult');
+  const value = (name) => {
+    const el = form.querySelector('[name="' + name + '"]');
     return el ? el.value : '';
   };
-  const picked = document.querySelector('[name="u' + i + '_source"]:checked');
+  const picked = form.querySelector('[name=source]:checked');
   out.hidden = false;
   out.className = 'banner info';
-  out.textContent = 'Testing\u2026';
+  out.textContent = 'Testing…';
   button.disabled = true;
   try {
     const response = await fetch('/api/source/test', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        index: i, type: picked ? picked.value : 'push',
+        index: form.dataset.index,
+        type: picked ? picked.value : 'push',
         email: value('tp_email'), password: value('tp_password'),
         url: value('ns_url'), api_secret: value('ns_key'),
       }),
@@ -86,20 +76,69 @@ document.addEventListener('click', async (event) => {
   }
   button.disabled = false;
 });
+</script>"""
 
+WIFI_SCRIPT = """<script>
 // A rescan runs in the background; the page asks whether it has finished
 // instead of the server holding the request open while it waits.
 if (location.search.indexOf('scanning=1') >= 0) {
   const tick = async () => {
     try {
       const r = await fetch('/api/wifi.json', {cache: 'no-store'});
-      if (!(await r.json()).scanning) { location.replace('/settings'); return; }
+      if (!(await r.json()).scanning) {
+        location.replace('/settings/network');
+        return;
+      }
     } catch (err) {}
     setTimeout(tick, 1500);
   };
   setTimeout(tick, 1500);
 }
 </script>"""
+
+CLOCK_SCRIPT = """<script>
+// Say what time it is in the zone being chosen: "Europe/Chisinau" means
+// nothing to most people, "it is 6:42 pm there" does.
+(function(){
+  var list = document.getElementById('timezone');
+  var out = document.getElementById('tzpreview');
+  var detected = document.getElementById('tzdetected');
+  function preview(){
+    if (!list || !out) return;
+    if (!list.value) {
+      out.textContent = 'The device keeps the time it has now.';
+      return;
+    }
+    try {
+      out.textContent = 'It is ' + new Date().toLocaleString(undefined,
+        {timeZone: list.value, weekday: 'long', hour: 'numeric',
+         minute: '2-digit'}) + ' there.';
+    } catch (err) { out.textContent = ''; }
+  }
+  // The phone knows where it is; offer that as a one-tap answer.
+  if (detected && list) {
+    var zone = '';
+    try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; }
+    catch (err) {}
+    if (zone && zone !== list.value) {
+      for (var i = 0; i < list.options.length; i++) {
+        if (list.options[i].value === zone) {
+          detected.hidden = false;
+          detected.querySelector('b').textContent = zone.replace(/_/g, ' ');
+          detected.querySelector('button').onclick = function(){
+            list.value = zone; detected.hidden = true; preview();
+          };
+          break;
+        }
+      }
+    }
+  }
+  document.addEventListener('change', preview);
+  preview();
+  setInterval(preview, 30000);
+})();
+</script>"""
+
 
 LOG_BODY = """<h1>Sync log</h1>
 <p class="note">Most recent first. Cleared when the app restarts.</p>
@@ -236,7 +275,7 @@ footer span, footer a, footer button { white-space:nowrap; }
     stroke-linejoin="round" d="M8 1 14.1 4.5 14.1 11.5 8 15 1.9 11.5 1.9 4.5Z
     M8 8 14.1 4.5 M8 8 8 15 M8 8 1.9 4.5"/></svg>GlucoCube</span>
   <span class="grow"></span>
-  <a id="upgrade" href="/settings" style="display:none;color:var(--high)"></a>
+  <a id="upgrade" href="/settings/updates" style="display:none;color:var(--high)"></a>
   <a href="/log">Log</a>
   <a href="/settings">Settings</a>
   <a href="/fonts/OFL-JetBrainsMono.txt">Fonts</a>
@@ -436,6 +475,50 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) refr
 </script></body></html>"""
 
 
+def _g(value, default="") -> str:
+    """A threshold as people write it: 70, not 70.0. Blank stays blank."""
+    if value in (None, ""):
+        value = default
+    if value in (None, ""):
+        return ""
+    try:
+        return format(float(value), "g")
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _check_ranges(values: dict) -> None:
+    """Reject a set of thresholds the display could not colour sensibly.
+
+    Cheap to get wrong on a phone (a stray digit in "high"), and the
+    result is a panel that is red all day, so it is worth saying no.
+    """
+    if values["low"] >= values["high"]:
+        raise ValueError("The low has to be under the high.")
+    if values["urgent_low"] > values["low"]:
+        raise ValueError("The urgent low has to be at or under the low.")
+    if values["urgent_high"] < values["high"]:
+        raise ValueError("The urgent high has to be at or over the high.")
+    if values["urgent_low"] <= 0:
+        raise ValueError("Readings are above zero, so the urgent low has "
+                         "to be too.")
+
+
+def _number(form: dict, key: str, label: str):
+    """One number out of a form, or None when it was left blank.
+
+    Raises with the field's own name in the message: "could not convert
+    string to float: 'ninety'" is not something to show anybody.
+    """
+    value = (form.get(key) or "").strip()
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        raise ValueError(f"{label} needs to be a number.") from None
+
+
 def timezone_options() -> list[tuple[str, str]]:
     """(value, label) pairs for a time zone <select>, blank option first."""
     return [("", "Use whatever the device is set to")] + [
@@ -543,7 +626,17 @@ class AdminHandler(BaseHTTPRequestHandler):
         if path == "/":
             self._send(DASHBOARD_HTML.encode(), "text/html; charset=utf-8")
         elif path == "/settings":
-            self._send(self._render_page().encode(), "text/html; charset=utf-8")
+            self._send(ui.page("GlucoCube settings", self._page_hub(),
+                               nav=True, script=SCREEN_SCRIPT).encode(),
+                       "text/html; charset=utf-8")
+        elif path.startswith("/settings/"):
+            self._settings_get(path)
+        elif path == "/api/health.json":
+            # Deliberately tiny: the page shown during a restart polls it
+            # until the new process answers.
+            self._send(json.dumps({"ok": True,
+                                   "version": updater.current_version()}
+                                  ).encode(), "application/json")
         elif path == "/log":
             page = ui.page("GlucoCube sync log", LOG_BODY, nav=True,
                            script=LOG_SCRIPT)
@@ -602,8 +695,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._deny()
             return
-        self._send(b"", "text/html; charset=utf-8",
-                   200 if path in ("/", "/settings", "/setup", "/log") else 404)
+        known = path in ("/", "/setup", "/log") or path.startswith("/settings")
+        self._send(b"", "text/html; charset=utf-8", 200 if known else 404)
 
     def _dashboard_data(self) -> dict:
         import time
@@ -663,111 +756,39 @@ class AdminHandler(BaseHTTPRequestHandler):
         ("nightscout", "A Nightscout site",
          "Pulled from an existing cloud Nightscout"),
     )
+    SOURCE_NAMES = {"push": "Trio", "tidepool": "twiist",
+                    "nightscout": "Nightscout"}
+    CHANNEL_CARDS = (
+        ("stable", "Standard",
+         "Full releases only — what almost everyone wants"),
+        ("beta", "Beta",
+         "Pre-releases as well: new things first, rough edges included"),
+    )
+    # Short confirmations. Every save ends in a redirect, so what happened
+    # travels in the URL as ?msg= rather than in a variable that the
+    # restart would eat.
+    FLASHES = {
+        "saved": ("ok", "Saved."),
+        "removed": ("ok", "Removed."),
+        "checked": ("info", "Checked just now."),
+        "channel": ("ok", "Channel changed — this device already runs the "
+                          "newest release on it."),
+        "nothing": ("warn", "Nothing has been published on that channel yet, "
+                            "so nothing was installed."),
+        "switched": ("ok", "Switched."),
+    }
 
-    def _user_fieldset(self, i, user: dict, status: str, defaults: dict) -> str:
-        source = user.get("source") or {}
-        stype = source.get("type") or "push"
-        control = f"src{i}"
-        th = user.get("thresholds") or {}
-        th_val = lambda key: str(th[key]) if th.get(key) else ""
+    # ---- settings: shared pieces ----
 
-        # The port and the push secret belong to the push source and to
-        # nothing else — someone on twiist was being asked for a "Port
-        # (Nightscout API)" they will never use. They stay in the form
-        # (hidden inputs still submit, so the port round-trips) but they
-        # are only *shown* for the source that needs them.
-        # Built by hand rather than via admin_url(): the "add a person"
-        # template carries __PORT__ here, which the browser substitutes.
-        push_url = f"http://{self._lan_ip()}:{user.get('port', '')}"
-        push = (
-            ui.row("Port", ui.text_input(f"u{i}_port", user.get("port", ""),
-                                         kind="number",
-                                         input_id=f"u{i}_port"),
-                   for_id=f"u{i}_port",
-                   hint="The uploader connects to this port on this device.")
-            + ui.row("URL for the uploader",
-                     ui.copy_input(f"u{i}_url", push_url,
-                                   input_id=f"u{i}_url"))
-            + ui.row("API secret",
-                     ui.copy_input(f"u{i}_secret", user.get("api_secret", ""),
-                                   input_id=f"u{i}_secret"),
-                     for_id=f"u{i}_secret",
-                     hint="Enter both in Trio under Settings &rarr; Services"
-                          " &rarr; Nightscout.")
-        )
-        tidepool = (
-            ui.row("Tidepool email",
-                   ui.text_input(f"u{i}_tp_email", source.get("email", "")
-                                 if stype == "tidepool" else "",
-                                 kind="email", input_id=f"u{i}_tp_email",
-                                 extra='autocapitalize="none" autocorrect="off"'
-                                       ' spellcheck="false"'),
-                   for_id=f"u{i}_tp_email")
-            # Stored credentials are never rendered back into the page:
-            # blank means "keep what is saved".
-            + ui.row("Tidepool password",
-                     ui.password_input(f"u{i}_tp_password", "",
-                                       placeholder=self._secret_placeholder(
-                                           stype == "tidepool",
-                                           source.get("password")),
-                                       input_id=f"u{i}_tp_password"),
-                     for_id=f"u{i}_tp_password")
-        )
-        ns_key = source.get("api_secret") or source.get("token") or ""
-        nightscout = (
-            ui.row("Nightscout address",
-                   ui.text_input(f"u{i}_ns_url", source.get("url", "")
-                                 if stype == "nightscout" else "",
-                                 kind="url", placeholder="mysite.example.com",
-                                 input_id=f"u{i}_ns_url",
-                                 extra='autocapitalize="none" autocorrect="off"'
-                                       ' spellcheck="false"'),
-                   for_id=f"u{i}_ns_url")
-            + ui.row("API secret or token",
-                     ui.password_input(f"u{i}_ns_key", "",
-                                       placeholder=self._secret_placeholder(
-                                           stype == "nightscout", ns_key),
-                                       input_id=f"u{i}_ns_key"),
-                     for_id=f"u{i}_ns_key",
-                     hint="Either works — GlucoCube works out which.")
-        )
-        pull_extra = (
-            ui.row("Check every", ui.text_input(
-                f"u{i}_poll", source.get("poll_seconds", 60), kind="number",
-                input_id=f"u{i}_poll"), for_id=f"u{i}_poll", hint="seconds")
-            + '<button type="button" class="test secondary" data-i="{}"'
-              ' data-needs-js hidden>Test connection</button>'.format(i)
-            + f'<div class="banner" id="testresult{i}" hidden></div>'
-        )
-        return f"""
-<fieldset class="person" data-i="{i}" id="fs{i}">
-  <legend>{ui.esc(user.get("name") or "New person")}</legend>
-  <input type="hidden" name="u{i}_remove" value="">
-  <input type="hidden" name="u{i}_prev_name" value="{ui.esc(user.get("name", ""))}">
-  <p class="note">{ui.esc(status)}</p>
-  {ui.row("Name", ui.text_input(f"u{i}_name", user.get("name", ""),
-                                input_id=f"u{i}_name"), for_id=f"u{i}_name")}
-  <label class="lbl">Where the data comes from</label>
-  {ui.choice_cards(f"u{i}_source", self.SOURCE_CARDS, stype, controls=control)}
-  {ui.group(control, "push", push, current=stype)}
-  {ui.group(control, "tidepool", tidepool, current=stype)}
-  {ui.group(control, "nightscout", nightscout, current=stype)}
-  {ui.group(control, ["tidepool", "nightscout"], pull_extra, current=stype)}
-  {ui.row("Low / high", f'<div class="pair">'
-          + ui.text_input(f"u{i}_th_low", th_val("low"), kind="number",
-                          placeholder=f"{defaults['low']:g}")
-          + ui.text_input(f"u{i}_th_high", th_val("high"), kind="number",
-                          placeholder=f"{defaults['high']:g}") + "</div>")}
-  {ui.row("Urgent low / high", f'<div class="pair">'
-          + ui.text_input(f"u{i}_th_urgent_low", th_val("urgent_low"),
-                          kind="number",
-                          placeholder=f"{defaults['urgent_low']:g}")
-          + ui.text_input(f"u{i}_th_urgent_high", th_val("urgent_high"),
-                          kind="number",
-                          placeholder=f"{defaults['urgent_high']:g}")
-          + "</div>", hint="Blank uses the defaults below.")}
-  <button type="button" class="danger" onclick="removePerson('{i}')">Remove this person</button>
-</fieldset>"""
+    def _raw_config(self) -> dict:
+        return json.loads(open(self.server.config_path).read())
+
+    def _query(self) -> dict:
+        return {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+
+    def _flash(self) -> str:
+        found = self.FLASHES.get(self._query().get("msg", ""))
+        return ui.banner(found[0], found[1]) if found else ""
 
     def _lan_ip(self) -> str:
         """One lookup per page render, not one per person."""
@@ -775,18 +796,426 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._lan_ip_cache = network.get_lan_ip()
         return self._lan_ip_cache
 
+    def _theme(self) -> str:
+        return self.server.store.get_params("__display").get("theme", "dark")
+
     @staticmethod
     def _secret_placeholder(is_current: bool, stored) -> str:
         if is_current and stored:
             return "(unchanged — type to replace)"
         return ""
 
-    def _wifi_section(self) -> str:
+    def _person_state(self, user: dict, now_ms: int) -> dict:
+        """How this person is doing, in the words the lists use.
+
+        One place, because the hub, the people list and the person page
+        all have to agree about whether something needs attention.
+        """
+        source = user.get("source") or {}
+        label = self.SOURCE_NAMES.get(source.get("type") or "push", "")
+        if source.get("type") and not self._source_ready(source):
+            return {"text": f"{label} — credentials missing",
+                    "short": "needs setup", "pill": "needs setup",
+                    "kind": "err"}
+        snap = self.server.store.snapshot(user.get("name", ""))
+        if not snap.sgv_date or snap.sgv is None:
+            return {"text": f"{label} — nothing has arrived yet",
+                    "short": "no data", "pill": "", "kind": "warn"}
+        minutes = max(0, int((now_ms - snap.sgv_date) / 60000))
+        when = ("just now" if minutes < 1
+                else f"{minutes}m ago" if minutes < 120
+                else f"{minutes // 60}h ago")
+        stale = minutes > self.server.config.display.stale_minutes
+        return {"text": f"{label} — {snap.sgv:.0f} mg/dL, {when}",
+                "short": when, "pill": "stale" if stale else "",
+                "kind": "warn" if stale else "ok"}
+
+    # ---- settings: the hub ----
+
+    def _page_hub(self) -> str:
+        raw = self._raw_config()
+        config = self.server.config
+        display = raw.get("display", {})
+        users = raw.get("users") or []
+        update = self.server.store.get_params(updater.PARAMS_KEY)
+        now_ms = int(time.time() * 1000)
+        wifi_up = network.available()
+        hotspot = network.hotspot_active_cached() if wifi_up else False
+        wifi = network.state() if wifi_up else {}
+
+        notices = [self._flash()]
+        if update.get("available") and update.get("rejoin"):
+            notices.append(ui.banner(
+                "warn", "This device is on a pre-release, but set to the "
+                'standard channel. <a href="/settings/updates">Put it back on '
+                "a full release</a>."))
+        elif update.get("available"):
+            notices.append(ui.banner(
+                "info", f"<b>{ui.esc(update.get('latest', ''))}</b> is ready to "
+                'install. <a href="/settings/updates">See what changed</a>.'))
+        if hotspot:
+            notices.append(ui.banner(
+                "info", "The setup hotspot is on, so this device has no "
+                'internet yet. <a href="/settings/network">Join a network</a>.'))
+        elif wifi.get("state") == "failed":
+            notices.append(ui.banner(
+                "err", f"Could not join <b>{ui.esc(wifi.get('ssid', ''))}</b>. "
+                '<a href="/settings/network">Try again</a>.'))
+        if not config.admin_password:
+            notices.append(ui.banner(
+                "warn", "Anyone on this network can change these settings. "
+                '<a href="/settings/access">Set a password</a>.'))
+
+        states = [(user, self._person_state(user, now_ms)) for user in users]
+        parts = [f"{user.get('name') or 'unnamed'} — {state['short']}"
+                 for user, state in states[:2]]
+        if len(states) > 2:
+            parts.append(f"and {len(states) - 2} more")
+        # A pill only for what needs doing; "no data" on a device that was
+        # set up ten seconds ago is not a problem, and the line already
+        # says so.
+        needs_setup = [s for _, s in states if s["kind"] == "err"]
+
+        theme = self._theme()
+        zone = display.get("timezone") or ""
+        channel = config_mod.normalize_channel(config.update_channel)
+        channel_label = config_mod.CHANNEL_LABELS[channel]
+        if update.get("rejoin"):
+            updates_sub = f"On a pre-release · {channel_label} channel"
+        elif update.get("available"):
+            updates_sub = (f"{update.get('latest', '')} ready to install · "
+                           f"{channel_label} channel")
+        elif update.get("checked_at"):
+            updates_sub = (f"{updater.current_version()} · up to date · "
+                           f"{channel_label} channel")
+        else:
+            updates_sub = (f"{updater.current_version()} · "
+                           f"{channel_label} channel")
+
+        items = [
+            ui.menu_item(
+                "/settings/screen", "The screen",
+                "Night colours" if theme == "dark" else "Day colours",
+                lead='<span class="lead">' + ui.icon("screen")
+                     + '<img class="thumb live" src="/screen.png" alt=""'
+                       ' onerror="this.hidden=true"'
+                       ' onload="this.previousElementSibling.hidden=true">'
+                       "</span>"),
+            ui.menu_item(
+                "/settings/people", "People",
+                ", ".join(parts) if parts else "nobody yet",
+                lead=ui.icon("people"),
+                badge="needs setup" if needs_setup else "", badge_kind="err"),
+            ui.menu_item(
+                "/settings/ranges", "Ranges",
+                f"{_g(display.get('low'), 70)}–{_g(display.get('high'), 180)}"
+                f" · urgent under {_g(display.get('urgent_low'), 55)},"
+                f" over {_g(display.get('urgent_high'), 250)}",
+                lead=ui.icon("ranges")),
+        ]
+        if wifi_up:
+            if hotspot:
+                wifi_sub = "Setup hotspot is on"
+            elif wifi.get("state") == "ok" and wifi.get("ssid"):
+                wifi_sub = f"Connected to {wifi['ssid']}"
+            elif wifi.get("state") == "failed":
+                wifi_sub = f"Could not join {wifi.get('ssid', '')}"
+            else:
+                wifi_sub = f"{len(network.cached_networks())} networks nearby"
+            items.append(ui.menu_item("/settings/network", "Wi-Fi", wifi_sub,
+                                      lead=ui.icon("wifi")))
+        items += [
+            ui.menu_item(
+                "/settings/clock", "Clock",
+                f"{zone.replace('_', ' ')} · {time.strftime('%H:%M')}" if zone
+                else f"No zone set — the clock reads {time.strftime('%H:%M')}",
+                lead=ui.icon("clock")),
+            ui.menu_item("/settings/updates", "Updates", updates_sub,
+                         lead=ui.icon("update"),
+                         badge="new" if update.get("available") else "",
+                         badge_kind="warn"),
+            ui.menu_item(
+                "/settings/access", "Access",
+                "Password set — the username is admin" if config.admin_password
+                else "No password set", lead=ui.icon("lock"),
+                badge="" if config.admin_password else "open",
+                badge_kind="warn"),
+        ]
+        more = ui.menu([
+            ui.menu_item("/setup?again=1", "Run guided setup again",
+                         "The same questions, one screen at a time",
+                         lead=ui.icon("wizard")),
+            ui.menu_item("/log", "Sync log", "What has arrived, and when",
+                         lead=ui.icon("log")),
+        ])
+        address = config_mod.admin_url(self._lan_ip(), config.admin_port)
+        return f"""<h1>Settings</h1>
+<p class="lede">GlucoCube {ui.esc(updater.current_version())} at
+{ui.esc(address)}</p>
+{''.join(notices)}
+{ui.menu(items)}
+<h2>More</h2>
+{more}"""
+
+    # ---- settings: one page per thing ----
+
+    def _page_screen(self) -> str:
+        theme = self._theme()
+        other, label = (("light", "Switch to Day") if theme == "dark"
+                        else ("dark", "Switch to Night"))
+        return f"""<h1>The screen</h1>
+<p class="lede">Exactly what the device is showing, refreshed every few
+seconds.</p>
+<img class="screen live" id="screen" src="/screen.png"
+     alt="what the display shows" onerror="this.hidden=true">
+<form method="POST" action="/display/theme">
+  <input type="hidden" name="theme" value="{other}">
+  <input type="hidden" name="back" value="/settings/screen">
+  <div class="actions">
+    <button type="submit" class="secondary">{label}</button>
+    <span class="note">Currently {"night" if theme == "dark" else "day"}.
+      The sun or moon on the device does the same thing, and the QR beside
+      it opens these settings on a phone — no password to type.</span>
+  </div>
+</form>"""
+
+    def _page_people(self) -> str:
+        users = self._raw_config().get("users") or []
+        now_ms = int(time.time() * 1000)
+        rows = []
+        for index, user in enumerate(users):
+            state = self._person_state(user, now_ms)
+            rows.append(ui.menu_item(
+                f"/settings/person?i={index}",
+                user.get("name") or f"Person {index + 1}", state["text"],
+                lead=ui.icon("people"), badge=state["pill"],
+                badge_kind=state["kind"]))
+        rows.append(ui.menu_item(
+            "/settings/person?i=new", "Add a person",
+            "Another panel on the screen", lead=ui.icon("people")))
+        return f"""<h1>People</h1>
+<p class="lede">One panel on the screen each.</p>
+{self._flash()}
+{ui.menu(rows)}"""
+
+    def _next_port(self, users: list[dict]) -> int:
+        taken = {user.get("port") for user in users}
+        taken.add(self.server.config.admin_port)
+        port = config_mod.FIRST_USER_PORT
+        while port in taken:
+            port += 1
+        return port
+
+    def _page_person(self, index, *, form=None, banner: str = "") -> str:
+        raw = self._raw_config()
+        users = raw.get("users") or []
+        adding = index == "new"
+        user = {} if adding else dict(users[index])
+        source = user.get("source") or {}
+
+        def pick(key, saved):
+            return (form or {}).get(key, saved)
+
+        stype = pick("source", source.get("type") or "push")
+        port = pick("port", user.get("port") or self._next_port(users))
+        secret = (pick("api_secret", user.get("api_secret"))
+                  or config_mod.readable_secret(16))
+        th = user.get("thresholds") or {}
+        control = "src"
+
+        # The port and the push secret belong to the push source and to
+        # nothing else — someone on twiist was being asked for a "Port
+        # (Nightscout API)" they will never use. They stay in the form
+        # (hidden inputs still submit, so the port round-trips) but they
+        # are only *shown* for the source that needs them.
+        push = (
+            ui.row("URL for the uploader",
+                   ui.copy_input("push_url", f"http://{self._lan_ip()}:{port}",
+                                 input_id="push_url"), inline=False)
+            + ui.row("API secret",
+                     ui.copy_input("api_secret", secret, input_id="api_secret"),
+                     inline=False,
+                     hint="Enter both in Trio under Settings &rarr; Services"
+                          " &rarr; Nightscout.")
+            + "<details><summary>Port</summary>"
+            + ui.row("Port", ui.text_input("port", port, kind="number",
+                                           input_id="port"),
+                     for_id="port",
+                     hint="The uploader connects to this port on this device."
+                          " Only change it if something else is using it.")
+            + "</details>"
+        )
+        tidepool = (
+            ui.row("Tidepool email",
+                   ui.text_input("tp_email",
+                                 pick("tp_email", source.get("email", "")
+                                      if stype == "tidepool" else ""),
+                                 kind="email", input_id="tp_email",
+                                 extra='autocapitalize="none" autocorrect="off"'
+                                       ' spellcheck="false"'),
+                   inline=False, for_id="tp_email")
+            # Stored credentials are never rendered back into the page:
+            # blank means "keep what is saved".
+            + ui.row("Tidepool password",
+                     ui.password_input("tp_password", "",
+                                       placeholder=self._secret_placeholder(
+                                           stype == "tidepool",
+                                           source.get("password")),
+                                       input_id="tp_password"),
+                     inline=False, for_id="tp_password")
+        )
+        ns_key = source.get("api_secret") or source.get("token") or ""
+        nightscout = (
+            ui.row("Nightscout address",
+                   ui.text_input("ns_url",
+                                 pick("ns_url", source.get("url", "")
+                                      if stype == "nightscout" else ""),
+                                 kind="url", placeholder="mysite.example.com",
+                                 input_id="ns_url",
+                                 extra='autocapitalize="none" autocorrect="off"'
+                                       ' spellcheck="false"'),
+                   inline=False, for_id="ns_url")
+            + ui.row("API secret or token",
+                     ui.password_input("ns_key", "",
+                                       placeholder=self._secret_placeholder(
+                                           stype == "nightscout", ns_key),
+                                       input_id="ns_key"),
+                     inline=False, for_id="ns_key",
+                     hint="Either works — GlucoCube works out which.")
+        )
+        pull_extra = (
+            ui.row("Check every",
+                   ui.text_input("poll", pick("poll",
+                                              source.get("poll_seconds", 60)),
+                                 kind="number", input_id="poll"),
+                   for_id="poll", hint="seconds")
+            + '<button type="button" class="test secondary" data-needs-js'
+              " hidden>Test connection</button>"
+            + '<div class="banner" id="testresult" hidden></div>'
+        )
+        # Open when this person has overrides, and when a failed save is
+        # being re-rendered with some — collapsing over what someone just
+        # typed is how you lose it.
+        typed = any((form or {}).get(f"th_{key}") for key in
+                    ("low", "high", "urgent_low", "urgent_high"))
+        ranges = "".join([
+            '<details class="ranges"' + (" open" if th or typed else "") + ">",
+            "<summary>Ranges just for this person</summary>",
+            ui.row("Low / high", '<div class="pair">'
+                   + ui.text_input("th_low", pick("th_low", _g(th.get("low"))),
+                                   kind="number", placeholder="default")
+                   + ui.text_input("th_high", pick("th_high",
+                                                   _g(th.get("high"))),
+                                   kind="number", placeholder="default")
+                   + "</div>", inline=False),
+            ui.row("Urgent low / high", '<div class="pair">'
+                   + ui.text_input("th_urgent_low",
+                                   pick("th_urgent_low",
+                                        _g(th.get("urgent_low"))),
+                                   kind="number", placeholder="default")
+                   + ui.text_input("th_urgent_high",
+                                   pick("th_urgent_high",
+                                        _g(th.get("urgent_high"))),
+                                   kind="number", placeholder="default")
+                   + "</div>", inline=False,
+                   hint="Blank uses the ranges everyone shares."),
+            "</details>",
+        ])
+        remove = ""
+        if not adding and len(users) > 1:
+            remove = f"""
+<form method="POST" action="/settings/person/remove?i={index}"
+      onsubmit="return confirm('Remove this person from the display?')">
+  <div class="actions">
+    <button type="submit" class="danger">Remove this person</button>
+    <span class="note">Their readings stay in the database — only the
+      panel goes away.</span>
+  </div>
+</form>"""
+        name = pick("name", user.get("name", ""))
+        heading = user.get("name") or "Add a person"
+        return f"""<h1>{ui.esc(heading)}</h1>
+<p class="lede">{"They get their own panel, port and API secret."
+                 if adding else "Where their readings come from, and the "
+                 "ranges they are coloured against."}</p>
+{banner}
+<form method="POST" action="/settings/person?i={ui.esc(index)}"
+      data-index="{ui.esc(index)}">
+  {ui.row("Name", ui.text_input("name", name, input_id="name"),
+          inline=False, for_id="name")}
+  <label class="lbl">Where the data comes from</label>
+  {ui.choice_cards("source", self.SOURCE_CARDS, stype, controls=control)}
+  {ui.group(control, "push", push, current=stype)}
+  {ui.group(control, "tidepool", tidepool, current=stype)}
+  {ui.group(control, "nightscout", nightscout, current=stype)}
+  {ui.group(control, ["tidepool", "nightscout"], pull_extra, current=stype)}
+  {ranges}
+  <div class="actions stick">
+    <button type="submit">{"Add" if adding else "Save"} &amp; apply</button>
+    <span class="note">Restarts the display, about five seconds.</span>
+  </div>
+</form>{remove}"""
+
+    def _page_ranges(self) -> str:
+        display = self._raw_config().get("display", {})
+        return f"""<h1>Ranges</h1>
+<p class="lede">What counts as in range, and where the numbers turn red.
+Everyone shares these unless their own page overrides them.</p>
+{self._flash()}
+<form method="POST" action="/settings/ranges">
+<fieldset><legend>mg/dL</legend>
+  {ui.row("In range", '<div class="pair">'
+          + ui.text_input("low", _g(display.get("low"), 70), kind="number")
+          + ui.text_input("high", _g(display.get("high"), 180), kind="number")
+          + "</div>", inline=False, hint="low and high")}
+  {ui.row("Urgent", '<div class="pair">'
+          + ui.text_input("urgent_low", _g(display.get("urgent_low"), 55),
+                          kind="number")
+          + ui.text_input("urgent_high", _g(display.get("urgent_high"), 250),
+                          kind="number")
+          + "</div>", inline=False,
+          hint="outside these the whole panel turns red")}
+  {ui.row("Stale after", ui.text_input(
+      "stale_minutes", _g(display.get("stale_minutes"), 12), kind="number",
+      input_id="stale_minutes"), for_id="stale_minutes",
+      hint="minutes without a reading before the panel greys out")}
+</fieldset>
+<div class="actions stick">
+  <button type="submit">Save &amp; apply</button>
+  <span class="note">Restarts the display, about five seconds.</span>
+</div>
+</form>"""
+
+    def _page_clock(self) -> str:
+        display = self._raw_config().get("display", {})
+        current = display.get("timezone", "")
+        return f"""<h1>Clock</h1>
+<p class="lede">Where the device is, so the clock and the times on the
+chart are right. A device straight off the image has no zone set and
+reads UTC.</p>
+{self._flash()}
+<div class="banner info" id="tzdetected" hidden>
+  This phone says <b></b>.
+  <button type="button" class="quiet">Use that</button>
+</div>
+<form method="POST" action="/settings/clock">
+  {ui.row("Time zone", ui.select("timezone", timezone_options(), current,
+                                 input_id="timezone"), inline=False,
+          for_id="timezone")}
+  <p class="note" id="tzpreview"></p>
+  <div class="actions stick">
+    <button type="submit">Save &amp; apply</button>
+    <span class="note">Restarts the display, about five seconds.</span>
+  </div>
+</form>"""
+
+    def _page_network(self) -> str:
         if not network.available():
-            return ""
+            return ("<h1>Wi-Fi</h1><p>This device has no NetworkManager, so "
+                    "its network is managed elsewhere.</p>")
         hotspot = network.hotspot_active()
         wifi = network.state()
-        notices = []
+        notices = [self._flash()]
         if hotspot:
             notices.append(ui.banner(
                 "info", "Setup hotspot is on — pick your home network below."))
@@ -832,8 +1261,11 @@ class AdminHandler(BaseHTTPRequestHandler):
             '<p class="note">The radio cannot scan while the setup hotspot is '
             'running, so this is the list from just before it started.</p>'
         )
-        return f"""<h2>Wi-Fi</h2>
+        address = config_mod.admin_url(self._lan_ip(),
+                                       self.server.config.admin_port)
+        return f"""<h1>Wi-Fi</h1>
 {''.join(notices)}
+{ui.facts([("This device", ui.esc(address))])}
 <form method="POST" action="/wifi">
   {ui.network_picker(networks, selected=wifi.get("ssid", ""))}
   {ui.row("Password", ui.password_input("wifi_password", "",
@@ -844,131 +1276,100 @@ class AdminHandler(BaseHTTPRequestHandler):
 </form>
 {rescan}"""
 
-    def _screen_section(self) -> str:
-        """Live screen, plus a way to switch its theme from here.
-
-        The sun/moon on the device is the usual way; this is the fallback
-        for a panel whose touch controller we cannot read.
-        """
-        theme = self.server.store.get_params("__display").get("theme", "dark")
-        other, label = (("light", "Switch to Day")
-                        if theme == "dark" else ("dark", "Switch to Night"))
-        return f"""<h2>The screen</h2>
-<img class="screen" id="screen" src="/screen.png" alt="what the display shows"
-     onerror="this.hidden=true">
-<form method="POST" action="/display/theme">
-  <input type="hidden" name="theme" value="{other}">
-  <div class="actions">
-    <button type="submit" class="secondary">{label}</button>
-    <span class="note">Currently {"night" if theme == "dark" else "day"}.
-      You can also tap the sun or moon on the device.</span>
-  </div>
-</form>"""
-
-    def _updates_section(self) -> str:
-        state = self.server.store.get_params(updater.PARAMS_KEY)
-        current = updater.current_version()
-        if state.get("checked_at"):
-            import time
-            checked = time.strftime("%H:%M",
-                                    time.localtime(state["checked_at"] / 1000))
-            if state.get("error"):
-                status = f"last check at {checked} failed: {ui.esc(state['error'])}"
-            elif state.get("available"):
-                status = (f"version <b>{ui.esc(state.get('latest', '?'))}</b> is "
-                          f"available (checked {checked}) — "
-                          f"<a href=\"{ui.esc(state.get('url', ''))}\">release notes</a>")
-            else:
-                status = f"up to date (checked {checked})"
-        else:
-            status = "not checked yet — checks run every 6 hours"
-        install = ""
+    def _update_status(self, state: dict) -> tuple[str, str]:
+        """(banner kind, sentence) for whatever the last check found."""
+        if not state.get("checked_at"):
+            return "info", "Not checked yet — checks run every six hours."
+        checked = time.strftime("%H:%M",
+                                time.localtime(state["checked_at"] / 1000))
+        if state.get("error"):
+            return "err", (f"The check at {checked} did not work: "
+                           f"{ui.esc(state['error'])}")
+        notes = (f' — <a href="{ui.esc(state.get("url", ""))}">release notes</a>'
+                 if state.get("url") else "")
         if state.get("available"):
+            if state.get("rejoin"):
+                return "warn", (
+                    "This device is running a pre-release. The newest full "
+                    f"release is <b>{ui.esc(state.get('latest', ''))}</b>; "
+                    f"installing it steps back onto the standard channel"
+                    f"{notes}.")
+            return "ok", (f"<b>{ui.esc(state.get('latest', ''))}</b> is "
+                          f"available, checked {checked}{notes}.")
+        if not state.get("latest"):
+            return "warn", ("Nothing has been published on this channel yet "
+                            f"(checked {checked}).")
+        return "info", f"Up to date, checked {checked}."
+
+    def _page_updates(self) -> str:
+        state = self.server.store.get_params(updater.PARAMS_KEY)
+        channel = config_mod.normalize_channel(
+            self.server.config.update_channel)
+        kind, status = self._update_status(state)
+        install = ""
+        if state.get("available") and state.get("latest_tag"):
             install = f"""
   <form method="POST" action="/update/apply">
     <input type="hidden" name="tag" value="{ui.esc(state.get('latest_tag', ''))}">
     <button type="submit">Install {ui.esc(state.get('latest', ''))}</button>
   </form>"""
-        return f"""<h2>Updates</h2>
-<fieldset><legend>Software</legend>
-  <p>GlucoCube {ui.esc(current)} — {status}</p>
+        running = ui.esc(updater.current_version())
+        return f"""<h1>Updates</h1>
+<p class="lede">Running GlucoCube <b>{running}</b>.</p>
+{self._flash()}
+{ui.banner(kind, status)}
+<div class="actions">
   <form method="POST" action="/update/check">
-    <button type="submit" class="quiet">Check now</button>
+    <button type="submit" class="secondary">Check now</button>
   </form>{install}
-  <p class="note">Updates install from GitHub releases and restart the
-  display (about a minute). A release marked <code>[force-update]</code>
-  in its notes installs itself at the next check.</p>
-</fieldset>"""
-
-    def _render_page(self) -> str:
-        raw = json.loads(open(self.server.config_path).read())
-        display = raw.get("display", {})
-        d = lambda key, default: display.get(key, default)
-        defaults = {
-            "low": d("low", 70), "high": d("high", 180),
-            "urgent_low": d("urgent_low", 55), "urgent_high": d("urgent_high", 250),
-        }
-        import time
-        now_ms = int(time.time() * 1000)
-        fieldsets = []
-        for i, user in enumerate(raw.get("users", [])):
-            snap = self.server.store.snapshot(user["name"])
-            source = user.get("source") or {}
-            if snap.sgv_date:
-                mins = int((now_ms - snap.sgv_date) / 60000)
-                status = f"last reading {snap.sgv:.0f} mg/dL, {mins}m ago"
-            elif source.get("type") and not self._source_ready(source):
-                status = ("source chosen but not running — its credentials "
-                          "are missing")
-            else:
-                status = "no data yet"
-            fieldsets.append(self._user_fieldset(i, user, status, defaults))
-        template = self._user_fieldset(
-            "__I__", {"port": "__PORT__"}, "not saved yet", defaults
-        )
-        body = f"""<h1>Settings</h1>
-<p class="lede"><a href="/setup">Run guided setup</a> for a step-by-step
-version of this page.</p>
-{self._screen_section()}
-{self._wifi_section()}
-{self._updates_section()}
-<form method="POST" action="/save">
-<h2>People</h2>
-<div id="people">{''.join(fieldsets)}</div>
-<button type="button" class="secondary" onclick="addPerson()">Add a person</button>
-<template id="person-template">{template}</template>
-<h2>Display defaults</h2>
-<fieldset><legend>Used unless a person overrides them (mg/dL)</legend>
-  {ui.row("Low", ui.text_input("low", d('low', 70), kind="number"))}
-  {ui.row("High", ui.text_input("high", d('high', 180), kind="number"))}
-  {ui.row("Urgent low", ui.text_input("urgent_low", d('urgent_low', 55), kind="number"))}
-  {ui.row("Urgent high", ui.text_input("urgent_high", d('urgent_high', 250), kind="number"))}
-  {ui.row("Stale after", ui.text_input("stale_minutes", d('stale_minutes', 12),
-                                       kind="number"), hint="minutes")}
-</fieldset>
-<h2>Clock</h2>
-<fieldset><legend>Time zone</legend>
-  {ui.row("Time zone", ui.select("timezone", timezone_options(),
-                                 display.get("timezone", ""),
-                                 input_id="timezone"), for_id="timezone",
-          hint="The device shows this zone. A fresh install has none set, "
-               "which is why the clock starts on UTC.")}
-</fieldset>
-<h2>Admin</h2>
-<fieldset><legend>Web access</legend>
-  {ui.row("New password", ui.password_input("admin_password", "",
-          placeholder="(leave blank to keep the current one)",
-          input_id="admin_password"), for_id="admin_password",
-          hint="Protects this page and the API. The username is"
-               " <b>admin</b>. You will be asked to log in again.")}
-</fieldset>
-<div class="actions stick">
-  <button type="submit">Save &amp; apply</button>
-  <span class="note">Restarts the display, about 5 seconds.</span>
 </div>
+<h2>Release channel</h2>
+<form method="POST" action="/settings/updates/channel">
+  {ui.choice_cards("channel", self.CHANNEL_CARDS, channel)}
+  <p class="note">Changing this installs the newest release on the channel
+  you pick, right away — including stepping back onto the last full release
+  when you leave Beta. The display restarts, which takes about a minute.</p>
+  <div class="actions">
+    <button type="submit" class="secondary">Switch channel</button>
+  </div>
+</form>
+<p class="note">Updates install from GitHub releases. A release marked
+<code>[force-update]</code> in its notes installs itself at the next
+check, on whichever channel published it.</p>"""
+
+    def _page_access(self) -> str:
+        config = self.server.config
+        password = config.admin_password
+        link = config_mod.admin_url(
+            self._lan_ip(), config.admin_port,
+            f"/settings?key={password}" if password else "/settings")
+        known = [("Username", "admin")] if password else []
+        return f"""<h1>Access</h1>
+<p class="lede">{"This page and the dashboard need a password."
+                 if password else
+                 "This page has no password: anyone on the network can "
+                 "change these settings."}</p>
+{self._flash()}
+{ui.facts(known)}
+{ui.row("Current password", ui.copy_input("current", password,
+                                          input_id="current"), inline=False,
+        hint="The device's own screen shows this too, so you cannot lock "
+             "yourself out.") if password else ""}
+{ui.row("Link that opens settings without logging in",
+        ui.copy_input("autolink", link, input_id="autolink"), inline=False,
+        hint="The same link the QR code on the device carries. Anyone with "
+             "it can change these settings.")}
+<form method="POST" action="/settings/access">
+  {ui.row("New password", ui.password_input("admin_password", "",
+          input_id="admin_password"), inline=False, for_id="admin_password",
+          hint="At least six characters. You will stay logged in on this "
+               "phone.")}
+  <div class="actions stick">
+    <button type="submit">Save &amp; apply</button>
+    <span class="note">Restarts the display, about five seconds.</span>
+  </div>
 </form>"""
-        return ui.page("GlucoCube settings", body, nav=True,
-                       script=SETTINGS_SCRIPT)
+
 
     @staticmethod
     def _source_ready(source: dict) -> bool:
@@ -985,7 +1386,85 @@ version of this page.</p>
         return ui.page(
             "Installing", f"<h1>Installing {ui.esc(version)}&hellip;</h1>"
             "<p>The display restarts on the new version — this page reloads"
-            " in about a minute.</p>", refresh="45;url=/settings").encode()
+            " in about a minute.</p>",
+            refresh="45;url=/settings/updates").encode()
+
+    @staticmethod
+    def _error_page(message: str, back: str) -> bytes:
+        return ui.page(
+            "That did not save",
+            f"<h1>That did not save</h1><p>{ui.esc(message)}</p>"
+            f'<p><a href="{ui.esc(back)}">Back</a></p>').encode()
+
+    @staticmethod
+    def _applying_page(back: str, heading: str = "Saved",
+                       message: str = "") -> bytes:
+        """The interstitial for the restart every config change causes.
+
+        It waits for the *new* process to answer rather than guessing at
+        a number of seconds: the old fixed reload landed on a connection
+        error about half the time.
+        """
+        script = """<script>
+(function(){
+  var next = %s, gone = false;
+  setInterval(function(){
+    fetch('/api/health.json', {cache: 'no-store'}).then(function(r){
+      if (!r.ok) throw new Error(r.status);
+      if (gone) location.replace(next);
+    }).catch(function(){ gone = true; });
+  }, 1200);
+})();
+</script>""" % json.dumps(back)
+        body = (f"<h1>{ui.esc(heading)}</h1><p>"
+                + (message or "The display is restarting on the new "
+                              "settings.")
+                + '</p><p class="note">This page comes back by itself.</p>')
+        return ui.page(heading, body, script=script,
+                       refresh=f"12;url={back}").encode()
+
+    def _settings_get(self, path: str) -> None:
+        back, script = "/settings", ""
+        if path == "/settings/screen":
+            title, body, script = "The screen", self._page_screen(), SCREEN_SCRIPT
+        elif path == "/settings/people":
+            title, body = "People", self._page_people()
+        elif path == "/settings/person":
+            index = self._person_index()
+            if index is None:
+                self._send(b"", "text/html", 303,
+                           {"Location": "/settings/people"})
+                return
+            title, script = "Person", PERSON_SCRIPT
+            body, back = self._page_person(index), "/settings/people"
+        elif path == "/settings/ranges":
+            title, body = "Ranges", self._page_ranges()
+        elif path == "/settings/network":
+            title, body, script = "Wi-Fi", self._page_network(), WIFI_SCRIPT
+        elif path == "/settings/clock":
+            title, body, script = "Clock", self._page_clock(), CLOCK_SCRIPT
+        elif path == "/settings/updates":
+            title, body = "Updates", self._page_updates()
+        elif path == "/settings/access":
+            title, body = "Access", self._page_access()
+        else:
+            self._send(b"", "text/html", 303, {"Location": "/settings"})
+            return
+        self._send(ui.page(f"GlucoCube — {title}", body, nav=True, back=back,
+                           script=script).encode(),
+                   "text/html; charset=utf-8")
+
+    def _person_index(self):
+        """Which person this request is about: an index, "new", or None."""
+        value = self._query().get("i", "new")
+        if value == "new":
+            return "new"
+        try:
+            index = int(value)
+        except ValueError:
+            return None
+        users = self._raw_config().get("users") or []
+        return index if 0 <= index < len(users) else None
 
     def do_POST(self):
         post_path = self.path.split("?")[0]
@@ -998,10 +1477,8 @@ version of this page.</p>
         if post_path == "/api/source/test":
             self._test_source(raw_body)
             return
-        # keep_blank_values matters: the person loops below scan for
-        # u0_name, u1_name, ... and a dropped blank would end the scan
-        # early, silently discarding everyone after it. Blank also means
-        # "unchanged" for the credential fields.
+        # keep_blank_values matters: blank means "unchanged" for every
+        # credential field, and a dropped key cannot say that.
         form = {
             k: v[0]
             for k, v in parse_qs(raw_body.decode(),
@@ -1015,7 +1492,22 @@ version of this page.</p>
             if theme in ("dark", "light"):
                 # The display picks this up on its next frame.
                 self.server.store.set_params("__display", {"theme": theme})
-            self._send(b"", "text/html", 303, {"Location": "/settings"})
+            back = form.get("back", "/settings")
+            if not back.startswith("/settings"):
+                back = "/settings"
+            self._send(b"", "text/html", 303, {"Location": back})
+            return
+        if post_path in self.SECTION_SAVES:
+            self._save_section(post_path, form)
+            return
+        if post_path == "/settings/person":
+            self._post_person(form)
+            return
+        if post_path == "/settings/person/remove":
+            self._post_person_remove()
+            return
+        if post_path == "/settings/updates/channel":
+            self._post_channel(form)
             return
         if post_path == "/wifi":
             # A typed name always wins: it is only filled in when the
@@ -1065,15 +1557,17 @@ version of this page.</p>
             # done, rather than the handler sleeping on it.
             network.refresh_scan_async(force=True)
             self._send(b"", "text/html", 303,
-                       {"Location": "/settings?scanning=1"})
+                       {"Location": "/settings/network?scanning=1"})
             return
         if post_path == "/update/check":
-            state = updater.check_and_maybe_force(self.server.store)
+            state = updater.check_and_maybe_force(
+                self.server.store, self.server.config.update_channel)
             if state.get("forcing"):
                 self._send(self._updating_page(state.get("latest", "")),
                            "text/html; charset=utf-8")
             else:
-                self._send(b"", "text/html", 303, {"Location": "/settings"})
+                self._send(b"", "text/html", 303,
+                           {"Location": "/settings/updates?msg=checked"})
             return
         if post_path == "/update/apply":
             state = self.server.store.get_params(updater.PARAMS_KEY)
@@ -1090,27 +1584,114 @@ version of this page.</p>
                 self._send(ui.page(
                     "Update failed",
                     f"<h1>Update failed</h1><p>{ui.esc(detail)}</p>"
-                    '<p><a href="/settings">Back to settings</a></p>',
+                    '<p><a href="/settings/updates">Back to updates</a></p>',
                 ).encode(), "text/html; charset=utf-8", 500)
             return
-        if post_path != "/save":
-            self._send(b"not found", "text/plain", 404)
+        self._send(b"not found", "text/plain", 404)
+
+    # ---- settings: saving ----
+
+    # Each of these owns one page, and each ends the same way: validate,
+    # write config.json atomically, restart. Nothing takes effect without
+    # a restart — ports, pollers and the display all read the file once,
+    # at startup — so the page that follows waits for the new process.
+    SECTION_SAVES = {
+        "/settings/ranges": "_save_ranges",
+        "/settings/clock": "_save_clock",
+        "/settings/access": "_save_access",
+    }
+
+    def _save_section(self, path: str, form: dict) -> None:
+        try:
+            getattr(self, self.SECTION_SAVES[path])(form)
+        except Exception as exc:  # noqa: BLE001 - shown, never a crash
+            self._send(self._error_page(str(exc), path),
+                       "text/html; charset=utf-8", 400)
+            return
+        log.info("Config saved from web admin (%s); restarting", path)
+        self._send(self._applying_page(f"{path}?msg=saved"),
+                   "text/html; charset=utf-8")
+        restart_soon()
+
+    def _post_person(self, form: dict) -> None:
+        index = self._person_index()
+        if index is None:
+            self._send(b"", "text/html", 303, {"Location": "/settings/people"})
             return
         try:
-            self._save(form)
-        except Exception as exc:
+            self._save_person(form, index)
+        except Exception as exc:  # noqa: BLE001 - re-render, keep the typing
             self._send(ui.page(
-                "That did not save",
-                f"<h1>That did not save</h1><p>{ui.esc(exc)}</p>"
-                '<p><a href="/settings">Back to settings</a></p>',
+                "GlucoCube — Person",
+                self._page_person(index, form=form,
+                                  banner=ui.banner("err", ui.esc(str(exc)))),
+                nav=True, back="/settings/people", script=PERSON_SCRIPT,
             ).encode(), "text/html; charset=utf-8", 400)
             return
-        self._send(ui.page(
-            "Saved", "<h1>Saved</h1><p>Restarting the display&hellip; this "
-            "page reloads in a few seconds.</p>", refresh="8;url=/settings",
-        ).encode(), "text/html; charset=utf-8")
-        log.info("Config saved from web admin; restarting")
+        log.info("Person saved from web admin; restarting")
+        self._send(self._applying_page("/settings/people?msg=saved"),
+                   "text/html; charset=utf-8")
         restart_soon()
+
+    def _post_person_remove(self) -> None:
+        index = self._person_index()
+        raw = self._raw_config()
+        users = raw.get("users") or []
+        if index in (None, "new"):
+            self._send(b"", "text/html", 303, {"Location": "/settings/people"})
+            return
+        if len(users) <= 1:
+            self._send(self._error_page(
+                "The display needs at least one person.",
+                "/settings/people"), "text/html; charset=utf-8", 400)
+            return
+        users.pop(index)
+        raw["users"] = users
+        try:
+            config_mod.write_atomic(raw, self.server.config_path)
+        except Exception as exc:  # noqa: BLE001
+            self._send(self._error_page(str(exc), "/settings/people"),
+                       "text/html; charset=utf-8", 400)
+            return
+        log.info("Person removed from web admin; restarting")
+        self._send(self._applying_page("/settings/people?msg=removed"),
+                   "text/html; charset=utf-8")
+        restart_soon()
+
+    def _post_channel(self, form: dict) -> None:
+        """Change channel, and move this device onto it.
+
+        Recording the choice is the easy half. The half that matters is
+        that the device then actually runs what the channel offers —
+        forwards onto a pre-release, or back onto the last full release.
+        """
+        channel = config_mod.normalize_channel(form.get("channel"))
+        raw = self._raw_config()
+        raw.setdefault("updates", {})["channel"] = channel
+        try:
+            config_mod.write_atomic(raw, self.server.config_path)
+        except Exception as exc:  # noqa: BLE001
+            self._send(self._error_page(str(exc), "/settings/updates"),
+                       "text/html; charset=utf-8", 400)
+            return
+        # The checker thread holds this same object, so the next scheduled
+        # check follows the new channel without waiting for a restart.
+        self.server.config.update_channel = channel
+        log.info("Update channel set to %s", channel)
+        state = updater.check_and_switch(self.server.store, channel)
+        if state.get("switching"):
+            self._send(self._updating_page(state.get("latest", "")),
+                       "text/html; charset=utf-8")
+            return
+        if state.get("error"):
+            self._send(self._error_page(
+                f"The channel is now {config_mod.CHANNEL_LABELS[channel]}, "
+                f"but the check failed: {state['error']}",
+                "/settings/updates"), "text/html; charset=utf-8", 502)
+            return
+        msg = "channel" if state.get("latest") else "nothing"
+        self._send(b"", "text/html", 303,
+                   {"Location": f"/settings/updates?msg={msg}"})
 
     @staticmethod
     def _joining_page(ssid: str) -> bytes:
@@ -1123,7 +1704,7 @@ tries to connect, so your phone will lose this page — that is expected.</p>
 back on your home Wi-Fi, then open that address.</p>
 <h2>If it did not</h2>
 <p>The setup hotspot comes back within a minute or two. Rejoin it and the
-reason is shown at the top of the Wi-Fi section — the device's own screen
+reason is shown at the top of the Wi-Fi page — the device's own screen
 shows it too.</p>""").encode()
 
     def _test_source(self, raw_body: bytes) -> None:
@@ -1157,107 +1738,135 @@ shows it too.</p>""").encode()
         except (OSError, ValueError, KeyError, IndexError, TypeError):
             return {}
 
-    def _save(self, form: dict) -> None:
-        raw = json.loads(open(self.server.config_path).read())
-        # Keyed by the name the form was rendered with, so a blank
-        # credential field can inherit the saved value.
-        previous = {u.get("name"): u for u in raw.get("users", [])}
-        users = []
-        i = 0
-        while f"u{i}_name" in form:
-            idx = i
-            i += 1
-            if form.get(f"u{idx}_remove"):
-                continue
-            name = form[f"u{idx}_name"].strip()
-            previous_name = form.get(f"u{idx}_prev_name", "").strip()
-            if not name:
-                if previous_name:
-                    # Clearing a saved person's name is much more likely to
-                    # be a slip than a request to delete them and their
-                    # data source; that is what Remove is for.
-                    raise ValueError(
-                        f"{previous_name} still needs a name — use Remove to "
-                        "take them off the display")
-                continue  # a row that was added and never filled in
-            prior = previous.get(previous_name) or {}
-            prior_source = prior.get("source") or {}
-            stype = form.get(f"u{idx}_source")
-            # The port is only shown for push people; for everyone else it
-            # arrives from a hidden input, or not at all on a brand new
-            # person. assign_ports() fills the gaps below.
-            port = (form.get(f"u{idx}_port") or "").strip()
-            user = {
-                "name": name,
-                "port": int(port) if port.isdigit() else prior.get("port"),
-                "api_secret": (form.get(f"u{idx}_secret", "").strip()
-                               or prior.get("api_secret")
-                               or secrets_mod.token_hex(12)),
+    def _save_person(self, form: dict, index) -> None:
+        raw = self._raw_config()
+        users = raw.get("users") or []
+        adding = index == "new"
+        prior = {} if adding else dict(users[index])
+        prior_source = prior.get("source") or {}
+        name = form.get("name", "").strip()
+        if not name:
+            raise ValueError("A name is needed — it labels the panel on "
+                             "the screen.")
+        # The port is only shown for push people; for everyone else it
+        # arrives from a hidden input. assign_ports() fills any gap.
+        port = (form.get("port") or "").strip()
+        user = {
+            "name": name,
+            "port": int(port) if port.isdigit() else prior.get("port"),
+            "api_secret": (form.get("api_secret", "").strip()
+                           or prior.get("api_secret")
+                           or secrets_mod.token_hex(12)),
+        }
+        thresholds = {}
+        for key, label in (("low", "Low"), ("high", "High"),
+                           ("urgent_low", "Urgent low"),
+                           ("urgent_high", "Urgent high")):
+            value = _number(form, f"th_{key}", label)
+            if value is not None:
+                thresholds[key] = value
+        if thresholds:
+            _check_ranges({**self._range_defaults(), **thresholds})
+            user["thresholds"] = thresholds
+        kind = form.get("source", "push")
+        poll = max(15, int(_number(form, "poll", "Check every") or 60))
+        if kind == "tidepool":
+            # Blank means "keep what is saved": stored secrets are never
+            # rendered back into the page, so an untouched field must not
+            # wipe them.
+            source = {
+                "type": "tidepool",
+                "email": form.get("tp_email", "").strip(),
+                "password": (form.get("tp_password", "")
+                             or self._kept_secret(prior_source, "tidepool",
+                                                  "password")),
+                "poll_seconds": poll,
             }
-            thresholds = {}
-            for key in ("low", "high", "urgent_low", "urgent_high"):
-                value = form.get(f"u{idx}_th_{key}", "").strip()
-                if value:
-                    thresholds[key] = float(value)
-            if thresholds:
-                user["thresholds"] = thresholds
-            poll = int(form.get(f"u{idx}_poll", 60) or 60)
-            if stype == "tidepool":
-                user["source"] = {
-                    "type": "tidepool",
-                    "email": form.get(f"u{idx}_tp_email", "").strip(),
-                    # Blank means "keep what is saved": stored secrets are
-                    # never rendered back into the page, so an untouched
-                    # field must not wipe them.
-                    "password": (form.get(f"u{idx}_tp_password", "")
-                                 or self._kept_secret(prior_source, "tidepool",
-                                                      "password")),
-                    "poll_seconds": poll,
-                }
-            elif stype == "nightscout":
-                url = form.get(f"u{idx}_ns_url", "").strip()
-                if url and not url.startswith(("http://", "https://")):
-                    url = "https://" + url
-                # The poller auto-detects whether the key is a classic API
-                # secret or an access token, so one field covers both.
-                user["source"] = {
-                    "type": "nightscout",
-                    "url": url,
-                    "api_secret": (form.get(f"u{idx}_ns_key", "").strip()
-                                   or self._kept_secret(prior_source,
-                                                        "nightscout",
-                                                        "api_secret", "token")),
-                    "poll_seconds": poll,
-                }
+            if not (source["email"] and source["password"]):
+                raise ValueError("Both the Tidepool email and password are "
+                                 "needed.")
+            user["source"] = source
+        elif kind == "nightscout":
+            url = form.get("ns_url", "").strip()
+            if not url:
+                raise ValueError("The Nightscout site address is needed.")
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+            # The poller auto-detects whether the key is a classic API
+            # secret or an access token, so one field covers both.
+            user["source"] = {
+                "type": "nightscout",
+                "url": url,
+                "api_secret": (form.get("ns_key", "").strip()
+                               or self._kept_secret(prior_source, "nightscout",
+                                                    "api_secret", "token")),
+                "poll_seconds": poll,
+            }
+        if adding:
             users.append(user)
-        if not users:
-            raise ValueError("at least one person is required")
+        else:
+            users[index] = user
         # Ports stay unique even though most people never see one; a
         # duplicate would make config.load() reject the file at boot.
         config_mod.assign_ports(users, reserved={self.server.config.admin_port})
         raw["users"] = users
-        display = raw.setdefault("display", {})
-        for key in ("low", "high", "urgent_low", "urgent_high", "stale_minutes"):
-            if form.get(key):
-                display[key] = float(form[key])
-        if "timezone" in form:
-            timezone = config_mod.canonical_timezone(form["timezone"])
-            if form["timezone"].strip() and not timezone:
-                raise ValueError(f"{timezone} is not a time zone this device "
-                                 "knows about")
-            # Set even when blank, so it can be cleared back to the system's.
-            display["timezone"] = timezone
-
-        new_admin_password = form.get("admin_password", "").strip()
-        if new_admin_password:
-            if len(new_admin_password) < 6:
-                raise ValueError("the admin password must be at least 6 characters")
-            raw.setdefault("admin", {})["password"] = new_admin_password
-            # Otherwise this browser's cookie stops matching the moment the
-            # new process starts, and the page it was just on is gone.
-            self._cookie_value = new_admin_password
-
         config_mod.write_atomic(raw, self.server.config_path)
+        # Everything in the database is keyed by name, so a rename would
+        # otherwise read as "this person has never had a reading" — which
+        # is exactly what happens the first time someone replaces the
+        # "Person A" the image ships with.
+        previous = prior.get("name")
+        if previous and previous != name:
+            self.server.store.rename_user(previous, name)
+
+    def _range_defaults(self) -> dict:
+        display = self._raw_config().get("display", {})
+        return {"low": float(display.get("low", 70)),
+                "high": float(display.get("high", 180)),
+                "urgent_low": float(display.get("urgent_low", 55)),
+                "urgent_high": float(display.get("urgent_high", 250))}
+
+    def _save_ranges(self, form: dict) -> None:
+        raw = self._raw_config()
+        display = raw.setdefault("display", {})
+        values = {}
+        for key, label in (("low", "The low"), ("high", "The high"),
+                           ("urgent_low", "The urgent low"),
+                           ("urgent_high", "The urgent high"),
+                           ("stale_minutes", "Stale after")):
+            value = _number(form, key, label)
+            if value is not None:
+                values[key] = value
+        if values.get("stale_minutes", 1) <= 0:
+            raise ValueError("Stale after has to be at least one minute.")
+        _check_ranges({**self._range_defaults(), **values})
+        display.update(values)
+        config_mod.write_atomic(raw, self.server.config_path)
+
+    def _save_clock(self, form: dict) -> None:
+        raw = self._raw_config()
+        asked = form.get("timezone", "")
+        timezone = config_mod.canonical_timezone(asked)
+        if asked.strip() and not timezone:
+            raise ValueError(f"{asked} is not a time zone this device knows "
+                             "about.")
+        # Set even when blank, so it can be cleared back to the system's.
+        raw.setdefault("display", {})["timezone"] = timezone
+        config_mod.write_atomic(raw, self.server.config_path)
+
+    def _save_access(self, form: dict) -> None:
+        password = form.get("admin_password", "").strip()
+        if not password:
+            raise ValueError("Type a new password, or go back to keep the "
+                             "one in use.")
+        if len(password) < 6:
+            raise ValueError("The password must be at least six characters.")
+        raw = self._raw_config()
+        raw.setdefault("admin", {})["password"] = password
+        config_mod.write_atomic(raw, self.server.config_path)
+        # Otherwise this browser's cookie stops matching the moment the new
+        # process starts, and the page it was just on is gone.
+        self._cookie_value = password
 
     @staticmethod
     def _kept_secret(prior_source: dict, kind: str, *keys: str) -> str:

@@ -322,7 +322,7 @@ DONE_SCRIPT = """<script>
 let gone = false;
 setInterval(async () => {
   try {
-    await fetch('/api/dashboard.json', {cache: 'no-store'});
+    await fetch('/api/health.json', {cache: 'no-store'});
     if (gone) location.replace('/');
   } catch (err) { gone = true; }
 }, 2000);
@@ -368,7 +368,7 @@ minutes.</p>
 <form method="POST" action="/setup/welcome">
   {_actions("Start")}
 </form>
-<p class="note"><a href="/settings">Skip and use the full settings page</a></p>"""
+<p class="note"><a href="/settings">Skip — take me to settings</a></p>"""
     return _shell(draft, step, "Set up GlucoCube", body)
 
 
