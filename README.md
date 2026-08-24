@@ -51,7 +51,7 @@ board, and recent treatments.
 ### Option A: flash the ready-made image
 
 Grab `glucocube-<version>.img.xz` from the
-[releases page](https://github.com/The-Carted-Horse/GlucoCube/releases),
+[releases page](https://github.com/The-Carted-Horse/SugarCube/releases),
 flash it with Raspberry Pi Imager (or `dd`), boot the Pi, and follow the
 QR codes on screen. That's the whole install.
 
@@ -63,7 +63,7 @@ push a `v*` tag or run it manually.)
 Use Raspberry Pi OS **Lite** (no desktop needed):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/The-Carted-Horse/GlucoCube/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/The-Carted-Horse/SugarCube/main/install.sh | bash
 ```
 
 The installer handles everything: dependencies, config with random secrets,
@@ -119,7 +119,7 @@ what went wrong.
 
 ## Updates
 
-The device checks GitHub for new [releases](https://github.com/The-Carted-Horse/GlucoCube/releases)
+The device checks GitHub for new [releases](https://github.com/The-Carted-Horse/SugarCube/releases)
 every 6 hours. When one is available it shows up on the display footer, the
 web dashboard, and the settings page — install it from **Settings →
 Updates** (the display restarts, data is untouched). A release whose notes

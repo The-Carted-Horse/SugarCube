@@ -33,7 +33,10 @@ from . import __version__, synclog
 
 log = logging.getLogger("glucocube.updater")
 
-REPO = "The-Carted-Horse/GlucoCube"
+# The product is GlucoCube; the repository it lives in is still called
+# SugarCube. That mismatch is deliberate — "correcting" it here points the
+# update check at a repository that does not exist, and it fails quietly.
+REPO = "The-Carted-Horse/SugarCube"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 TARBALL_URL = f"https://github.com/{REPO}/archive/refs/tags/{{tag}}.tar.gz"
 FORCE_MARKER = "[force-update]"
