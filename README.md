@@ -88,6 +88,12 @@ back to 8080.
 | `/screen.png` | What the physical screen shows right now |
 | `/api/dashboard.json` | The dashboard's data, as JSON |
 
+## Enclosure
+
+[`enclosure/`](enclosure/) has a printable OpenSCAD enclosure for the 7"
+display module — see `enclosure.scad` and the ready-to-slice STLs in
+`enclosure/build/`.
+
 ## Development
 
 Runs on a Mac/PC in a window with fake data:
