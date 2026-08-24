@@ -30,10 +30,11 @@ board, and recent treatments.
   responsive, with light/dark themes. Settings (people, sources, thresholds)
   and a sync log are managed from the browser too; no SSH needed after
   install. Works great through a Cloudflare tunnel.
-- **Touchscreen light/dark mode** — tap the sun/moon on the display. The
-  panel is read directly from `/dev/input`, so this works on the
-  ready-made image as well as on a manual install; there is a switch on
-  the settings page too.
+- **Touchscreen controls** — tap the sun/moon on the display for light or
+  dark, and **SETTINGS** beside it to pop a QR code that opens the
+  settings page on a phone, already signed in. The panel is read directly
+  from `/dev/input`, so both work on the ready-made image as well as on a
+  manual install; the theme switch is on the settings page too.
 - **Update channels** — standard releases, or beta with the pre-releases
   as well; switching channels moves the device onto that channel's newest
   release straight away.
@@ -87,7 +88,12 @@ finishes by printing the URL and API secret for each person's uploader.
 
 Everything is served on plain HTTP port 80 — open `http://glucocube.local/`
 (or the IP shown on the device's screen; HTTP Basic auth, login shown
-there too). The `.local` name needs mDNS — iPhones, Macs, Windows, and Android 12+
+there too). Every QR code the device puts on its screen carries the login
+with it, so scanning one opens the page signed in — tap **SETTINGS** in
+the footer of the display to get one for the settings page. The password
+is printed under each code for anyone typing the address by hand.
+
+The `.local` name needs mDNS — iPhones, Macs, Windows, and Android 12+
 all resolve it; on older Android type the IP instead. When port 80 isn't
 available (e.g. running by hand on a dev machine) it falls back to 8080.
 
