@@ -228,6 +228,7 @@ footer span, footer a, footer button { white-space:nowrap; }
   <a id="upgrade" href="/settings" style="display:none;color:var(--high)"></a>
   <a href="/log">Log</a>
   <a href="/settings">Settings</a>
+  <a href="/fonts/OFL-JetBrainsMono.txt">Fonts</a>
   <button id="theme"></button>
 </footer>
 <script>
@@ -551,12 +552,20 @@ class AdminHandler(BaseHTTPRequestHandler):
         elif path.startswith("/fonts/"):
             # The dashboard uses the same typefaces as the physical screen;
             # serving them locally keeps the page fully offline-capable.
+            # The OFL text is served alongside them because the license
+            # asks that each copy of the fonts carry it — and this handler
+            # hands a copy to every browser that loads the dashboard.
             name = os.path.basename(path)
             font_path = os.path.join(os.path.dirname(__file__), "fonts", name)
-            if name.endswith(".ttf") and os.path.isfile(font_path):
+            is_font = name.endswith(".ttf")
+            is_notice = name.startswith("OFL-") and name.endswith(".txt")
+            if (is_font or is_notice) and os.path.isfile(font_path):
                 with open(font_path, "rb") as f:
-                    self._send(f.read(), "font/ttf",
-                               extra={"Cache-Control": "max-age=604800"})
+                    self._send(
+                        f.read(),
+                        "font/ttf" if is_font else "text/plain; charset=utf-8",
+                        extra={"Cache-Control": "max-age=604800"},
+                    )
             else:
                 self._send(b"not found", "text/plain", 404)
         else:

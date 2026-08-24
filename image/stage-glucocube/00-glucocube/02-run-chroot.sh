@@ -32,8 +32,13 @@ done
 apt-get -y autoremove --purge
 apt-get clean
 
-# Docs, man pages, and non-English locales are dead weight on an appliance.
-rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/*
+# Docs, man pages, and non-English locales are dead weight on an appliance
+# — but /usr/share/doc/<pkg>/copyright is where Debian keeps every package's
+# license and copyright notice, and the image we publish is a distribution
+# of those packages. Prune around them.
+find /usr/share/doc -mindepth 1 ! -name copyright ! -type d -delete
+find /usr/share/doc -mindepth 1 -type d -empty -delete
+rm -rf /usr/share/man/* /usr/share/info/*
 find /usr/share/locale -mindepth 1 -maxdepth 1 ! -name 'en*' \
 	-exec rm -rf {} + 2>/dev/null || true
 rm -rf /var/lib/apt/lists/*

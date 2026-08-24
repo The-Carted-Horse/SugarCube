@@ -133,7 +133,8 @@ that existing devices see.
 
 [`enclosure/`](enclosure/) has a printable OpenSCAD enclosure for the 7"
 display module — see `enclosure.scad` and the ready-to-slice STLs in
-`enclosure/build/`.
+`enclosure/build/`. It was designed by Sarah Sabanis and is licensed
+separately, under [CC BY-NC-SA 4.0](enclosure/LICENSE).
 
 ## Development
 
@@ -162,4 +163,28 @@ the SIL Open Font License in `glucocube/fonts/`.
 
 This is a convenience display, not a medical device. Forecasts are estimates
 — even the pump-provided ones. Don't rely on it for alarms or treatment
-decisions; use the CGM app's own alerts for that.
+decisions; use the CGM app's own alerts for that. The same, in operative
+terms, is in [`LICENSE`](LICENSE), so that it travels with every copy.
+
+## License
+
+GlucoCube is free to use for personal and other noncommercial purposes,
+under the [PolyForm Noncommercial License 1.0.0](LICENSE) — that covers
+personal and hobby use, study and research, and use by charities, schools,
+public health bodies and government, whatever their funding. Commercial use
+needs written permission: open an issue to ask.
+
+Three things in this repository are **not** under those terms:
+
+- The **enclosure** is Sarah Sabanis's design, under
+  [CC BY-NC-SA 4.0](enclosure/LICENSE).
+- The **bundled fonts** in `glucocube/fonts/` stay solely under the SIL Open
+  Font License 1.1. Your rights in them, commercial use included, are
+  untouched by the license above — the OFL requires exactly that.
+- The **SD card image** is Raspberry Pi OS, and every package in it keeps its
+  own license. GlucoCube's terms reach only the GlucoCube layer.
+
+The glucose forecast reimplements the exponential insulin-activity model
+from [oref0](https://github.com/openaps/oref0) in Python. Raspberry Pi,
+Nightscout, Trio, Tidepool, twiist, Loop and OpenAPS are their owners'
+names, used here only to say what works with what.
