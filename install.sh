@@ -2,13 +2,13 @@
 # One-shot installer for GlucoCube on a Raspberry Pi.
 #
 # Run from a checkout:   ./install.sh
-# Or with nothing yet:   curl -sSL https://raw.githubusercontent.com/The-Carted-Horse/GlucoCube/main/install.sh | bash
+# Or with nothing yet:   curl -sSL https://raw.githubusercontent.com/The-Carted-Horse/SugarCube/main/install.sh | bash
 #
 # Installs all dependencies, generates config.json with random API secrets,
 # disables console screen blanking, and enables + starts the boot service.
 set -euo pipefail
 
-REPO_URL="${GLUCOCUBE_REPO:-https://github.com/The-Carted-Horse/GlucoCube.git}"
+REPO_URL="${GLUCOCUBE_REPO:-https://github.com/The-Carted-Horse/SugarCube.git}"
 
 SUDO=""
 if [ "$(id -u)" -ne 0 ]; then
