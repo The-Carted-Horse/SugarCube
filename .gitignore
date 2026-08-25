@@ -10,3 +10,10 @@ config.json
 .DS_Store
 *.bak
 *.tmp
+
+# Test and coverage output
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+junit*.xml

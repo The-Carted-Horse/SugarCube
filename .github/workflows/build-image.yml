@@ -32,7 +32,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Nothing is published from a red tree: the same suite that runs on every
+  # push runs again here, and the build below waits for it.
+  test:
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: test
     # Native ARM runner: no QEMU emulation needed, and much faster builds.
     runs-on: ubuntu-24.04-arm
     steps:

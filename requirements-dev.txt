@@ -1,0 +1,8 @@
+# Everything needed to run the test suite. The device itself needs only
+# pygame and qrcode (both from apt on Raspberry Pi OS); the rest is here.
+pytest>=8.0
+pytest-cov>=5.0
+pygame>=2.5          # the display renders headless via SDL's dummy driver
+qrcode>=7.4
+PyYAML>=6.0          # validates the GitHub Actions workflows
+ruff>=0.6

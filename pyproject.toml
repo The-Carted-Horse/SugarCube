@@ -1,0 +1,40 @@
+# Tool configuration only — GlucoCube is not a packaged distribution. It is
+# copied onto the device as a directory (by install.sh, by the image build,
+# and by the self-updater), so there is deliberately no [project] table and
+# nothing here that would make it look installable.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config -ra"
+# Keep the app's own logging out of passing tests but available on failure.
+log_cli = false
+filterwarnings = ["error::SyntaxWarning"]
+
+[tool.coverage.run]
+source = ["glucocube"]
+branch = true
+# The end-to-end tests start the app in a subprocess; that work is real but
+# it is not this process's coverage, so it simply is not counted.
+omit = ["glucocube/_version.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+# E501: the UI modules embed HTML, CSS and JavaScript as string literals,
+#       which do not wrap usefully at any column.
+# E731: two short numeric lambdas in the forecast code read better inline.
+ignore = ["E501", "E731"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests import fixtures and helpers for their side effects and readability.
+"tests/*" = ["E402"]

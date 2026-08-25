@@ -237,6 +237,28 @@ The display and web app are typeset in
 [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono), bundled under
 the SIL Open Font License in `glucocube/fonts/`.
 
+### Tests
+
+The suite is standard `pytest`, and needs no hardware — the display is
+rendered through SDL's dummy driver (the same one the shipped image uses),
+NetworkManager and every outbound HTTP call are stubbed out, and the
+end-to-end tests start `python -m glucocube` in a subprocess and talk to
+it over sockets:
+
+```bash
+pip install -r requirements-dev.txt
+pytest                       # the whole suite, about fifteen seconds
+pytest tests/test_oref.py    # one module
+pytest --cov=glucocube       # with coverage
+ruff check glucocube tests   # the same lint CI runs
+```
+
+The `Tests` workflow runs all of it on Python 3.11, 3.12 and 3.13,
+alongside `shellcheck` over `install.sh` and the image stage scripts and
+`systemd-analyze verify` over the service units. The release build calls
+that same workflow and waits for it, so nothing is published from a red
+tree.
+
 ## Safety note
 
 This is a convenience display, not a medical device. Forecasts are estimates
