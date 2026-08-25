@@ -57,7 +57,8 @@ class BasePoller(threading.Thread):
             self._stop.wait(delay)
 
 
-def start_pollers(users, store: Store) -> list[BasePoller]:
+def start_pollers(users, store: Store, glucocore_token: str = "") -> list[BasePoller]:
+    from .glucocore_poll import GlucoCorePoller
     from .nspull import NightscoutPoller
     from .tidepool import TidepoolPoller
 
@@ -66,12 +67,14 @@ def start_pollers(users, store: Store) -> list[BasePoller]:
         source = user.source or {}
         kind = source.get("type")
         poller = None
-        if kind == "tidepool" and source.get("email") and source.get("password"):
+        if kind == "glucocore" and source.get("patient_id") and glucocore_token:
+            poller = GlucoCorePoller(user.name, source, store, glucocore_token)
+        elif kind == "tidepool" and source.get("email") and source.get("password"):
             poller = TidepoolPoller(user.name, source, store)
         elif kind == "nightscout" and source.get("url"):
             poller = NightscoutPoller(user.name, source, store)
-        elif kind in ("tidepool", "nightscout"):
-            log.warning("[%s] %s source is missing credentials/url; not polling",
+        elif kind in ("tidepool", "nightscout", "glucocore"):
+            log.warning("[%s] %s source is missing credentials; not polling",
                         user.name, kind)
         if poller:
             poller.start()

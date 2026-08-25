@@ -50,6 +50,13 @@ class DisplayConfig:
 
 
 @dataclass
+class GlucoCoreConfig:
+    device_id: str = ""
+    device_token: str = ""
+    hardware_id: str = ""
+
+
+@dataclass
 class Config:
     users: list[UserConfig] = field(default_factory=list)
     display: DisplayConfig = field(default_factory=DisplayConfig)
@@ -65,6 +72,7 @@ class Config:
     # only) or "beta" (pre-releases too). Read live by the update
     # checker, so flipping it on the settings page takes effect at once.
     update_channel: str = "stable"
+    glucocore: GlucoCoreConfig | None = None
 
 
 # Kept here rather than in updater.py so config.load() can normalise the
@@ -287,6 +295,14 @@ def load(path: str | Path) -> Config:
     admin = raw.get("admin", {})
     admin_password = admin.get("password", "")
     updates = raw.get("updates", {})
+    gc_raw = raw.get("glucocore") or {}
+    glucocore = None
+    if gc_raw.get("device_token"):
+        glucocore = GlucoCoreConfig(
+            device_id=str(gc_raw.get("device_id") or ""),
+            device_token=str(gc_raw.get("device_token") or ""),
+            hardware_id=str(gc_raw.get("hardware_id") or ""),
+        )
     return Config(
         users=users,
         display=display,
@@ -297,4 +313,5 @@ def load(path: str | Path) -> Config:
         # the password wins, so a stale flag left in the file is inert.
         admin_password_off=bool(admin.get("password_off")) and not admin_password,
         update_channel=normalize_channel(updates.get("channel")),
+        glucocore=glucocore,
     )
