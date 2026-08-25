@@ -44,6 +44,7 @@ def draft_with(people=1, done=(), wifi=None) -> dict:
                     "source": None, "thresholds": {}} for i in range(people)],
         "display": {},
         "admin_password": "",
+        "admin_password_off": False,
         "committed_at": None,
     }
 
@@ -473,13 +474,74 @@ def test_a_short_password_is_refused(wizard):
 
 def test_a_blank_password_keeps_the_one_in_use(wizard):
     client, _server, path = wizard
+    _through_to_the_password_step(client)
+    step(client, "/setup/password", admin_password="")
+    step(client, "/setup/review")
+    assert load(path).admin_password == "letmein"
+
+
+def _through_to_the_password_step(client):
     step(client, "/setup/people", name0="Ada")
     step(client, "/setup/source?i=0", source="push")
     step(client, "/setup/creds?i=0")
     step(client, "/setup/thresholds")
-    step(client, "/setup/password", admin_password="")
+
+
+# ------------------------------------------------ finishing with no password ----
+#
+# Someone whose device is only reachable from a network they trust can say
+# so here rather than being handed a password they then have to look up.
+
+def test_choosing_no_password_finishes_without_one(wizard):
+    client, server, path = wizard
+    _through_to_the_password_step(client)
+    step(client, "/setup/password", mode="off")
+    status, _headers, body = step(client, "/setup/review")
+    assert status == 200
+    config = load(path)
+    assert config.admin_password == ""
+    assert config.admin_password_off is True
+    assert b"There is no password" in body
+    # The live config follows the file, so the page served next — and the
+    # device's own screen — stop offering a login that no longer exists.
+    assert server.config.admin_password == ""
+
+
+def test_the_password_step_remembers_which_way_it_was_answered(wizard):
+    client, _server, _path = wizard
+    _through_to_the_password_step(client)
+    step(client, "/setup/password", mode="off")
+    _status, _headers, body = client.get("/setup/password", headers=AUTH)
+    assert b'value="off" checked' in body
+
+
+def test_choosing_a_password_after_no_password_drops_the_flag(wizard):
+    client, _server, path = wizard
+    _through_to_the_password_step(client)
+    step(client, "/setup/password", mode="off")
+    step(client, "/setup/password", mode="on", admin_password="sup3rsecret")
     step(client, "/setup/review")
-    assert load(path).admin_password == "letmein"
+    config = load(path)
+    assert config.admin_password == "sup3rsecret"
+    assert config.admin_password_off is False
+    assert "password_off" not in json.loads(path.read_text())["admin"]
+
+
+def test_a_short_password_comes_back_on_the_card_it_was_sent_from(wizard):
+    """Otherwise the error page silently flips the answer back to "on"."""
+    client, _server, _path = wizard
+    status, _headers, body = step(client, "/setup/password", mode="on",
+                                  admin_password="short")
+    assert status == 400
+    assert b'value="on" checked' in body
+
+
+def test_the_review_says_which_way_the_page_will_be_reachable(wizard):
+    client, _server, _path = wizard
+    _through_to_the_password_step(client)
+    step(client, "/setup/password", mode="off")
+    _status, _headers, body = client.get("/setup/review", headers=AUTH)
+    assert b"no password" in body
 
 
 def test_testing_a_source_mid_wizard_reports_the_verdict(wizard, monkeypatch,

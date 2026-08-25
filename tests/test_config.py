@@ -48,9 +48,32 @@ def test_load_applies_defaults_for_absent_sections(tmp_path):
     assert config.display == DisplayConfig()
     assert config.admin_port == 80
     assert config.admin_password == ""
+    assert config.admin_password_off is False
     assert config.update_channel == "stable"
     assert config.users[0].api_secret == ""
     assert config.users[0].source is None
+
+
+# An empty password disables Basic auth on its own; password_off only says
+# that the emptiness is deliberate, so the settings hub can stop offering
+# to fix it.
+
+@pytest.mark.parametrize("admin, password, off", [
+    ({"password": "", "password_off": True}, "", True),
+    ({"password": ""}, "", False),
+    ({}, "", False),
+    # A password wins: a flag left behind by an earlier choice is inert
+    # rather than a device that quietly stopped asking for one.
+    ({"password": "letmein", "password_off": True}, "letmein", False),
+])
+def test_load_reads_a_deliberate_lack_of_password(tmp_path, admin, password,
+                                                  off):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"users": [{"name": "Solo", "port": 1337}],
+                                "admin": admin}))
+    config = load(path)
+    assert config.admin_password == password
+    assert config.admin_password_off is off
 
 
 def test_load_resolves_a_relative_database_next_to_the_config(tmp_path):

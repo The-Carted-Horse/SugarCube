@@ -93,6 +93,12 @@ with it, so scanning one opens the page signed in — tap **SETTINGS** in
 the footer of the display to get one for the settings page. The password
 is printed under each code for anyone typing the address by hand.
 
+The installer sets a random password, and **Access** can turn it off
+again: on a home network you trust, the device is only reachable from
+that network, and no password means nothing to look up on a phone. Then
+the settings hub stops asking you to set one. On a network guests,
+flatmates or an office share, keep it.
+
 The `.local` name needs mDNS — iPhones, Macs, Windows, and Android 12+
 all resolve it; on older Android type the IP instead. When port 80 isn't
 available (e.g. running by hand on a dev machine) it falls back to 8080.
@@ -122,7 +128,7 @@ guessing.
 | `/settings/network` | Wi-Fi: what it is on, and what else is nearby |
 | `/settings/clock` | Time zone (with what your phone thinks it is) |
 | `/settings/updates` | Version, release channel, install |
-| `/settings/access` | Password, and a link that opens settings without one |
+| `/settings/access` | Password (or none at all), and a link that opens settings without logging in |
 
 ## Wi-Fi setup
 

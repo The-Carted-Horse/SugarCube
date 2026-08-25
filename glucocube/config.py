@@ -56,6 +56,11 @@ class Config:
     database: str = "glucocube.db"
     admin_port: int = 80            # 0 disables the web admin
     admin_password: str = ""        # empty disables Basic auth
+    # True when having no password is a deliberate choice — a device on a
+    # network its owner trusts. It grants nothing on its own: the empty
+    # password above is what opens the door. All it does is stop the
+    # settings page nagging about a password that is missing on purpose.
+    admin_password_off: bool = False
     # Which releases this device updates from: "stable" (full releases
     # only) or "beta" (pre-releases too). Read live by the update
     # checker, so flipping it on the settings page takes effect at once.
@@ -280,12 +285,16 @@ def load(path: str | Path) -> Config:
         database = str(path.parent / database)
 
     admin = raw.get("admin", {})
+    admin_password = admin.get("password", "")
     updates = raw.get("updates", {})
     return Config(
         users=users,
         display=display,
         database=database,
         admin_port=int(admin.get("port", 80)),
-        admin_password=admin.get("password", ""),
+        admin_password=admin_password,
+        # A password and "no password on purpose" cannot both be true;
+        # the password wins, so a stale flag left in the file is inert.
+        admin_password_off=bool(admin.get("password_off")) and not admin_password,
         update_channel=normalize_channel(updates.get("channel")),
     )
