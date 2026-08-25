@@ -7,6 +7,7 @@ the only way to catch a startup order problem or a module that only fails
 when it is imported for real.
 """
 
+import http.client
 import json
 import os
 import socket
@@ -49,16 +50,24 @@ def write_config(tmp_path: Path, **overrides) -> Path:
 
 def wait_for_port(port: int, process: subprocess.Popen,
                   timeout: float = STARTUP_TIMEOUT) -> None:
+    """Wait until the server on this port answers.
+
+    A whole HTTP request rather than a bare connect-and-close: the latter
+    leaves the handler writing a "bad request syntax" 400 into a socket
+    that has already gone, which prints a broken-pipe traceback into the
+    test output for no reason. Any status counts as up — the web admin
+    answers 401 until it is given a password.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         if process.poll() is not None:
             output = process.stdout.read().decode(errors="replace")
             raise AssertionError(f"the app exited early:\n{output}")
-        with socket.socket() as sock:
-            sock.settimeout(0.5)
-            if sock.connect_ex(("127.0.0.1", port)) == 0:
-                return
-        time.sleep(0.2)
+        try:
+            Client(port).get("/api/health.json")
+            return
+        except (OSError, http.client.HTTPException):
+            time.sleep(0.2)
     raise AssertionError(f"nothing listening on {port} after {timeout:.0f}s")
 
 
