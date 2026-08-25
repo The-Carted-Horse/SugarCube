@@ -209,9 +209,17 @@ Releases are cut by pushing, not by tagging:
   `2.0.1`), or bumps the patch number if `dev` never rehearsed one.
 
 Both create their tag at the commit that was pushed, so there is no tag to
-push by hand. For a minor or major bump — or to run either channel off
-another branch — run the workflow manually and pick the part to increment
-and the channel.
+push by hand.
+
+For a minor or major bump — or to run either channel off another branch —
+run the workflow manually and pick the part to increment and the channel.
+
+A push that changes nothing a device runs publishes nothing: prose, the
+enclosure, the test suite and tool config are excluded on both channels,
+because a release whose code is identical to the last one would still be
+offered to every device on it. Everything else still cuts one, `install.sh`
+and the systemd units included. To publish anyway, run the workflow by
+hand — the exclusions apply to pushes only.
 
 ## Enclosure
 
@@ -242,6 +250,28 @@ The display and web app are typeset in
 [Space Grotesk](https://github.com/floriankarsten/space-grotesk) and
 [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono), bundled under
 the SIL Open Font License in `glucocube/fonts/`.
+
+### Tests
+
+The suite is standard `pytest`, and needs no hardware — the display is
+rendered through SDL's dummy driver (the same one the shipped image uses),
+NetworkManager and every outbound HTTP call are stubbed out, and the
+end-to-end tests start `python -m glucocube` in a subprocess and talk to
+it over sockets:
+
+```bash
+pip install -r requirements-dev.txt
+pytest                       # the whole suite, about fifteen seconds
+pytest tests/test_oref.py    # one module
+pytest --cov=glucocube       # with coverage
+ruff check glucocube tests   # the same lint CI runs
+```
+
+The `Tests` workflow runs all of it on Python 3.11, 3.12 and 3.13,
+alongside `shellcheck` over `install.sh` and the image stage scripts and
+`systemd-analyze verify` over the service units. The release build calls
+that same workflow and waits for it, so nothing is published from a red
+tree.
 
 ## Safety note
 
