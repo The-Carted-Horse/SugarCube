@@ -61,6 +61,16 @@ def get_lan_ip() -> str:
         sock.close()
 
 
+def hardware_id() -> str:
+    """Stable identifier for GlucoCore device registration."""
+    import uuid
+    node = uuid.getnode()
+    if (node >> 40) % 2 == 0:
+        return f"mac-{node:012x}"
+    host = socket.gethostname().split(".")[0]
+    return f"host-{host}"
+
+
 def init(store) -> None:
     """Give the module a store to persist scan/attempt state in."""
     global _store

@@ -118,7 +118,28 @@ def main() -> int:
         seed_demo_data(store, config.users)
 
     servers = start_servers(config.users, store)
-    pollers = start_pollers(config.users, store)
+    gc_token = config.glucocore.device_token if config.glucocore else ""
+    pollers = start_pollers(config.users, store, glucocore_token=gc_token)
+
+    push_listener = None
+    if config.glucocore and config.glucocore.device_token:
+        from .push import start_push_listener
+        from .webadmin import restart_soon
+
+        def _on_remote_config(_new_config):
+            restart_soon()
+
+        push_listener = start_push_listener(
+            config_path,
+            {
+                "device_id": config.glucocore.device_id,
+                "device_token": config.glucocore.device_token,
+                "hardware_id": config.glucocore.hardware_id,
+            },
+            store,
+            _on_remote_config,
+        )
+
     from .webadmin import start_admin
     start_admin(config, config_path, store)
 
@@ -178,6 +199,8 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if push_listener:
+            push_listener.stop()
         stop_servers(servers)
         for poller in pollers:
             poller.stop()

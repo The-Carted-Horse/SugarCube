@@ -18,7 +18,7 @@ import time
 import urllib.error
 from dataclasses import dataclass
 
-from . import nspull, tidepool
+from . import glucocore, nspull, tidepool
 
 log = logging.getLogger("glucocube.verify")
 
@@ -135,6 +135,29 @@ def tidepool_login(email: str, password: str,
     return _guarded(f"tidepool:{email}", run, timeout)
 
 
+def glucocore_login(email: str, password: str,
+                    timeout: float = DEFAULT_TIMEOUT) -> Result:
+    email = (email or "").strip()
+    if not email or not password:
+        return Result(False, "Enter your GlucoCore email and password.")
+
+    def run() -> Result:
+        try:
+            token, userid = glucocore.login(email, password, timeout=timeout * 0.8)
+            patients = glucocore.list_patients(token, userid, timeout=timeout * 0.5)
+        except Exception as exc:  # noqa: BLE001
+            result = _network_message(exc, password, "GlucoCore")
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 401:
+                return Result(False, "That email or password did not work.", result.detail)
+            return result
+        count = len(patients)
+        if count == 0:
+            return Result(True, "Signed in, but no patients are visible yet.")
+        return Result(True, f"Signed in — {count} patient{'s' if count != 1 else ''} available.")
+
+    return _guarded(f"glucocore:{email}", run, timeout)
+
+
 def nightscout_site(url: str, key: str,
                     timeout: float = DEFAULT_TIMEOUT) -> Result:
     url = (url or "").strip()
@@ -168,6 +191,8 @@ def nightscout_site(url: str, key: str,
 def source(config: dict, timeout: float = DEFAULT_TIMEOUT) -> Result:
     """Check whichever kind of source this is."""
     kind = (config or {}).get("type")
+    if kind == "glucocore":
+        return glucocore_login(config.get("email", ""), config.get("password", ""), timeout)
     if kind == "tidepool":
         return tidepool_login(config.get("email", ""),
                               config.get("password", ""), timeout)

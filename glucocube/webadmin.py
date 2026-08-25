@@ -1480,7 +1480,7 @@ check, on whichever channel published it.</p>"""
         # keep_blank_values matters: blank means "unchanged" for every
         # credential field, and a dropped key cannot say that.
         form = {
-            k: v[0]
+            k: (v[0] if len(v) == 1 else v)
             for k, v in parse_qs(raw_body.decode(),
                                  keep_blank_values=True).items()
         }
