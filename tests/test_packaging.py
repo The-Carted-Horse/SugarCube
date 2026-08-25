@@ -8,6 +8,7 @@ the updater cannot read.
 
 import ast
 import compileall
+import re
 import importlib
 import json
 import subprocess
@@ -229,6 +230,83 @@ def test_the_release_workflow_stamps_a_version_the_updater_can_read():
     # The shapes the workflow's own guard allows, all readable here.
     for version in ("2.1.0", "2.1.0-rc.3"):
         assert parse_version(version) is not None
+
+
+def release_workflow() -> dict:
+    yaml = pytest.importorskip("yaml")
+    document = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "build-image.yml").read_text())
+    # A bare `on:` key is YAML's boolean True, not the string "on".
+    return document[True] if True in document else document["on"]
+
+
+def as_regex(pattern: str) -> str:
+    """GitHub's path globs: ** crosses directories, * does not."""
+    out, index = [], 0
+    while index < len(pattern):
+        char = pattern[index]
+        if pattern.startswith("**", index):
+            out.append(".*")
+            index += 2
+        elif char == "*":
+            out.append("[^/]*")
+            index += 1
+        elif char == "?":
+            out.append("[^/]")
+            index += 1
+        else:
+            out.append(re.escape(char))
+            index += 1
+    return "".join(out) + "$"
+
+
+def release_skipped_for(path: str) -> bool:
+    ignored = release_workflow()["push"].get("paths-ignore") or []
+    return any(re.match(as_regex(pattern), path) for pattern in ignored)
+
+
+def test_a_release_is_still_cut_from_a_push_to_either_channel():
+    assert set(release_workflow()["push"]["branches"]) == {"main", "dev"}
+
+
+@pytest.mark.parametrize("path", [
+    "glucocube/display.py",
+    "glucocube/__init__.py",
+    "glucocube/fonts/JetBrainsMono-Bold.ttf",
+    "install.sh",                       # the manual install route
+    "config.example.json",              # install.sh reads it
+    "systemd/glucocube.service",
+    "image/stage-glucocube/00-glucocube/01-run.sh",
+    "image/stage-glucocube/00-glucocube/files/glucocube.service",
+    ".github/workflows/build-image.yml",
+])
+def test_changing_what_a_device_runs_still_cuts_a_release(path):
+    assert not release_skipped_for(path), f"{path} would no longer publish"
+
+
+@pytest.mark.parametrize("path", [
+    "README.md",
+    "docs/screenshot.png",
+    "docs/notes.md",
+    "enclosure/enclosure.scad",
+    "enclosure/build/front.stl",
+    "LICENSE",
+    "tests/test_oref.py",
+    "tests/conftest.py",
+    "requirements-dev.txt",
+    "pyproject.toml",
+    ".gitignore",
+    ".github/workflows/ci.yml",
+])
+def test_changing_nothing_a_device_runs_publishes_nothing(path):
+    """A version whose code is identical to the last one helps nobody: every
+    device on the channel would offer an update that changes nothing."""
+    assert release_skipped_for(path), f"{path} would publish a release"
+
+
+def test_a_release_can_still_be_cut_by_hand():
+    """paths-ignore never applies to workflow_dispatch — the way out."""
+    assert "workflow_dispatch" in release_workflow()
 
 
 def test_the_release_workflow_can_create_releases():

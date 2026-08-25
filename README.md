@@ -203,9 +203,17 @@ Releases are cut by pushing, not by tagging:
   `2.0.1`), or bumps the patch number if `dev` never rehearsed one.
 
 Both create their tag at the commit that was pushed, so there is no tag to
-push by hand. For a minor or major bump — or to run either channel off
-another branch — run the workflow manually and pick the part to increment
-and the channel.
+push by hand.
+
+For a minor or major bump — or to run either channel off another branch —
+run the workflow manually and pick the part to increment and the channel.
+
+A push that changes nothing a device runs publishes nothing: prose, the
+enclosure, the test suite and tool config are excluded on both channels,
+because a release whose code is identical to the last one would still be
+offered to every device on it. Everything else still cuts one, `install.sh`
+and the systemd units included. To publish anyway, run the workflow by
+hand — the exclusions apply to pushes only.
 
 ## Enclosure
 

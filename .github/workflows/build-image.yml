@@ -20,6 +20,27 @@ on:
         default: auto
   push:
     branches: [main, dev]
+    # A release exists to put new code on a device. A push that changes
+    # nothing a device runs — prose, the enclosure, the test suite, tool
+    # config — would otherwise publish a version number that installs
+    # code identical to the one already on the card, and every device on
+    # the channel would offer it. Both channels behave the same way.
+    #
+    # Everything not listed here still cuts a release, including
+    # install.sh, config.example.json (install.sh reads it), the systemd
+    # units and the pi-gen stage. To publish anyway — a doc fix worth a
+    # version of its own, say — run the workflow by hand from the Actions
+    # tab; workflow_dispatch above ignores this list entirely.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'enclosure/**'
+      - 'LICENSE'
+      - 'tests/**'
+      - 'requirements-dev.txt'
+      - 'pyproject.toml'
+      - '.gitignore'
+      - '.github/workflows/ci.yml'
 
 # The release step needs to create releases and tags; the org's default
 # token permissions are read-only.
