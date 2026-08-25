@@ -758,6 +758,12 @@ class AdminHandler(BaseHTTPRequestHandler):
     )
     SOURCE_NAMES = {"push": "Trio", "tidepool": "twiist",
                     "nightscout": "Nightscout"}
+    ACCESS_CARDS = (
+        ("on", "Ask for a password",
+         "Log in as admin — needed if anyone else can reach this network"),
+        ("off", "No password",
+         "Anyone on this network opens the dashboard and settings"),
+    )
     CHANNEL_CARDS = (
         ("stable", "Standard",
          "Full releases only — what almost everyone wants"),
@@ -861,7 +867,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             notices.append(ui.banner(
                 "err", f"Could not join <b>{ui.esc(wifi.get('ssid', ''))}</b>. "
                 '<a href="/settings/network">Try again</a>.'))
-        if not config.admin_password:
+        if not (config.admin_password or config.admin_password_off):
             notices.append(ui.banner(
                 "warn", "Anyone on this network can change these settings. "
                 '<a href="/settings/access">Set a password</a>.'))
@@ -875,6 +881,13 @@ class AdminHandler(BaseHTTPRequestHandler):
         # set up ten seconds ago is not a problem, and the line already
         # says so.
         needs_setup = [s for _, s in states if s["kind"] == "err"]
+
+        if config.admin_password:
+            access_sub = "Password set — the username is admin"
+        elif config.admin_password_off:
+            access_sub = "No password, on purpose — open on this network"
+        else:
+            access_sub = "No password set"
 
         theme = self._theme()
         zone = display.get("timezone") or ""
@@ -935,10 +948,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                          badge="new" if update.get("available") else "",
                          badge_kind="warn"),
             ui.menu_item(
-                "/settings/access", "Access",
-                "Password set — the username is admin" if config.admin_password
-                else "No password set", lead=ui.icon("lock"),
-                badge="" if config.admin_password else "open",
+                "/settings/access", "Access", access_sub, lead=ui.icon("lock"),
+                # Only a device that has no password *and* never said it
+                # meant to gets the badge: a warning nobody can act on is
+                # one people learn to look past.
+                badge="" if config.admin_password or config.admin_password_off
+                else "open",
                 badge_kind="warn"),
         ]
         more = ui.menu([
@@ -1340,15 +1355,36 @@ check, on whichever channel published it.</p>"""
     def _page_access(self) -> str:
         config = self.server.config
         password = config.admin_password
+        mode = "on" if password else "off"
         link = config_mod.admin_url(
             self._lan_ip(), config.admin_port,
             f"/settings?key={password}" if password else "/settings")
         known = [("Username", "admin")] if password else []
+        lede = ("This page and the dashboard need a password."
+                if password else
+                "This page and the dashboard are open to anyone on this "
+                "network.")
+        field = ui.row(
+            "New password" if password else "Password",
+            ui.password_input("admin_password", "",
+                              placeholder="leave blank to keep the current one"
+                                          if password else "",
+                              input_id="admin_password"),
+            inline=False, for_id="admin_password",
+            hint="At least six characters. You will stay logged in on this "
+                 "phone." + (" Leave it blank to keep the one in use."
+                             if password else ""))
+        # Said here rather than only in the card, because turning the
+        # password off is the one choice on this page that cannot be
+        # undone from somewhere else if the network turns out to be
+        # shared.
+        open_note = (
+            '<p class="note">Fine on a home network you trust — the device'
+            " is only reachable from it, and there is nothing to look up on"
+            " a phone to get in. Not fine on a network guests, flatmates or"
+            " an office share.</p>")
         return f"""<h1>Access</h1>
-<p class="lede">{"This page and the dashboard need a password."
-                 if password else
-                 "This page has no password: anyone on the network can "
-                 "change these settings."}</p>
+<p class="lede">{lede}</p>
 {self._flash()}
 {ui.facts(known)}
 {ui.row("Current password", ui.copy_input("current", password,
@@ -1360,10 +1396,10 @@ check, on whichever channel published it.</p>"""
         hint="The same link the QR code on the device carries. Anyone with "
              "it can change these settings.")}
 <form method="POST" action="/settings/access">
-  {ui.row("New password", ui.password_input("admin_password", "",
-          input_id="admin_password"), inline=False, for_id="admin_password",
-          hint="At least six characters. You will stay logged in on this "
-               "phone.")}
+  <label class="lbl">Getting in</label>
+  {ui.choice_cards("mode", self.ACCESS_CARDS, mode, controls="access")}
+  {ui.group("access", "on", field, current=mode)}
+  {ui.group("access", "off", open_note, current=mode)}
   <div class="actions stick">
     <button type="submit">Save &amp; apply</button>
     <span class="note">Restarts the display, about five seconds.</span>
@@ -1855,14 +1891,25 @@ shows it too.</p>""").encode()
         config_mod.write_atomic(raw, self.server.config_path)
 
     def _save_access(self, form: dict) -> None:
-        password = form.get("admin_password", "").strip()
-        if not password:
-            raise ValueError("Type a new password, or go back to keep the "
-                             "one in use.")
-        if len(password) < 6:
-            raise ValueError("The password must be at least six characters.")
         raw = self._raw_config()
-        raw.setdefault("admin", {})["password"] = password
+        admin = raw.setdefault("admin", {})
+        if form.get("mode", "on").strip() == "off":
+            # password_off is what tells the settings hub this is a choice
+            # and not a device somebody forgot to finish setting up, so it
+            # stops warning about it.
+            admin["password"] = ""
+            admin["password_off"] = True
+            config_mod.write_atomic(raw, self.server.config_path)
+            return
+        password = form.get("admin_password", "").strip()
+        current = self.server.config.admin_password
+        if not password and not current:
+            raise ValueError("Type a password, or choose No password.")
+        if password and len(password) < 6:
+            raise ValueError("The password must be at least six characters.")
+        password = password or current
+        admin["password"] = password
+        admin.pop("password_off", None)
         config_mod.write_atomic(raw, self.server.config_path)
         # Otherwise this browser's cookie stops matching the moment the new
         # process starts, and the page it was just on is gone.

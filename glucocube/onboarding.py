@@ -111,6 +111,7 @@ def seed_draft(config_path: str) -> dict:
         "people": people,
         "display": display,
         "admin_password": "",
+        "admin_password_off": False,
         "committed_at": None,
     }
 
@@ -572,20 +573,41 @@ people — you can change them per person later.</p>
     return _shell(draft, step, "Ranges", body)
 
 
+PASSWORD_CARDS = (
+    ("on", "Ask for a password",
+     "Log in as admin — needed if anyone else can reach this network"),
+    ("off", "No password",
+     "Anyone on this network opens the dashboard and settings"),
+)
+
+
 def _render_password(handler, draft, step, banner) -> str:
     current = handler.server.config.admin_password
+    mode = "off" if draft.get("admin_password_off") else "on"
+    field = ui.row(
+        "New password" if current else "Password",
+        ui.password_input("admin_password", "",
+                          placeholder="leave blank to keep the current one"
+                                      if current else "",
+                          input_id="admin_password"),
+        inline=False, for_id="admin_password",
+        hint="At least 6 characters. The device's own screen always shows"
+             " the current one, so you cannot lock yourself out."
+             + (" Leave it blank to keep the one in use." if current else ""))
+    open_note = ('<p class="note">Fine on a home network you trust — the'
+                 " device is only reachable from it. Not fine on a network"
+                 " guests, flatmates or an office share. You can turn a"
+                 " password on later under Access.</p>")
     body = f"""{banner}
-<p class="lede">This page and the dashboard are protected by a password.
+<p class="lede">This page and the dashboard can be protected by a password.
 The username is <b>admin</b>.</p>
 {ui.row("Current password", ui.copy_input("current", current,
                                           input_id="current"), inline=False)
  if current else ""}
 <form method="POST" action="/setup/password">
-  {ui.row("New password", ui.password_input("admin_password", "",
-          placeholder="leave blank to keep the current one",
-          input_id="admin_password"), inline=False, for_id="admin_password",
-          hint="At least 6 characters. The device's own screen always shows"
-               " the current one, so you cannot lock yourself out.")}
+  {ui.choice_cards("mode", PASSWORD_CARDS, mode, controls="access")}
+  {ui.group("access", "on", field, current=mode)}
+  {ui.group("access", "off", open_note, current=mode)}
   {_actions("Continue")}
 </form>"""
     return _shell(draft, step, "Password for this page", body)
@@ -605,11 +627,19 @@ def _render_review(handler, draft, step, banner) -> str:
         rows.append(f"<tr><td>{ui.esc(person.get('name', ''))}</td>"
                     f"<td>{ui.esc(detail)}{mark}</td></tr>")
     display = draft.get("display") or {}
+    if (draft.get("admin_password") or "").strip():
+        access = "a password you set"
+    elif not draft.get("admin_password_off") \
+            and handler.server.config.admin_password:
+        access = "the password already in use"
+    else:
+        access = "no password — open to this network"
     body = f"""{banner}
 <p class="lede">That is everything. Saving restarts the display, which takes
 a few seconds.</p>
 <div class="tablewrap"><table><tbody>{''.join(rows)}
 <tr><td>In range</td><td>{display.get('low', 70):g}&ndash;{display.get('high', 180):g} mg/dL</td></tr>
+<tr><td>Settings page</td><td>{ui.esc(access)}</td></tr>
 </tbody></table></div>
 <form method="POST" action="/setup/review">
   {_actions("Save and finish", note="Nothing has been saved until now.")}
@@ -625,7 +655,10 @@ def _render_done(handler, draft) -> str:
 {ui.row("Password for this page", ui.copy_input("pw", password,
         input_id="pw"), inline=False,
         hint="Write this down. The device's own screen shows it too.")
- if password else ""}
+ if password else
+ '<p class="note">There is no password: anyone on this network can open'
+ ' the dashboard and the settings. Add one any time under'
+ ' <a href="/settings/access">Access</a>.</p>'}
 <p><a class="btn" href="/">Open the dashboard</a></p>
 <p class="note">Readings appear as soon as the first ones arrive. The
 <a href="/log">sync log</a> shows what is coming in.</p>"""
@@ -835,11 +868,25 @@ def do_post(handler, path: str, form: dict) -> None:
         mark_done(draft, "thresholds")
     elif step == "password":
         password = (form.get("admin_password") or "").strip()
-        if password and len(password) < 6:
-            handler._send(render(handler, draft, "password", banner=ui.banner(
-                "err", "Use at least 6 characters, or leave it blank to keep "
-                       "the current password.")).encode(),
-                "text/html; charset=utf-8", 400)
+        off = (form.get("mode") or "on").strip() == "off"
+        current = handler.server.config.admin_password
+        # Set before validating so a re-render comes back on the card the
+        # form was submitted from; nothing is saved until the step passes.
+        draft["admin_password_off"] = off
+        problem = ""
+        if off:
+            password = ""
+        elif password and len(password) < 6:
+            problem = ("Use at least 6 characters, or choose No password."
+                       if not current else
+                       "Use at least 6 characters, or leave it blank to keep "
+                       "the current password.")
+        elif not password and not current:
+            problem = "Type a password, or choose No password."
+        if problem:
+            handler._send(render(handler, draft, "password",
+                                 banner=ui.banner("err", problem)).encode(),
+                          "text/html; charset=utf-8", 400)
             return
         draft["admin_password"] = password
         mark_done(draft, "password")
@@ -974,8 +1021,17 @@ def _commit(handler, draft: dict) -> None:
         return
     raw.setdefault("display", {}).update(draft.get("display") or {})
     password = (draft.get("admin_password") or "").strip()
+    password_off = bool(draft.get("admin_password_off")) and not password
     if password:
-        raw.setdefault("admin", {})["password"] = password
+        admin = raw.setdefault("admin", {})
+        admin["password"] = password
+        admin.pop("password_off", None)
+    elif password_off:
+        # Recorded as a choice, so the settings hub stops offering to set
+        # one every time it is opened.
+        admin = raw.setdefault("admin", {})
+        admin["password"] = ""
+        admin["password_off"] = True
     try:
         config_mod.write_atomic(raw, handler.server.config_path)
     except Exception as exc:  # noqa: BLE001 - shown, never a restart loop
@@ -988,6 +1044,9 @@ def _commit(handler, draft: dict) -> None:
         # starts, holding a cookie for the old password.
         handler._cookie_value = password
         handler.server.config.admin_password = password
+    elif password_off:
+        handler.server.config.admin_password = ""
+        handler.server.config.admin_password_off = True
     # The draft holds Tidepool and Nightscout credentials; keep only a
     # tombstone so a later /setup knows setup already happened.
     save_draft(store, {"version": DRAFT_VERSION, "committed_at": _now_ms()})

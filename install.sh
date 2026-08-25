@@ -59,7 +59,10 @@ repo = Path(sys.argv[1])
 config = json.loads((repo / "config.example.json").read_text())
 for user in config["users"]:
     user["api_secret"] = secrets.token_hex(12)
-# The web admin is exposed on port 80 — never leave it without a password.
+# The web admin is exposed on port 80, so a fresh install gets one.
+# It can be turned off later under Access, for a network its owner
+# trusts — that is a decision to make from the settings page, not a
+# default to ship.
 alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
 config["admin"] = {
     "port": 80,
