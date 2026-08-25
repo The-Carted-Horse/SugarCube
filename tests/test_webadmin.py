@@ -551,18 +551,102 @@ def test_changing_the_password_writes_it_and_hands_the_browser_the_new_one(admin
     assert "glucocube_key=newpassword" in headers["Set-Cookie"]
 
 
-@pytest.mark.parametrize("password, message", [
-    ("", b"Type a new password"),
-    ("   ", b"Type a new password"),
-    ("short", b"at least six characters"),
-])
-def test_a_weak_or_missing_password_is_refused(admin, password, message):
+@pytest.mark.parametrize("password", ["short", "  five "])
+def test_a_password_under_six_characters_is_refused(admin, password):
     client, _server, path = admin
     status, _headers, body = post(client, "/settings/access",
                                   admin_password=password)
     assert status == 400
-    assert message in body
+    assert b"at least six characters" in body
     assert load(path).admin_password == PASSWORD
+
+
+@pytest.mark.parametrize("password", ["", "   "])
+def test_a_blank_field_keeps_the_password_in_use(admin, password):
+    """The field says "leave blank to keep the current one", so it must."""
+    client, _server, path = admin
+    status, _headers, _body = post(client, "/settings/access",
+                                   admin_password=password)
+    assert status == 200
+    assert load(path).admin_password == PASSWORD
+
+
+def test_a_blank_field_is_refused_when_there_is_no_password_to_keep(admin):
+    client, server, path = admin
+    post(client, "/settings/access", mode="off")
+    server.config = load(path)
+    status, _headers, body = post(client, "/settings/access", mode="on",
+                                  admin_password="")
+    assert status == 400
+    assert b"Type a password, or choose No password" in body
+
+
+# ------------------------------------------------- access: no password ----
+#
+# An empty password has always disabled Basic auth; until the mode cards
+# there was no way to ask for one from the UI. The flag beside it is what
+# separates "open on purpose" from "never finished setting up".
+
+def test_choosing_no_password_clears_it_and_records_the_choice(admin):
+    client, _server, path = admin
+    status, _headers, _body = post(client, "/settings/access", mode="off")
+    assert status == 200
+    config = load(path)
+    assert config.admin_password == ""
+    assert config.admin_password_off is True
+
+
+def test_a_device_with_no_password_lets_anyone_in(admin):
+    """The point of the whole thing: no login on a network you trust."""
+    client, server, path = admin
+    post(client, "/settings/access", mode="off")
+    server.config = load(path)
+    server.password = ""
+    status, _headers, _body = client.get("/settings")      # no Authorization
+    assert status == 200
+
+
+def test_setting_a_password_again_drops_the_flag(admin):
+    client, server, path = admin
+    post(client, "/settings/access", mode="off")
+    server.config = load(path)
+    post(client, "/settings/access", mode="on", admin_password="newpassword")
+    config = load(path)
+    assert config.admin_password == "newpassword"
+    assert config.admin_password_off is False
+    assert "password_off" not in json.loads(path.read_text())["admin"]
+
+
+def test_the_hub_stops_asking_once_no_password_is_a_choice(admin):
+    client, server, path = admin
+    _status, _headers, before = client.get("/settings", headers=AUTH)
+    assert b"Set a password</a>" not in before          # it has one
+
+    post(client, "/settings/access", mode="off")
+    server.config = load(path)
+    _status, _headers, after = client.get("/settings", headers=AUTH)
+    assert b"Set a password</a>" not in after
+    assert b"on purpose" in after
+    assert b">open<" not in after
+
+
+def test_the_hub_still_asks_when_the_password_just_went_missing(admin):
+    """A hand-edited config with no password and no flag is not a choice."""
+    client, server, path = admin
+    raw = json.loads(path.read_text())
+    raw["admin"] = {"port": 8080, "password": ""}
+    path.write_text(json.dumps(raw))
+    server.config = load(path)
+    _status, _headers, body = client.get("/settings", headers=AUTH)
+    assert b"Set a password</a>" in body
+    assert b">open<" in body
+
+
+def test_the_access_page_offers_both_ways_in(admin):
+    client, _server, _path = admin
+    _status, _headers, body = client.get("/settings/access", headers=AUTH)
+    assert b'value="on" checked' in body               # it has a password
+    assert b"No password" in body
 
 
 # ---------------------------------------------------------------- updates ----
