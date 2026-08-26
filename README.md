@@ -160,6 +160,22 @@ reason appears both on the device's own screen and at the top of the page**
 (wrong password, network not found, and so on) — no SSH needed to find out
 what went wrong.
 
+### What a paired display takes from GlucoCore
+
+Who it shows, what they are called, the in-range and urgent bands, the
+time zone, the staleness cutoff — and the backlight: a daytime brightness
+and a dimmer night-time one, with the hours between which the night figure
+applies (equal hours mean never). Dimming needs a panel with a backlight
+under `/sys/class/backlight`, which the official 7" display has and an
+HDMI monitor does not; without one the setting is simply ignored.
+
+GlucoCore can also send settings this display does nothing with — a
+rotation interval, which means nothing to a screen that shows everyone at
+once, and the alert toggles, because this is not an alarm device (see
+[Safety note](#safety-note)). Each config push logs what it did not apply,
+so "I changed it and nothing happened" has an answer in
+[`/log`](#the-web-app).
+
 ### From GlucoCore's devices screen
 
 A paired display collects the commands queued for it — on its realtime

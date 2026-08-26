@@ -11,13 +11,16 @@ log = logging.getLogger("glucocube.sync")
 LAST_VERSION_KEY = "__glucocore_config_version"
 
 
-# What the device reads out of a remote display block. Everything else
-# GlucoCore can say — the brightness pair and its night window, rotation,
-# the alert flags — is either applied elsewhere or not applied at all;
-# `unapplied_display_keys` is what says which, out loud, rather than
-# leaving somebody to wonder why a setting they changed did nothing.
+# What the device takes out of a remote display block. Everything else
+# GlucoCore can say is not applied at all — a rotation interval means
+# nothing to a screen that shows everyone at once, and this deliberately
+# does not sound alarms — and `unapplied_display_keys` is what says so out
+# loud, rather than leaving somebody to wonder why a setting they changed
+# did nothing. Every name here must be a DisplayConfig field: config.load
+# builds it with **display, so an unknown key stops the device booting.
 DISPLAY_KEYS = ("timezone", "units", "low", "high", "urgent_low",
-                "urgent_high", "stale_minutes")
+                "urgent_high", "stale_minutes", "brightness",
+                "night_brightness", "night_from_hour", "night_to_hour")
 
 
 def display_from_remote(display: dict, remote: dict) -> dict:
@@ -137,11 +140,4 @@ def unapplied_display_keys(remote: dict) -> list[str]:
     """
     remote_display = remote.get("display") or {}
     return sorted(key for key, value in remote_display.items()
-                  if key not in DISPLAY_KEYS
-                  and key not in APPLIED_ELSEWHERE
-                  and value not in (None, ""))
-
-
-# Read by the display rather than written into config.json's display block.
-APPLIED_ELSEWHERE = frozenset({"brightness", "night_brightness",
-                               "night_from_hour", "night_to_hour"})
+                  if key not in DISPLAY_KEYS and value not in (None, ""))

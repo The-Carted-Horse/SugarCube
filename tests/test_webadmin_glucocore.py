@@ -496,3 +496,31 @@ def test_a_push_says_out_loud_what_this_display_ignores(tmp_path, caplog):
     # `low` is applied, and `brightness` is applied by the display rather
     # than through config.json — neither is somebody's setting going
     # nowhere, so neither belongs in that line.
+
+
+def test_the_brightness_a_push_carries_reaches_the_display(tmp_path):
+    """It is a display setting like any other, so it lands in the config."""
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({
+        "users": [{"name": "Grace", "port": 1337, "api_secret": "s",
+                   "source": {"type": "glucocore", "patient_id": "pat-1"}}],
+        "display": {},
+        "admin": {"port": 8080, "password": "letmein"},
+    }))
+    config = sync.apply_remote_config(
+        path,
+        {"patientIds": ["pat-1"],
+         "display": {"brightness": 80, "night_brightness": 15,
+                     "night_from_hour": 22, "night_to_hour": 7}},
+        7)
+    assert config.display.brightness == 80
+    assert config.display.night_brightness == 15
+    assert (config.display.night_from_hour,
+            config.display.night_to_hour) == (22, 7)
+
+
+def test_nothing_a_push_applies_can_stop_the_device_booting(tmp_path):
+    """config.load builds DisplayConfig with **display: a stray key crashes."""
+    from glucocube.config import DisplayConfig
+    fields = set(DisplayConfig().__dataclass_fields__)
+    assert set(sync.DISPLAY_KEYS) <= fields

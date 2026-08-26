@@ -51,6 +51,14 @@ class DisplayConfig:
     urgent_low: float = 55
     urgent_high: float = 250
     stale_minutes: float = 12
+    # The panel's backlight, 0-100, and the dimmer figure for overnight
+    # with the hours it applies between. None means "leave the panel
+    # alone", which is what a display nobody has asked to dim should do.
+    # Equal hours mean the night figure is never used.
+    brightness: float | None = None
+    night_brightness: float | None = None
+    night_from_hour: int | None = None
+    night_to_hour: int | None = None
 
 
 @dataclass

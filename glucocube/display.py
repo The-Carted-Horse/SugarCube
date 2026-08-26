@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import pygame
 
-from . import network, predict, touch
+from . import backlight, network, predict, touch
 from .config import IDENTIFY_KEY, SCREEN_PNG, Config, admin_url, merged_thresholds
 from .store import Store, UserSnapshot
 
@@ -1162,6 +1162,11 @@ class Display:
                 except queue.Empty:
                     break
             self.draw()
+            # Once a frame, and free when the answer has not changed. The
+            # hour is read here rather than cached so that a device left
+            # running dims when the evening arrives, not at the next boot.
+            backlight.apply(self.config.display,
+                            time.localtime().tm_hour)
             if time.time() - last_snapshot >= 5:
                 self.save_snapshot()
                 last_snapshot = time.time()
