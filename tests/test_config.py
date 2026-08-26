@@ -333,7 +333,10 @@ def test_simple_secret_is_lowercase_and_unambiguous():
     for _ in range(50):
         secret = simple_secret(6)
         assert len(secret) == 6
-        assert secret.islower()
+        # Not islower(): that is False for a string with no cased letters
+        # at all, and eight of this alphabet's characters are digits — so
+        # roughly one run in seventy drew "234567" and failed on it.
+        assert secret == secret.lower()
         assert set(secret) <= set(config_mod.SIMPLE_ALPHABET)
 
 

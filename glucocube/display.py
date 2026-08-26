@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import pygame
 
-from . import backlight, network, predict, touch
+from . import backlight, network, pairing, predict, touch
 from .config import IDENTIFY_KEY, SCREEN_PNG, Config, admin_url, merged_thresholds
 from .store import Store, UserSnapshot
 
@@ -1011,14 +1011,24 @@ class Display:
         # filter client-to-client IPv4.
         ip_url = admin_url(ip, self.config.admin_port, "/setup")
         primary = mdns or ip_url
-        self.text(screen, "Scan from a phone on this network to set up",
-                  int(s * 0.045), self.pal.dim, midtop=(cx, int(h * 0.17)))
 
-        # The code carries the admin key so that scanning it opens setup
-        # outright. The address printed below deliberately does not: it
-        # is for typing, and the login for it is printed with it.
-        qr = (self._qr_surface(self._with_key(primary), int(s * 0.46))
-              if self.config.admin_port else None)
+        # A display that has asked GlucoCore to pair it shows that instead:
+        # scanning it needs no address, no password and nothing typed, and
+        # a phone that is already signed in finishes the job in one tap.
+        approve = pairing.public_state(self.store).get("approve_url") or ""
+        if approve:
+            self.text(screen, "Scan to add this display to GlucoCore",
+                      int(s * 0.045), self.pal.dim, midtop=(cx, int(h * 0.17)))
+        else:
+            self.text(screen, "Scan from a phone on this network to set up",
+                      int(s * 0.045), self.pal.dim, midtop=(cx, int(h * 0.17)))
+
+        # The setup code carries the admin key so that scanning it opens
+        # setup outright. The address printed below deliberately does not:
+        # it is for typing, and the login for it is printed with it.
+        target = approve or self._with_key(primary)
+        qr = (self._qr_surface(target, int(s * 0.46))
+              if approve or self.config.admin_port else None)
         if qr:
             rect = qr.get_rect(center=(cx, int(h * 0.52)))
             screen.blit(qr, rect)
@@ -1026,6 +1036,14 @@ class Display:
         else:
             info_y = int(h * 0.45)
 
+        if approve:
+            # Nothing under a GlucoCore code but the way in without one:
+            # the address of this display's own settings page.
+            self.text(screen, "or set it up at", int(s * 0.038),
+                      self.pal.faint, midtop=(cx, info_y))
+            self.text(screen, primary, int(s * 0.045), self.pal.dim,
+                      midtop=(cx, info_y + int(s * 0.05)))
+            return
         self.text(screen, primary, int(s * 0.05), self.pal.fg, midtop=(cx, info_y))
         line_y = info_y + int(s * 0.065)
         if mdns:

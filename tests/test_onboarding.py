@@ -40,6 +40,11 @@ from glucocube.webadmin import AdminServer
 
 from helpers import Client
 
+PATIENTS = [
+    {"userId": "pat-1", "name": "Ada"},
+    {"userId": "pat-2", "name": "Bo"},
+]
+
 PAIRED_CONFIG = {
     "version": 2,
     "patientIds": ["pat-1", "pat-2"],
@@ -382,13 +387,159 @@ def test_the_code_and_this_device_are_the_whole_request(wizard, pairs):
     assert sent["name"] == "Kitchen display"
 
 
-def test_the_wizard_never_asks_for_a_password_for_the_account(wizard):
-    """A Pi on a shelf holding somebody's password is the thing to avoid."""
+def test_the_wizard_offers_all_three_ways_in(wizard):
     client, _server, _path = wizard
     _status, _headers, body = client.get("/setup/pair", headers=AUTH)
+    assert b'value="qr"' in body
     assert b'name="code"' in body
-    assert b'type="password"' not in body
-    assert b'name="email"' not in body
+    assert b'name="email"' in body
+
+
+def test_scanning_is_what_the_wizard_opens_on(wizard):
+    """The one that needs no typing at all leads."""
+    client, _server, _path = wizard
+    _status, _headers, body = client.get("/setup/pair", headers=AUTH)
+    assert b'value="qr" checked' in body
+
+
+def test_the_wizard_shows_the_request_the_display_is_waiting_on(wizard, store):
+    from glucocube import pairing
+    client, _server, _path = wizard
+    store.replace_params(pairing.STATE_KEY, {
+        "request_id": "req-1", "secret": "never-rendered",
+        "approve_url": "https://www.glucocore.app/devices/add?request=req-1",
+        "expires_at": 0, "error": ""})
+    _status, _headers, body = client.get("/setup/pair", headers=AUTH)
+    assert b"<svg" in body
+    assert b"never-rendered" not in body
+
+
+def test_a_display_scanned_mid_wizard_moves_the_wizard_on(wizard, store):
+    """Somebody walked up to the wall while this page was open."""
+    client, server, path = wizard
+    raw = json.loads(path.read_text())
+    raw["glucocore"] = {"device_id": "dev-9", "device_token": "device-token"}
+    path.write_text(json.dumps(raw))
+    server.config = load(path)
+
+    status, headers, _body = client.get("/setup/pair", headers=AUTH)
+    assert status == 303
+    assert headers["Location"] == "/setup/thresholds"
+
+
+def test_a_display_scanned_mid_wizard_still_finishes(wizard, store):
+    """The remaining answers are saved; the pairing is already written."""
+    client, server, path = wizard
+    step(client, "/setup/welcome")
+    step(client, "/setup/timezone", tzmode="list", timezone="Europe/London")
+
+    raw = json.loads(path.read_text())
+    raw["glucocore"] = {"device_id": "dev-9", "device_token": "device-token"}
+    raw["users"] = [{"name": "Grace", "port": 1337, "api_secret": "s",
+                     "source": {"type": "glucocore", "patient_id": "pat-1"}}]
+    path.write_text(json.dumps(raw))
+    server.config = load(path)
+
+    client.get("/setup/pair", headers=AUTH)      # notices, marks it done
+    step(client, "/setup/thresholds", low="80", high="160")
+    step(client, "/setup/password", admin_password="newpassword")
+    status, _headers, _body = step(client, "/setup/review")
+
+    assert status == 200
+    config = load(path)
+    assert config.glucocore.device_token == "device-token"
+    assert [u.name for u in config.users] == ["Grace"]
+    assert (config.display.low, config.display.high) == (80, 160)
+    assert config.admin_password == "newpassword"
+
+
+# ------------------------------------------------------ signing in here ----
+
+def test_signing_in_asks_who_to_show_next(wizard, store, monkeypatch):
+    client, _server, _path = wizard
+    monkeypatch.setattr(verify, "glucocore_session",
+                        lambda email, password, timeout=10.0: (
+                            Result(True, "Signed in."),
+                            {"token": "session-token", "userid": "u-1",
+                             "patients": PATIENTS}))
+    status, headers, _body = step(client, "/setup/pair", how="signin",
+                                  email="c@example.invalid", password="pw")
+    assert (status, headers["Location"]) == (303, "/setup/people")
+    assert "people" in steps_for(load_draft(store))
+    _status, _headers, body = client.get("/setup/people", headers=AUTH)
+    assert b"Ada" in body and b"Bo" in body
+
+
+def test_registering_from_the_wizard_pairs_the_display(wizard, store,
+                                                       monkeypatch):
+    client, _server, path = wizard
+    monkeypatch.setattr(verify, "glucocore_session",
+                        lambda *a, **k: (
+                            Result(True, "Signed in."),
+                            {"token": "session-token", "userid": "u-1",
+                             "patients": PATIENTS}))
+    calls = []
+
+    def register(token, name, hardware_id, patient_ids, display=None,
+                 timeout=10.0):
+        calls.append({"token": token, "patient_ids": list(patient_ids)})
+        return (Result(True, "Paired."),
+                {"deviceToken": "device-token",
+                 "device": {"id": "dev-42", "name": name,
+                            "config": PAIRED_CONFIG}})
+
+    monkeypatch.setattr(verify, "glucocore_register", register)
+    step(client, "/setup/welcome")
+    step(client, "/setup/timezone", tzmode="list", timezone="")
+    step(client, "/setup/pair", how="signin", email="c@example.invalid",
+         password="pw")
+    step(client, "/setup/people", patient_ids="pat-1",
+         device_name="Kitchen display")
+    step(client, "/setup/thresholds")
+    step(client, "/setup/password", admin_password="")
+    step(client, "/setup/review")
+
+    assert calls[0]["token"] == "session-token"
+    config = load(path)
+    assert config.glucocore.device_token == "device-token"
+    assert [u.name for u in config.users] == ["Ada", "Bo"]
+
+
+def test_the_account_session_does_not_outlive_the_step_that_used_it(
+        wizard, store, monkeypatch):
+    client, _server, _path = wizard
+    monkeypatch.setattr(verify, "glucocore_session",
+                        lambda *a, **k: (
+                            Result(True, "Signed in."),
+                            {"token": "session-token", "userid": "u-1",
+                             "patients": PATIENTS}))
+    monkeypatch.setattr(verify, "glucocore_register",
+                        lambda *a, **k: (
+                            Result(True, "Paired."),
+                            {"deviceToken": "device-token",
+                             "device": {"id": "dev-42", "name": "Hall",
+                                        "config": PAIRED_CONFIG}}))
+    step(client, "/setup/pair", how="signin", email="c@example.invalid",
+         password="pw")
+    assert "session-token" in json.dumps(load_draft(store))
+    step(client, "/setup/people", patient_ids="pat-1")
+    assert "session-token" not in json.dumps(load_draft(store))
+
+
+def test_choosing_nobody_from_the_signed_in_list_is_refused(wizard,
+                                                            monkeypatch):
+    client, _server, _path = wizard
+    monkeypatch.setattr(verify, "glucocore_session",
+                        lambda *a, **k: (
+                            Result(True, "Signed in."),
+                            {"token": "session-token", "userid": "u-1",
+                             "patients": PATIENTS}))
+    step(client, "/setup/pair", how="signin", email="c@example.invalid",
+         password="pw")
+    status, _headers, body = step(client, "/setup/people",
+                                  patient_ids="somebody-else")
+    assert status == 400
+    assert b"at least one person" in body
 
 
 def test_two_people_each_get_their_own_panel_and_port(wizard, pairs):

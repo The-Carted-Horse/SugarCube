@@ -16,6 +16,7 @@ module boundary the app uses, so nothing here reaches the network
 
 import json
 import threading
+import time
 import urllib.parse
 
 import pytest
@@ -157,13 +158,21 @@ def test_glucocore_people_with_no_pairing_are_badged(paired, monkeypatch):
     assert "not paired" in hub
 
 
-def test_the_page_asks_for_a_code_and_never_a_password(admin):
+def test_the_page_offers_all_three_ways_in(admin):
+    """Scan it, sign in here, or type a code — they end in the same place."""
     client, _server, _path = admin
     body = page(client, "/settings/glucocore")
+    assert 'value="qr"' in body
+    assert 'action="/settings/glucocore/signin"' in body
     assert 'action="/settings/glucocore/pair"' in body
-    assert 'name="code"' in body
-    assert 'type="password"' not in body
-    assert 'name="email"' not in body
+    assert 'name="code"' in body and 'name="password"' in body
+
+
+def test_scanning_is_what_the_page_opens_on(admin):
+    """The one that needs no typing at all leads."""
+    client, _server, _path = admin
+    body = page(client, "/settings/glucocore")
+    assert 'value="qr" checked' in body
 
 
 def test_the_page_says_where_the_code_comes_from(admin):
@@ -307,7 +316,7 @@ def test_a_pairing_with_nobody_on_it_is_refused(admin, monkeypatch):
     status, _headers, body = post(client, "/settings/glucocore/pair",
                                   code="123456")
     assert status == 400
-    assert "nobody on it yet" in body.decode()
+    assert "nobody on it" in body.decode()
     assert "glucocore" not in config_of(path)
 
 
@@ -524,3 +533,208 @@ def test_nothing_a_push_applies_can_stop_the_device_booting(tmp_path):
     from glucocube.config import DisplayConfig
     fields = set(DisplayConfig().__dataclass_fields__)
     assert set(sync.DISPLAY_KEYS) <= fields
+
+
+# --------------------------------------------------------- scanning it ----
+#
+# The display asks to be paired and puts the request on its own screen.
+# Whoever scans it approves it in GlucoCore, and the display collects the
+# token. The settings page shows the same code, and follows along.
+
+def waiting(store, approve_url="https://www.glucocore.app/devices/add?request=r-1",
+            **extra):
+    from glucocube import pairing
+    state = {"request_id": "r-1", "secret": "sh-sh-secret",
+             "approve_url": approve_url,
+             "expires_at": int((time.time() + 500) * 1000), "error": ""}
+    state.update(extra)
+    store.replace_params(pairing.STATE_KEY, state)
+    return state
+
+
+def test_the_page_shows_the_request_as_something_to_scan(admin, store):
+    client, _server, _path = admin
+    waiting(store)
+    body = page(client, "/settings/glucocore")
+    assert "<svg" in body and 'class="qr"' in body
+    assert "/devices/add?request=r-1" in body
+
+
+def test_the_secret_never_reaches_the_page(admin, store):
+    """The id is public; the secret is what turns it into a token."""
+    client, _server, _path = admin
+    waiting(store)
+    assert "sh-sh-secret" not in page(client, "/settings/glucocore")
+
+
+def test_the_secret_never_reaches_the_json_either(admin, store):
+    client, _server, _path = admin
+    waiting(store)
+    status, state = client.json("/api/pairing.json", headers=AUTH)
+    assert status == 200
+    assert state["request_id"] == "r-1"
+    assert state["paired"] is False
+    assert "secret" not in json.dumps(state)
+
+
+def test_the_page_says_so_when_the_display_cannot_ask(admin, store):
+    client, _server, _path = admin
+    waiting(store, approve_url="", error="Name or service not known")
+    body = page(client, "/settings/glucocore")
+    assert "has not been able to ask" in body
+    assert "Name or service not known" in body
+
+
+def test_a_paired_display_says_so_to_a_page_still_waiting(paired):
+    """The page polls; the display pairs itself and restarts under it."""
+    client, _server, _path = paired
+    _status, state = client.json("/api/pairing.json", headers=AUTH)
+    assert state["paired"] is True
+
+
+# ------------------------------------------------------- signing in here ----
+
+def signs_in(monkeypatch, patients=PATIENTS):
+    monkeypatch.setattr(verify, "glucocore_session",
+                        lambda email, password, timeout=10.0: (
+                            Result(True, "Signed in."),
+                            {"token": "session-token", "userid": "u-1",
+                             "patients": patients}))
+
+
+def registers(monkeypatch, calls=None, config=None):
+    remote = PAIRED_CONFIG if config is None else config
+
+    def register(token, name, hardware_id, patient_ids, display=None,
+                 timeout=10.0):
+        if calls is not None:
+            calls.append({"token": token, "name": name,
+                          "hardware_id": hardware_id,
+                          "patient_ids": list(patient_ids),
+                          "display": display})
+        return (Result(True, "Paired."),
+                {"deviceToken": "device-token",
+                 "device": {"id": "dev-42", "name": name, "config": remote}})
+
+    monkeypatch.setattr(verify, "glucocore_register", register)
+    return calls
+
+
+def test_signing_in_leads_to_choosing_who_to_show(admin, monkeypatch):
+    client, _server, path = admin
+    signs_in(monkeypatch)
+    status, headers, _body = post(client, "/settings/glucocore/signin",
+                                  email="a@b.c", password="hunter2")
+    assert status == 303
+    assert headers["Location"] == "/settings/glucocore"
+    # Nothing is written until the display is actually registered.
+    assert "glucocore" not in config_of(path)
+    body = page(client, "/settings/glucocore")
+    assert "Grace" in body and "Rex" in body
+    assert 'action="/settings/glucocore/register"' in body
+
+
+def test_a_refused_sign_in_stays_on_the_page(admin, monkeypatch):
+    client, _server, _path = admin
+    monkeypatch.setattr(verify, "glucocore_session",
+                        lambda *a, **k: (
+                            Result(False, "That email or password did not "
+                                          "work."), {}))
+    status, _headers, body = post(client, "/settings/glucocore/signin",
+                                  email="a@b.c", password="nope")
+    assert status == 400
+    assert "did not work" in body.decode()
+
+
+def test_registering_creates_the_display_and_writes_it_down(admin,
+                                                            monkeypatch,
+                                                            restarts):
+    client, _server, path = admin
+    signs_in(monkeypatch)
+    calls = registers(monkeypatch, calls=[])
+    post(client, "/settings/glucocore/signin", email="a@b.c", password="pw")
+
+    status, _headers, _body = post_many(client, "/settings/glucocore/register", [
+        ("device_name", "Kitchen display"),
+        ("patient_ids", "pat-1"),
+        ("patient_ids", "pat-2"),
+    ])
+    assert status == 200
+    assert restarts
+
+    assert calls[0]["token"] == "session-token"
+    assert calls[0]["name"] == "Kitchen display"
+    assert calls[0]["patient_ids"] == ["pat-1", "pat-2"]
+    raw = config_of(path)
+    assert raw["glucocore"]["device_token"] == "device-token"
+    assert [u["name"] for u in raw["users"]
+            if (u.get("source") or {}).get("type") == "glucocore"] == ["Grace",
+                                                                       "Rex"]
+    load(path)
+
+
+def test_the_display_this_device_already_shows_is_offered_to_glucocore(
+        admin, monkeypatch):
+    """The bands it was set up with, so pairing does not reset them."""
+    client, _server, _path = admin
+    signs_in(monkeypatch)
+    calls = registers(monkeypatch, calls=[])
+    post(client, "/settings/glucocore/signin", email="a@b.c", password="pw")
+    post(client, "/settings/glucocore/register", patient_ids="pat-1")
+    assert calls[0]["display"]["low"] == 70
+
+
+def test_a_patient_the_account_was_not_shown_is_refused(admin, monkeypatch):
+    client, _server, path = admin
+    signs_in(monkeypatch)
+    registers(monkeypatch)
+    post(client, "/settings/glucocore/signin", email="a@b.c", password="pw")
+    status, _headers, body = post(client, "/settings/glucocore/register",
+                                  patient_ids="somebody-elses-id")
+    assert status == 400
+    assert "at least one person" in body.decode()
+    assert "glucocore" not in config_of(path)
+
+
+def test_registering_forgets_the_account_session(admin, monkeypatch, store):
+    """The device keeps its own read-only token, and nothing else."""
+    client, _server, _path = admin
+    signs_in(monkeypatch)
+    registers(monkeypatch)
+    post(client, "/settings/glucocore/signin", email="a@b.c", password="pw")
+    post(client, "/settings/glucocore/register", patient_ids="pat-1")
+    assert store.get_params(webadmin.AdminHandler.SIGNIN_KEY) == {}
+
+
+def test_an_expired_sign_in_is_not_offered(admin, monkeypatch, store):
+    client, _server, _path = admin
+    signs_in(monkeypatch)
+    post(client, "/settings/glucocore/signin", email="a@b.c", password="pw")
+    draft = store.get_params(webadmin.AdminHandler.SIGNIN_KEY)
+    draft["started_at"] -= webadmin.AdminHandler.SIGNIN_TTL_MS + 1000
+    store.replace_params(webadmin.AdminHandler.SIGNIN_KEY, draft)
+    assert 'action="/settings/glucocore/signin"' in page(client,
+                                                         "/settings/glucocore")
+
+
+def test_discarding_a_sign_in_drops_the_token(admin, monkeypatch, store):
+    client, _server, _path = admin
+    signs_in(monkeypatch)
+    post(client, "/settings/glucocore/signin", email="a@b.c", password="pw")
+    post(client, "/settings/glucocore/cancel")
+    assert not store.get_params(webadmin.AdminHandler.SIGNIN_KEY).get("token")
+
+
+def test_a_failed_registration_changes_nothing(admin, monkeypatch, restarts):
+    client, _server, path = admin
+    signs_in(monkeypatch)
+    monkeypatch.setattr(verify, "glucocore_register",
+                        lambda *a, **k: (
+                            Result(False, "GlucoCore is having a moment."), {}))
+    post(client, "/settings/glucocore/signin", email="a@b.c", password="pw")
+    status, _headers, body = post(client, "/settings/glucocore/register",
+                                  patient_ids="pat-1")
+    assert status == 502
+    assert "having a moment" in body.decode()
+    assert "glucocore" not in config_of(path)
+    assert not restarts

@@ -21,7 +21,7 @@ from glucocube import glucocore
 
 class GlucoCoreAddressTest(unittest.TestCase):
     def test_the_base_url_is_the_service(self):
-        self.assertEqual(glucocore.GLUCOCORE_BASE, "https://glucocore.app")
+        self.assertEqual(glucocore.GLUCOCORE_BASE, "https://www.glucocore.app")
 
     def test_base_url_has_no_trailing_slash(self):
         """Every path below is joined onto it directly."""
@@ -72,7 +72,7 @@ class GlucoCoreRequestTest(unittest.TestCase):
         sent = self._capture(
             lambda: glucocore.claim("123456", "mac-abc", "Kitchen display"),
             json.dumps({"data": {"deviceToken": "device-token"}}).encode())
-        self.assertEqual(sent["url"], "https://glucocore.app/v1/sugar_cubes/claim")
+        self.assertEqual(sent["url"], "https://www.glucocore.app/v1/sugar_cubes/claim")
         self.assertEqual(sent["method"], "POST")
         self.assertEqual(json.loads(sent["body"]),
                          {"code": "123456", "hardwareId": "mac-abc",
@@ -99,7 +99,7 @@ class GlucoCoreRequestTest(unittest.TestCase):
         sent = self._capture(
             lambda: glucocore.get_config("device-token"))
         self.assertEqual(sent["url"],
-                         "https://glucocore.app/v1/sugar_cubes/me/config")
+                         "https://www.glucocore.app/v1/sugar_cubes/me/config")
         # urllib rewrites the case of header names, and HTTP does not care
         # about it either, so neither does this.
         headers = {name.lower(): value
@@ -199,7 +199,7 @@ class RedirectTest(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", urlopen):
             glucocore.claim("123456", "mac-abc")
         self.assertEqual(seen[1]["url"],
-                         "https://glucocore.app/v1/sugar_cubes/claim/")
+                         "https://www.glucocore.app/v1/sugar_cubes/claim/")
 
     def test_the_token_does_not_travel_off_the_service(self):
         """A Location anywhere else is where a device token gets stolen."""

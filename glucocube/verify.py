@@ -164,6 +164,79 @@ def tidepool_login(email: str, password: str,
     return _guarded(f"tidepool:{email}", run, timeout)
 
 
+def glucocore_session(email: str, password: str,
+                      timeout: float = DEFAULT_TIMEOUT) -> tuple[Result, dict]:
+    """Sign in, and hand back the session token and the patients on it.
+
+    Pairing this way needs the token it just proved works. Signing in
+    twice — once to check, once to keep — would trip the throttle above
+    and, worse, could succeed the first time and fail the second, so the
+    check and the thing being checked are one call.
+    """
+    email = (email or "").strip()
+    if not email or not password:
+        return Result(False, "Enter your GlucoCore email and password."), {}
+    session: dict = {}
+
+    def run() -> Result:
+        try:
+            token, userid = glucocore.login(email, password,
+                                            timeout=timeout * 0.8)
+            patients = glucocore.list_patients(token, userid,
+                                               timeout=timeout * 0.5)
+        except Exception as exc:  # noqa: BLE001 - reported, never raised
+            result = _network_message(exc, password, "GlucoCore",
+                                      address=glucocore.GLUCOCORE_BASE)
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 401:
+                return Result(False, "That email or password did not work.",
+                              result.detail)
+            return result
+        session.update(token=token, userid=userid, patients=list(patients))
+        count = len(patients)
+        if count == 0:
+            return Result(True, "Signed in, but no patients are visible yet.")
+        return Result(True, f"Signed in — {count} "
+                            f"patient{'s' if count != 1 else ''} available.")
+
+    result = _guarded(f"glucocore:{email}", run, timeout)
+    # _bounded abandons a worker that overran, so a late success must not
+    # leak out as a session nobody is waiting for any more.
+    return (result, session) if result.ok else (result, {})
+
+
+def glucocore_register(token: str, name: str, hardware_id: str,
+                       patient_ids: list, display: dict | None = None,
+                       timeout: float = DEFAULT_TIMEOUT) -> tuple[Result, dict]:
+    """Create this display in GlucoCore, and hand back what it said.
+
+    Shaped like `glucocore_claim` on purpose: both ways of pairing end
+    with a device, its config and a token, so the page that writes them
+    down does not need to know which way it was.
+    """
+    if not patient_ids:
+        return Result(False, "Choose at least one person to show."), {}
+    registered: dict = {}
+    config = {"patientIds": list(patient_ids), "display": dict(display or {}),
+              "perPatient": {}}
+
+    def run() -> Result:
+        try:
+            answer = glucocore.register_device(
+                token, name, hardware_id, list(patient_ids), config=config,
+                timeout=timeout * 0.9)
+        except Exception as exc:  # noqa: BLE001
+            return _network_message(exc, token, "GlucoCore",
+                                    address=glucocore.GLUCOCORE_BASE)
+        if not answer.get("deviceToken"):
+            return Result(False, "GlucoCore accepted this display but sent "
+                                 "no token for it.")
+        registered.update(answer)
+        return Result(True, "Paired.")
+
+    result = _guarded(f"glucocore-register:{hardware_id}", run, timeout)
+    return (result, registered) if result.ok else (result, {})
+
+
 CODE_LENGTH = 6
 
 

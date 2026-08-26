@@ -2,6 +2,7 @@
 
 import json
 import logging
+import secrets
 from pathlib import Path
 
 from . import config as config_mod
@@ -44,6 +45,82 @@ def patient_label(remote: dict, patient_id: str) -> str:
     return str(per.get("label") or "").strip() or patient_id
 
 
+def write_pairing(config_path, device: dict, device_token: str,
+                  hardware_id: str, *, admin_port: int = 80,
+                  store=None) -> list[str]:
+    """Write down a pairing, however it was made, and say who it added.
+
+    Three ways in — a code typed at the display, an account signed in to,
+    a QR somebody scanned — and one place that turns the answer into
+    config.json, so a display cannot end up shaped differently depending
+    on which way it was paired.
+    """
+    from . import onboarding
+
+    path = Path(config_path)
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        raw = {}
+    remote = device.get("config") or {}
+    patient_ids = [str(pid) for pid in (remote.get("patientIds") or []) if pid]
+    if not patient_ids:
+        raise ValueError("that pairing has nobody on it")
+
+    users = onboarding.keep_local_users(raw.get("users") or [])
+    taken = {(user.get("name") or "").casefold() for user in users}
+    added = []
+    for patient_id in patient_ids:
+        name = unique_name(patient_label(remote, patient_id), taken)
+        taken.add(name.casefold())
+        added.append(name)
+        users.append({
+            "name": name,
+            "port": None,
+            "api_secret": secrets.token_hex(12),
+            "source": {"type": "glucocore", "patient_id": patient_id,
+                       "poll_seconds": 60},
+        })
+
+    config_mod.assign_ports(users, reserved={admin_port})
+    raw["users"] = users
+    # The bands and the zone arrive with the token, so they are applied now
+    # rather than waiting for the first push.
+    raw.setdefault("display", {}).update(
+        display_from_remote(raw.get("display") or {}, remote))
+    raw["glucocore"] = {
+        "device_id": device.get("id") or "",
+        "device_token": device_token,
+        "hardware_id": hardware_id,
+        "name": device.get("name") or "",
+    }
+    config_mod.write_atomic(raw, path)
+    if store is not None:
+        # Config versions count from the device this pairing just created, so
+        # a number left over from an earlier one would make the first push
+        # from GlucoCore look like old news and be ignored.
+        store.replace_params(LAST_VERSION_KEY, {})
+    log.info("Paired with GlucoCore as %r (%d patients)",
+             raw["glucocore"]["name"], len(patient_ids))
+    return added
+
+
+def unique_name(name: str, taken) -> str:
+    """A display name nothing else is using.
+
+    Everything in the database is keyed by the name, so two people sharing
+    one would read each other's readings.
+    """
+    name = (name or "").strip() or "Unnamed"
+    if name.casefold() not in taken:
+        return name
+    for suffix in range(2, 100):
+        candidate = f"{name} {suffix}"
+        if candidate.casefold() not in taken:
+            return candidate
+    return f"{name} {secrets.token_hex(2)}"
+
+
 def apply_remote_config(
     config_path: str | Path,
     remote: dict,
@@ -77,7 +154,6 @@ def apply_remote_config(
                   for u in existing
                   if (u.get("source") or {}).get("type") == "glucocore"}
 
-    import secrets
     for patient_id in patient_ids:
         # A person's name on the display is GlucoCore's `label` — "what to
         # call them on screen, when the account name is not the household

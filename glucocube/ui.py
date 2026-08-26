@@ -152,6 +152,12 @@ button[disabled] { opacity:.55; cursor:default; }
 .banner.ok { border-left-color:var(--ok); color:var(--ok); }
 .banner.warn { border-left-color:var(--warn); color:var(--warn); }
 .banner.info { border-left-color:var(--accent); }
+/* A code somebody points a phone at: centred, never wider than the screen,
+   and on white in both themes because that is what scanners read. */
+.pairqr { text-align:center; }
+.pairqr .note, .pairqr .row { text-align:left; }
+svg.qr { width:min(240px, 70vw); height:auto; display:block; margin:.6rem auto;
+  border:8px solid #fff; border-radius:6px; background:#fff; }
 pre.detail { background:var(--bg); border:1px solid var(--line); border-radius:8px;
   padding:.6rem; font-size:.75rem; color:var(--dim); overflow-x:auto;
   white-space:pre-wrap; word-break:break-word; }
@@ -411,6 +417,51 @@ def menu_item(href: str, title: str, sub: str = "", *, lead: str = "",
         + (f'<span class="sub">{esc(sub)}</span>' if sub else "")
         + f"</span>{badge_html}"
         '<span class="chev" aria-hidden="true">&rsaquo;</span></a>'
+    )
+
+
+def qr_svg(data: str, *, size_px: int = 240, alt: str = "") -> str:
+    """A QR code as inline SVG, or "" when it cannot be drawn.
+
+    SVG rather than a PNG endpoint: it is one string in the page that
+    scales to whatever the phone gives it, with nothing to fetch and
+    nothing to cache wrongly. Always dark on white whatever the theme is
+    — scanners need the contrast, and a "dark mode" QR is one people hold
+    their phone at for a while and then give up on.
+
+    An empty answer is not an error: `qrcode` is a dependency the display
+    needs and the web app does not, and every page that shows a code also
+    shows the address it stands for.
+    """
+    try:
+        import qrcode
+    except ImportError:
+        return ""
+    code = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M,
+                         border=2)
+    code.add_data(data)
+    code.make(fit=True)
+    matrix = code.get_matrix()
+    span = len(matrix)
+    # One path of rectangles, rather than a rect element per module: a
+    # version-6 code is over a thousand of them.
+    parts = []
+    for y, row in enumerate(matrix):
+        run = 0
+        for x, dark in enumerate(row + [False]):
+            if dark:
+                run += 1
+                continue
+            if run:
+                parts.append(f"M{x - run} {y}h{run}v1h-{run}z")
+                run = 0
+    return (
+        f'<svg class="qr" viewBox="0 0 {span} {span}" width="{size_px}"'
+        f' height="{size_px}" role="img"'
+        f' aria-label="{esc(alt or "QR code")}"'
+        ' xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">'
+        f'<rect width="{span}" height="{span}" fill="#ffffff"/>'
+        f'<path fill="#000000" d="{"".join(parts)}"/></svg>'
     )
 
 

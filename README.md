@@ -83,16 +83,24 @@ finishes by printing the URL and API secret for each person's uploader.
   [Tidepool](https://www.tidepool.org) account (one-time), then enter the
   Tidepool login in the web settings under their data source.
 - **Nightscout**: enter the site URL and its API secret or access token.
-- **GlucoCore**: in GlucoCore, open **Devices**, add this display and choose
-  who it shows; it gives you a six-digit code. Enter that under **Settings →
-  GlucoCore** on the display (or during guided setup) and it pairs. The code
-  lasts ten minutes and works once, and the display never handles the account
-  password — it holds a token scoped to those people, revocable from
-  GlucoCore. Pairing adds them to the display: anyone already fed by Trio,
+- **GlucoCore**: three ways in, under **Settings → GlucoCore** or during
+  guided setup, and they end in the same place.
+  - **Scan it.** An unpaired display asks GlucoCore to pair it and shows the
+    request as a QR code, on its own screen and on the settings page. Scan it
+    with a phone that is signed in, choose who the display shows, approve —
+    and it pairs itself. Nothing is typed at the display, and it never
+    handles the account password. The code on the wall carries a request id
+    and nothing else; the secret that collects the token stays on the device.
+  - **Sign in on the display.** Email and password, used once to create the
+    display in GlucoCore. Only the read-only device token is kept.
+  - **Type a pairing code.** In GlucoCore, open **Devices** and create one:
+    six digits, ten minutes, single use.
+
+  Pairing adds those people to the display — anyone already fed by Trio,
   twiist or Nightscout keeps the source they have. Who appears, what they are
-  called and their ranges then follow what GlucoCore says. Unpairing on the
-  same page turns them back into uploader-fed people, each with their own
-  port and API secret.
+  called and their ranges then follow what GlucoCore says. Unpairing turns
+  them back into uploader-fed people, each with their own port and API
+  secret.
 
 ## The web app
 

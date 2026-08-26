@@ -319,3 +319,45 @@ def test_a_display_still_being_set_up_can_be_identified_too(display, store):
 
 def _in(seconds: float) -> int:
     return int((time.time() + seconds) * 1000)
+
+
+# ------------------------------------------------------ pairing on the wall ----
+#
+# An unpaired display asks GlucoCore to pair it and puts the request on
+# its own screen. Scanning that is the whole point: no address to find,
+# no password to type, and a phone that is already signed in finishes it.
+
+def test_a_display_waiting_to_be_paired_shows_that_instead(display, store):
+    from glucocube import pairing
+    display.draw()                       # nothing paired, nothing asked
+    before = pygame.image.tostring(display.screen, "RGB")
+
+    store.replace_params(pairing.STATE_KEY, {
+        "request_id": "req-1", "secret": "never-on-screen",
+        "approve_url": "https://www.glucocore.app/devices/add?request=req-1",
+        "expires_at": int((time.time() + 500) * 1000), "error": ""})
+    display.draw()
+    assert before != pygame.image.tostring(display.screen, "RGB")
+
+
+def test_the_setup_code_comes_back_when_there_is_nothing_to_approve(display,
+                                                                     store):
+    from glucocube import pairing
+    store.replace_params(pairing.STATE_KEY, {})
+    display.draw()
+    assert display._qr_cache[0].startswith("http")
+    # The device's own settings page, carrying its key — not GlucoCore.
+    assert "devices/add" not in display._qr_cache[0]
+
+
+def test_the_code_on_the_wall_is_the_one_to_approve(display, store):
+    from glucocube import pairing
+    store.replace_params(pairing.STATE_KEY, {
+        "request_id": "req-1", "secret": "never-on-screen",
+        "approve_url": "https://www.glucocore.app/devices/add?request=req-1",
+        "expires_at": int((time.time() + 500) * 1000), "error": ""})
+    display.draw()
+    assert display._qr_cache[0] == (
+        "https://www.glucocore.app/devices/add?request=req-1")
+    # The secret collects the token; it must never be on a wall.
+    assert "never-on-screen" not in display._qr_cache[0]

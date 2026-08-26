@@ -1,5 +1,6 @@
 """GlucoCore cloud client — login, registration, config sync, heartbeat."""
 
+import base64
 import json
 import logging
 import os
@@ -11,8 +12,12 @@ log = logging.getLogger("glucocube.glucocore")
 
 # The service's own address. Nobody types this — it is not a setting, and
 # a device that cannot resolve it cannot pair at all, so it is worth being
-# sure of: app.glucocore.com, which this used to dial, does not exist.
-GLUCOCORE_BASE = os.environ.get("GLUCOCORE_BASE", "https://glucocore.app").rstrip("/")
+# sure of: app.glucocore.com, which this once dialled, does not exist, and
+# the apex answers every POST with a 308 to the name below. _open follows
+# that redirect anyway; being configured with the canonical name saves
+# every call a round trip.
+GLUCOCORE_BASE = os.environ.get("GLUCOCORE_BASE",
+                                "https://www.glucocore.app").rstrip("/")
 SESSION_HEADER = "x-tidepool-session-token"
 
 
@@ -92,6 +97,79 @@ def _request(method: str, path: str, *, token: str | None = None,
     if isinstance(payload, dict) and "data" in payload:
         return payload["data"]
     return payload
+
+
+def login(email: str, password: str, timeout: float = 30) -> tuple[str, str]:
+    """Sign in as the account holder. The other way to pair a display.
+
+    A code is the safer path — it leaves no account credential anywhere
+    near a device on a wall — but it is also six digits read off one
+    screen and typed into another, and somebody standing at the display
+    with their own password is entitled to just use it.
+    """
+    creds = base64.b64encode(f"{email}:{password}".encode()).decode()
+    req = urllib.request.Request(
+        f"{GLUCOCORE_BASE}/auth/login",
+        method="POST",
+        headers={"Authorization": f"Basic {creds}"},
+        data=b"",
+    )
+    with _open(req, timeout) as resp:
+        token = resp.headers.get(SESSION_HEADER)
+        userid = (json.loads(resp.read()) or {}).get("userid")
+    if not token or not userid:
+        raise RuntimeError("GlucoCore login gave no session token/userid")
+    return token, userid
+
+
+def list_patients(token: str, user_id: str, timeout: float = 30) -> list[dict]:
+    payload = _request("GET", f"/v1/users/{user_id}/accessible_patients",
+                       token=token, timeout=timeout)
+    return list(payload.get("patients") or [])
+
+
+def register_device(token: str, name: str, hardware_id: str,
+                    patient_ids: list[str], config: dict | None = None,
+                    timeout: float = 60) -> dict:
+    """Create this display in GlucoCore, as the signed-in account holder.
+
+    Answers exactly as a claim does — the device, its config and a token
+    scoped to those people — so both ways of pairing end in one place.
+    """
+    body = {"name": name, "hardwareId": hardware_id, "patientIds": patient_ids}
+    if config:
+        body["config"] = config
+    return _request("POST", "/v1/sugar_cubes", token=token, body=body,
+                    timeout=timeout)
+
+
+def request_pairing(hardware_id: str, name: str = "",
+                    timeout: float = 30) -> dict:
+    """Ask to be paired, with nothing to authenticate the asking.
+
+    Answers with the request id — which is what goes on this display's own
+    screen as a QR code — and a secret, which does not. Whoever scans the
+    code approves it from an account they are already signed in to, and
+    `collect_pairing` below is how the token gets here.
+    """
+    body: dict = {"hardwareId": hardware_id}
+    if name:
+        body["name"] = name
+    return _request("POST", "/v1/sugar_cubes/requests", body=body,
+                    timeout=timeout)
+
+
+def collect_pairing(request_id: str, secret: str,
+                    timeout: float = 30) -> dict:
+    """Collect the token, if the request has been approved yet.
+
+    A POST because the secret travels in the body: in a query string it
+    would be in access logs and browser history, and it is worth a device
+    token. Answers `{"approved": false}` for a request nobody has approved,
+    one that does not exist, and a wrong secret alike.
+    """
+    return _request("POST", f"/v1/sugar_cubes/requests/{request_id}/token",
+                    body={"secret": secret}, timeout=timeout)
 
 
 def claim(code: str, hardware_id: str, name: str = "",

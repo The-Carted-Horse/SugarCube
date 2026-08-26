@@ -19,10 +19,11 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
 import secrets as secrets_mod
+import socket
 
 from . import config as config_mod
 from . import captive, network, onboarding, predict, synclog, ui, updater
-from . import glucocore, sync, verify
+from . import glucocore, pairing, sync, verify
 from .server import DualStackServer
 from .config import SCREEN_PNG, Config, merged_thresholds
 from .store import Store
@@ -76,6 +77,33 @@ document.addEventListener('click', async (event) => {
   }
   button.disabled = false;
 });
+</script>"""
+
+PAIRING_SCRIPT = """<script>
+// While a QR code is on the page, somebody may be approving it on their
+// phone this second. The display pairs itself when that happens and
+// restarts; this notices and follows, so the page does not sit there
+// saying "waiting" beside a display that has already moved on.
+(function(){
+  var waiting = document.getElementById('pairwait');
+  if (!waiting) return;
+  var tick = async function(){
+    try {
+      var response = await fetch('/api/pairing.json', {cache: 'no-store'});
+      var state = await response.json();
+      if (state.paired) { location.replace('/settings/glucocore?msg=paired'); return; }
+      if (state.error) {
+        waiting.className = 'banner warn';
+        waiting.textContent = state.error;
+      }
+    } catch (err) {
+      // The restart the pairing causes looks exactly like this. Keep
+      // asking: the next answer either comes back paired or comes back.
+    }
+    setTimeout(tick, 3000);
+  };
+  setTimeout(tick, 3000);
+})();
 </script>"""
 
 WIFI_SCRIPT = """<script>
@@ -666,6 +694,18 @@ class AdminHandler(BaseHTTPRequestHandler):
             page = ui.page("GlucoCube sync log", LOG_BODY, nav=True,
                            script=LOG_SCRIPT)
             self._send(page.encode(), "text/html; charset=utf-8")
+        elif path == "/api/pairing.json":
+            gc = self._pairing_config()
+            state = pairing.public_state(self.server.store)
+            self._send(json.dumps({
+                "paired": bool(gc),
+                # Never the secret: this is a page's view of the request,
+                # and the secret is what turns the request into a token.
+                "request_id": state.get("request_id", ""),
+                "approve_url": state.get("approve_url", ""),
+                "expires_at": state.get("expires_at", 0),
+                "error": state.get("error", ""),
+            }).encode(), "application/json")
         elif path == "/api/wifi.json":
             self._send(json.dumps({
                 "scanning": network.scan_in_progress(),
@@ -808,6 +848,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                             "so nothing was installed."),
         "switched": ("ok", "Switched."),
         "paired": ("ok", "Paired with GlucoCore."),
+        "signedout": ("info", "Sign-in discarded."),
         "unpaired": ("ok", "Unpaired. This display no longer talks to "
                            "GlucoCore."),
     }
@@ -1256,14 +1297,57 @@ seconds.</p>
         per = (config.get("perPatient") or {}).get(patient_id) or {}
         return str(per.get("label") or "").strip() or patient_id
 
+    @staticmethod
+    def _patient_id(patient: dict) -> str:
+        return str(patient.get("userId") or patient.get("userid") or "")
+
+    @staticmethod
+    def _patient_name(patient: dict) -> str:
+        return str(patient.get("name") or patient.get("email")
+                   or AdminHandler._patient_id(patient))
+
+    # A sign-in waiting for somebody to choose who to show. It holds a
+    # session token, so it is short-lived and is thrown away the moment the
+    # display is registered — what the device keeps is its own token.
+    SIGNIN_KEY = "__signin"
+    SIGNIN_TTL_MS = 15 * 60 * 1000
+
+    def _signin_draft(self) -> dict:
+        draft = self.server.store.get_params(self.SIGNIN_KEY)
+        if not draft.get("token"):
+            return {}
+        age = int(time.time() * 1000) - int(draft.get("started_at") or 0)
+        if age > self.SIGNIN_TTL_MS:
+            self._clear_signin_draft()
+            return {}
+        return draft
+
+    def _clear_signin_draft(self) -> None:
+        # replace, not set: set_params drops falsy values, so an emptied
+        # draft would leave the old token behind.
+        self.server.store.replace_params(self.SIGNIN_KEY, {})
+
     def _page_glucocore(self, *, form=None, banner: str = "") -> str:
         gc = self._pairing_config()
         if gc:
             return self._page_glucocore_paired(gc, banner)
+        draft = self._signin_draft()
+        if draft:
+            return self._page_glucocore_people(draft, form=form, banner=banner)
         return self._page_glucocore_claim(form=form, banner=banner)
+
+    PAIR_CARDS = (
+        ("qr", "Scan it with your phone",
+         "Approve this display in GlucoCore — nothing to type"),
+        ("signin", "Sign in here",
+         "Your GlucoCore email and password, used once"),
+        ("code", "Type a pairing code",
+         "Six digits, from Devices in GlucoCore"),
+    )
 
     def _page_glucocore_claim(self, *, form=None, banner: str = "") -> str:
         form = form or {}
+        chosen = form.get("how", "qr")
         keeps = [user.get("name") or "unnamed" for user in
                  onboarding.keep_local_users(self._raw_config().get("users")
                                              or [])]
@@ -1274,13 +1358,67 @@ seconds.</p>
                 + (" keeps" if len(keeps) == 1 else " keep")
                 + " the source they have now — pairing adds to this display"
                   " rather than replacing what is on it.</p>")
+        host = glucocore.GLUCOCORE_BASE.split("//")[-1]
         return f"""<h1>GlucoCore</h1>
 <p class="lede">Pair this display with a GlucoCore account and it pulls each
-person's readings from there. In GlucoCore, open <b>Devices</b>, add this
-display and choose who it shows — you get a six-digit code to type in
-here.</p>
+person's readings from there. Three ways in — they end in the same place.</p>
 {banner}
-<form method="POST" action="/settings/glucocore/pair">
+{ui.choice_cards("how", self.PAIR_CARDS, chosen, controls="how")}
+{ui.group("how", "qr", self._pair_by_qr(), current=chosen)}
+{ui.group("how", "signin", self._pair_by_signin(form), current=chosen)}
+{ui.group("how", "code", self._pair_by_code(form), current=chosen)}
+{keep_note}
+<p class="note">No account yet? Create one at <b>{ui.esc(host)}</b> on your
+phone, then come back.</p>"""
+
+    def _pair_by_qr(self) -> str:
+        """The request the waiter is holding open, as something to scan."""
+        state = pairing.public_state(self.server.store)
+        url = state.get("approve_url") or ""
+        if not url:
+            trouble = state.get("error") or ""
+            return (
+                '<div class="pairqr">'
+                + ui.banner("warn", "This display has not been able to ask "
+                                    "GlucoCore for a code yet."
+                            + (f" Last error: {ui.esc(trouble)}"
+                               if trouble else ""))
+                + '<p class="note">It keeps trying. Sign in or type a code'
+                  " above if you would rather not wait.</p></div>")
+        code = ui.qr_svg(url, alt="Approve this display in GlucoCore")
+        shown = url.split("//")[-1]
+        return f"""<div class="pairqr">
+  {code or ''}
+  <p class="note">Scan it with a phone that is signed in to GlucoCore, choose
+  who this display shows, and approve. It pairs itself — there is nothing to
+  type back in here.</p>
+  {ui.row("Or open this address", ui.copy_input("approve", shown,
+                                                input_id="approve"),
+          inline=False)}
+  <div class="banner info" id="pairwait">Waiting to be approved&hellip;</div>
+</div>"""
+
+    def _pair_by_signin(self, form: dict) -> str:
+        return f"""<form method="POST" action="/settings/glucocore/signin">
+  {ui.row("Email", ui.text_input("email", form.get("email", ""), kind="email",
+                                 input_id="gc_email",
+                                 extra='autocapitalize="none" autocorrect="off"'
+                                       ' spellcheck="false"'
+                                       ' autocomplete="username"'),
+          inline=False, for_id="gc_email")}
+  {ui.row("Password", ui.password_input("password", "",
+                                        input_id="gc_password"),
+          inline=False, for_id="gc_password",
+          hint="Used once, to create this display in GlucoCore. Only a"
+               " read-only device token is kept afterwards.")}
+  <div class="actions">
+    <button type="submit">Sign in</button>
+    <span class="note">Then choose who this display shows.</span>
+  </div>
+</form>"""
+
+    def _pair_by_code(self, form: dict) -> str:
+        return f"""<form method="POST" action="/settings/glucocore/pair">
   {ui.row("Pairing code",
           ui.text_input("code", form.get("code", ""),
                         placeholder="123456", input_id="pair_code",
@@ -1288,23 +1426,56 @@ here.</p>
                               ' pattern="[0-9 ]*" maxlength="9"'
                               ' autocapitalize="off" spellcheck="false"'),
           inline=False, for_id="pair_code",
-          hint="It lasts ten minutes and works once. The display never"
-               " needs your GlucoCore password.")}
+          hint="In GlucoCore, open Devices and create a pairing code. It"
+               " lasts ten minutes and works once.")}
   {ui.row("Name this display",
           ui.text_input("device_name", form.get("device_name", ""),
                         placeholder="Kitchen display",
                         input_id="device_name"),
           inline=False, for_id="device_name",
           hint="Optional — blank keeps the name you gave it in GlucoCore.")}
-  {keep_note}
+  <div class="actions">
+    <button type="submit">Pair this display</button>
+    <span class="note">Restarts the display, about five seconds.</span>
+  </div>
+</form>"""
+
+    def _page_glucocore_people(self, draft: dict, *, form=None,
+                               banner: str = "") -> str:
+        """After signing in: who this display shows."""
+        form = form or {}
+        patients = draft.get("patients") or []
+        chosen = set(_as_list(form.get("patient_ids"))
+                     or [self._patient_id(p) for p in patients])
+        boxes = "".join(
+            ui.checkbox("patient_ids", self._patient_name(patient),
+                        self._patient_id(patient) in chosen,
+                        value=self._patient_id(patient))
+            for patient in patients if self._patient_id(patient)
+        )
+        if not boxes:
+            boxes = ('<p class="note">This account cannot see anyone yet. Add '
+                     "a patient in GlucoCore, then sign in again.</p>")
+        return f"""<h1>Who to show</h1>
+<p class="lede">Signed in as <b>{ui.esc(draft.get('email', ''))}</b>. Choose
+whose glucose this display pulls from GlucoCore.</p>
+{banner}
+<form method="POST" action="/settings/glucocore/register">
+  {ui.row("Name this display",
+          ui.text_input("device_name",
+                        form.get("device_name", "") or draft.get("suggested", ""),
+                        placeholder="Kitchen display", input_id="device_name"),
+          inline=False, for_id="device_name")}
+  <label class="lbl">Who to show</label>
+  {boxes}
   <div class="actions stick">
     <button type="submit">Pair this display</button>
     <span class="note">Restarts the display, about five seconds.</span>
   </div>
 </form>
-<p class="note">No account yet? Create one at
-<b>{ui.esc(glucocore.GLUCOCORE_BASE.split("//")[-1])}</b> on your phone,
-then come back for the code.</p>"""
+<form method="POST" action="/settings/glucocore/cancel">
+  <button type="submit" class="quiet">Not now — discard this sign-in</button>
+</form>"""
 
     def _page_glucocore_paired(self, gc, banner: str = "") -> str:
         raw = self._raw_config()
@@ -1650,6 +1821,7 @@ check, on whichever channel published it.</p>"""
             body, back = self._page_person(index), "/settings/people"
         elif path == "/settings/glucocore":
             title, body = "GlucoCore", self._page_glucocore()
+            script = PAIRING_SCRIPT
         elif path == "/settings/ranges":
             title, body = "Ranges", self._page_ranges()
         elif path == "/settings/network":
@@ -1723,6 +1895,9 @@ check, on whichever channel published it.</p>"""
             self._post_channel(form)
             return
         if post_path in ("/settings/glucocore/pair",
+                         "/settings/glucocore/signin",
+                         "/settings/glucocore/register",
+                         "/settings/glucocore/cancel",
                          "/settings/glucocore/unpair"):
             self._post_glucocore(post_path, form)
             return
@@ -1916,6 +2091,11 @@ check, on whichever channel published it.</p>"""
         if path == "/settings/glucocore/unpair":
             self._unpair_glucocore()
             return
+        if path == "/settings/glucocore/cancel":
+            self._clear_signin_draft()
+            self._send(b"", "text/html", 303,
+                       {"Location": "/settings/glucocore?msg=signedout"})
+            return
         if self._pairing_config():
             # Already paired. Unpairing is the way to move a display to
             # another account, and doing it deliberately beats a second
@@ -1923,76 +2103,96 @@ check, on whichever channel published it.</p>"""
             self._send(b"", "text/html", 303,
                        {"Location": "/settings/glucocore"})
             return
-        self._glucocore_pair(form)
+        if path == "/settings/glucocore/signin":
+            self._glucocore_signin(form)
+        elif path == "/settings/glucocore/register":
+            self._glucocore_register(form)
+        else:
+            self._glucocore_pair(form)
 
     def _glucocore_page(self, form, banner: str, code: int = 400) -> None:
         self._send(ui.page("GlucoCube — GlucoCore",
                            self._page_glucocore(form=form, banner=banner),
-                           nav=True, back="/settings").encode(),
+                           nav=True, back="/settings",
+                           script=PAIRING_SCRIPT).encode(),
                    "text/html; charset=utf-8", code)
 
-    def _glucocore_pair(self, form: dict) -> None:
-        device_name = form.get("device_name", "").strip()
-        hardware_id = network.hardware_id()
-        result, claimed = verify.glucocore_claim(form.get("code", ""),
-                                                 hardware_id, device_name)
-        if not result.ok:
-            self._glucocore_page(form, ui.failure(result.message,
-                                                  result.detail))
-            return
-
-        device = claimed.get("device") or {}
-        config = device.get("config") or {}
-        patient_ids = [str(pid) for pid in (config.get("patientIds") or [])
-                       if pid]
-        if not patient_ids:
-            self._glucocore_page(form, ui.banner(
-                "err", "That pairing has nobody on it yet. Choose who this "
-                       "display shows in GlucoCore, then pair again."))
-            return
-
-        raw = self._raw_config()
-        users = onboarding.keep_local_users(raw.get("users") or [])
-        taken = {(user.get("name") or "").casefold() for user in users}
-        for patient_id in patient_ids:
-            name = _unique_name(self._patient_label(config, patient_id), taken)
-            taken.add(name.casefold())
-            users.append({
-                "name": name,
-                "port": None,
-                "api_secret": secrets_mod.token_hex(12),
-                "source": {"type": "glucocore", "patient_id": patient_id,
-                           "poll_seconds": 60},
-            })
-        config_mod.assign_ports(users,
-                                reserved={self.server.config.admin_port})
-        raw["users"] = users
-        # The bands and the zone are GlucoCore's to say from here on, so the
-        # config it sent with the token is applied now rather than waiting
-        # for the first push.
-        raw.setdefault("display", {}).update(
-            sync.display_from_remote(raw.get("display") or {}, config))
-        raw["glucocore"] = {
-            "device_id": device.get("id") or "",
-            "device_token": claimed["deviceToken"],
-            "hardware_id": hardware_id,
-            "name": device.get("name") or device_name,
-        }
+    def _paired(self, device: dict, device_token: str, form: dict) -> None:
+        """The one ending all three ways of pairing share."""
         try:
-            config_mod.write_atomic(raw, self.server.config_path)
+            sync.write_pairing(self.server.config_path, device, device_token,
+                               network.hardware_id(),
+                               admin_port=self.server.config.admin_port,
+                               store=self.server.store)
         except Exception as exc:  # noqa: BLE001
             self._glucocore_page(form, ui.banner("err", ui.esc(str(exc))))
             return
-        # Config versions count from the device this pairing just created,
-        # so a number left over from an earlier one would make the first
-        # push from GlucoCore look like old news and be ignored.
-        self.server.store.replace_params(sync.LAST_VERSION_KEY, {})
-        log.info("Paired with GlucoCore as %r (%d patients); restarting",
-                 raw["glucocore"]["name"], len(patient_ids))
+        self._clear_signin_draft()
+        pairing.clear(self.server.store)
         self._send(self._applying_page("/settings/glucocore?msg=paired",
                                        "Paired"),
                    "text/html; charset=utf-8")
         restart_soon()
+
+    def _glucocore_pair(self, form: dict) -> None:
+        """A six-digit code, typed here."""
+        device_name = form.get("device_name", "").strip()
+        result, claimed = verify.glucocore_claim(form.get("code", ""),
+                                                 network.hardware_id(),
+                                                 device_name)
+        if not result.ok:
+            self._glucocore_page({**form, "how": "code"},
+                                 ui.failure(result.message, result.detail))
+            return
+        self._paired(claimed.get("device") or {}, claimed["deviceToken"],
+                     {**form, "how": "code"})
+
+    def _glucocore_signin(self, form: dict) -> None:
+        """An account signed in to, here, to create the display."""
+        email = form.get("email", "").strip()
+        result, session = verify.glucocore_session(email,
+                                                   form.get("password", ""))
+        if not result.ok or not session.get("token"):
+            self._glucocore_page({**form, "how": "signin"},
+                                 ui.failure(result.message, result.detail))
+            return
+        self.server.store.replace_params(self.SIGNIN_KEY, {
+            "token": session["token"],
+            "email": email,
+            "patients": session.get("patients") or [],
+            "suggested": socket.gethostname().split(".")[0],
+            "started_at": int(time.time() * 1000),
+        })
+        self._send(b"", "text/html", 303, {"Location": "/settings/glucocore"})
+
+    def _glucocore_register(self, form: dict) -> None:
+        draft = self._signin_draft()
+        if not draft:
+            self._glucocore_page({}, ui.banner(
+                "err", "That sign-in has expired — sign in again."))
+            return
+        known = {self._patient_id(patient)
+                 for patient in draft.get("patients") or []}
+        known.discard("")
+        # Only ids this account was actually shown: a hand-edited form must
+        # not pair a display to somebody else's data.
+        patient_ids = [pid for pid in _as_list(form.get("patient_ids"))
+                       if pid in known]
+        if not patient_ids:
+            self._glucocore_page(form, ui.banner(
+                "err", "Choose at least one person to show."))
+            return
+        name = (form.get("device_name", "").strip()
+                or draft.get("suggested") or "SugarCube")
+        result, registered = verify.glucocore_register(
+            draft["token"], name, network.hardware_id(), patient_ids,
+            display=self._raw_config().get("display") or {})
+        if not result.ok:
+            self._glucocore_page(form, ui.failure(result.message,
+                                                  result.detail), 502)
+            return
+        self._paired(registered.get("device") or {},
+                     registered["deviceToken"], form)
 
     def _unpair_glucocore(self) -> None:
         raw = self._raw_config()

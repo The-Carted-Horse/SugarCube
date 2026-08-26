@@ -198,6 +198,14 @@ def main() -> int:
             actions=command_actions(config, store, pollers),
         )
 
+    # A display nobody has paired yet asks to be paired, and shows the
+    # request on its own screen as a QR code. It keeps asking until
+    # somebody scans it — or until one of the other two ways gets there
+    # first, at which point the restart ends this thread with the process.
+    from .pairing import start_waiter
+    from .webadmin import restart_soon as _restart
+    start_waiter(config, config_path, store, _restart)
+
     from .webadmin import start_admin
     start_admin(config, config_path, store)
 
