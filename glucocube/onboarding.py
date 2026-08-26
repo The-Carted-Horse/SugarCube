@@ -25,15 +25,6 @@ SETUP_KEY = "__setup"
 DRAFT_VERSION = 1
 STARTER_NAMES = {"Person A", "Person B"}
 
-SOURCE_CARDS = (
-    ("push", "Trio, or another uploader",
-     "The pump app sends readings straight to this device"),
-    ("tidepool", "twiist",
-     "Pulled from the wearer's Tidepool account"),
-    ("nightscout", "A Nightscout site",
-     "Pulled from an existing cloud Nightscout"),
-)
-
 TITLES = {
     "welcome": "Welcome",
     "wifi": "Wi-Fi",
@@ -139,8 +130,7 @@ def next_step(draft: dict, step: str) -> str:
 
 
 def path_for(step: str) -> str:
-    kind, _, index = step.partition(":")
-    return f"/setup/{kind}" + (f"?i={index}" if index else "")
+    return f"/setup/{step}"
 
 
 def mark_done(draft: dict, step: str) -> None:
@@ -185,7 +175,7 @@ def _progress(draft: dict, step: str) -> str:
 def _shell(draft: dict, step: str, heading: str, body: str, *,
            script: str = "") -> str:
     return ui.page(
-        f"GlucoCube setup — {TITLES.get(step.partition(':')[0], 'Setup')}",
+        f"GlucoCube setup — {TITLES.get(step, 'Setup')}",
         f"{_progress(draft, step)}<h1>{ui.esc(heading)}</h1>{body}",
         script=script,
     )
@@ -199,13 +189,6 @@ def _actions(primary: str, *, back: str = "", extra: str = "",
     return (f'<div class="actions stick">{back_html}'
             f'<button type="submit">{ui.esc(primary)}</button>'
             f'{extra}{note_html}</div>')
-
-
-def _person_label(draft: dict, index: int) -> str:
-    people = draft.get("people") or []
-    if 0 <= index < len(people) and people[index].get("name"):
-        return people[index]["name"]
-    return f"Person {index + 1}"
 
 
 TIMEZONE_SCRIPT = """<script>
@@ -311,27 +294,11 @@ setInterval(async () => {
 </script>"""
 
 
+RENDERERS = {}          # filled in below, once each renderer exists
+
+
 def render(handler, draft: dict, step: str, *, banner: str = "") -> str:
-    kind = step.partition(":")[0]
-    if kind == "welcome":
-        return _render_welcome(handler, draft, step, banner)
-    if kind == "wifi":
-        return _render_wifi(handler, draft, step, banner)
-    if kind == "timezone":
-        return _render_timezone(handler, draft, step, banner)
-    if kind == "account":
-        return _render_account(handler, draft, step, banner)
-    if kind == "verify_email":
-        return _render_verify_email(handler, draft, step, banner)
-    if kind == "device_name":
-        return _render_device_name(handler, draft, step, banner)
-    if kind == "patients":
-        return _render_patients(handler, draft, step, banner)
-    if kind == "thresholds":
-        return _render_thresholds(handler, draft, step, banner)
-    if kind == "password":
-        return _render_password(handler, draft, step, banner)
-    return _render_review(handler, draft, step, banner)
+    return RENDERERS.get(step, _render_review)(handler, draft, step, banner)
 
 
 def _render_welcome(handler, draft, step, banner) -> str:
@@ -608,6 +575,20 @@ def _render_done(handler, draft) -> str:
                    f"<h1>All set</h1>{body}", script=DONE_SCRIPT)
 
 
+RENDERERS.update({
+    "welcome": _render_welcome,
+    "wifi": _render_wifi,
+    "timezone": _render_timezone,
+    "account": _render_account,
+    "verify_email": _render_verify_email,
+    "device_name": _render_device_name,
+    "patients": _render_patients,
+    "thresholds": _render_thresholds,
+    "password": _render_password,
+    "review": _render_review,
+})
+
+
 # ------------------------------------------------------------ routing ----
 
 def handles(path: str) -> bool:
@@ -627,14 +608,6 @@ def open_without_login(path: str) -> bool:
 
 def _query(path: str) -> dict:
     return {k: v[0] for k, v in parse_qs(urlparse(path).query).items()}
-
-
-def _index(handler, draft: dict) -> int:
-    try:
-        return max(0, min(int(_query(handler.path).get("i", "0")),
-                          len(draft.get("people") or []) - 1))
-    except ValueError:
-        return 0
 
 
 def _redirect(handler, target: str) -> None:
@@ -679,8 +652,9 @@ def do_get(handler, path: str) -> None:
         draft = seed_draft(handler.server.config_path)
         save_draft(store, draft)
     step = path[len("/setup/"):]
-    if step not in ("welcome", "wifi", "timezone", "account", "verify_email",
-                    "device_name", "patients", "thresholds", "password", "review"):
+    if step not in RENDERERS:
+        # A stale bookmark or a typed URL. One list of steps, so a new one
+        # cannot be reachable in the wizard but a 303 from the address bar.
         _redirect(handler, "/setup")
         return
     handler._send(render(handler, draft, step).encode(),
@@ -701,9 +675,6 @@ def do_post(handler, path: str, form: dict) -> None:
     if step == "wifi/rescan":
         network.refresh_scan_async(force=True)
         _redirect(handler, "/setup/wifi")
-        return
-    if step == "verify":
-        _do_verify(handler, draft, form)
         return
     if step == "review":
         _commit(handler, draft)
@@ -865,58 +836,7 @@ def do_post(handler, path: str, form: dict) -> None:
         return
 
     save_draft(store, draft)
-    _redirect(handler, path_for(next_step(draft, _step_key(handler, step, draft))))
-
-
-def _step_key(handler, step: str, draft: dict) -> str:
-    if step in ("source", "creds"):
-        return f"{step}:{_index(handler, draft)}"
-    return step
-
-
-def _source_from_form(existing: dict, form: dict) -> dict | None:
-    kind = existing.get("type") or "push"
-    if kind == "push":
-        return None
-    if kind == "tidepool":
-        return {"type": "tidepool",
-                "email": (form.get("email") or "").strip(),
-                "password": form.get("password") or "",
-                "poll_seconds": existing.get("poll_seconds", 60)}
-    url = (form.get("url") or "").strip()
-    if url and not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    return {"type": "nightscout", "url": url,
-            "api_secret": (form.get("api_secret") or "").strip(),
-            "poll_seconds": existing.get("poll_seconds", 60)}
-
-
-def _missing_credentials(source) -> str:
-    if not source:
-        return ""
-    if source["type"] == "tidepool" and not (source.get("email")
-                                             and source.get("password")):
-        return "Both the Tidepool email and password are needed."
-    if source["type"] == "nightscout" and not source.get("url"):
-        return "The Nightscout site address is needed."
-    return ""
-
-
-def _do_verify(handler, draft, form: dict) -> None:
-    index = _index(handler, draft)
-    person = draft["people"][index]
-    source = _source_from_form(person.get("source") or {}, form)
-    person["source"] = source
-    result = verify.source(source or {"type": "push"})
-    person["verified"] = bool(result.ok)
-    save_draft(handler.server.store, draft)
-    if "application/json" in (handler.headers.get("Accept") or ""):
-        handler._send(json.dumps(result.as_dict()).encode(), "application/json")
-        return
-    handler._send(render(handler, draft, f"creds:{index}",
-                         banner=ui.banner("ok" if result.ok else "err",
-                                          ui.esc(result.message))).encode(),
-                  "text/html; charset=utf-8")
+    _redirect(handler, path_for(next_step(draft, step)))
 
 
 def _start_join(handler, draft, form: dict) -> None:
@@ -971,25 +891,6 @@ def keep_local_users(users: list[dict]) -> list[dict]:
             continue
         kept.append(user)
     return kept
-
-
-def users_from_draft(draft: dict, reserved) -> list[dict]:
-    users = []
-    for person in draft.get("people") or []:
-        source = person.get("source") or None
-        user = {
-            "name": person["name"],
-            "port": person.get("port"),
-            "api_secret": person.get("api_secret")
-                          or config_mod.readable_secret(16),
-        }
-        if person.get("thresholds"):
-            user["thresholds"] = person["thresholds"]
-        if source:
-            user["source"] = source
-        users.append(user)
-    config_mod.assign_ports(users, reserved=reserved)
-    return users
 
 
 def _commit(handler, draft: dict) -> None:

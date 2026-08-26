@@ -40,6 +40,14 @@ log "Installing dependencies (python3, pygame, qrcode)"
 $SUDO apt-get update
 $SUDO apt-get install -y python3 python3-pygame python3-qrcode
 
+# websocket-client carries GlucoCore's realtime channel, which is how a
+# config change reaches a display in seconds rather than at the next
+# minute's poll. The app falls back to long-polling without it, so a
+# distribution that has not got the package must not fail the install.
+if ! $SUDO apt-get install -y python3-websocket; then
+    log "python3-websocket unavailable; GlucoCore config will long-poll"
+fi
+
 if ! python3 -c "import pygame" 2>/dev/null; then
     log "apt pygame unavailable; falling back to pip"
     $SUDO apt-get install -y python3-pip

@@ -253,8 +253,11 @@ frame and exits.
 If the touchscreen is mounted rotated relative to the panel, correct it
 with `GLUCOCUBE_TOUCH_TRANSFORM` — a comma-separated list of `swap`,
 `invx` and `invy` — in the systemd unit. `GLUCOCUBE_TOUCH=off` disables
-reading the panel altogether. The only runtime dependencies are `pygame` and `qrcode`
-(both from apt on the Pi); everything else is the Python standard library.
+reading the panel altogether. The runtime dependencies are `pygame` and
+`qrcode`, plus `websocket-client` for GlucoCore's realtime channel — a
+config change then reaches the display in seconds rather than at the next
+poll, and without the package it long-polls instead. All three come from
+apt on the Pi; everything else is the Python standard library.
 The display and web app are typeset in
 [Space Grotesk](https://github.com/floriankarsten/space-grotesk) and
 [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono), bundled under

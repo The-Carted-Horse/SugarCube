@@ -24,7 +24,10 @@ MODULES = sorted(path.stem for path in PACKAGE.glob("*.py")
                  if path.stem != "__init__")
 
 # What the README promises the device needs, and what the image installs.
-ALLOWED_THIRD_PARTY = {"pygame", "qrcode"}
+# websocket is imported inside the function that uses it and falls back to
+# long-polling when it is absent, so it is here because the image ships it,
+# not because the app cannot run without it.
+ALLOWED_THIRD_PARTY = {"pygame", "qrcode", "websocket"}
 
 
 # --------------------------------------------------------------- imports ----
@@ -54,7 +57,7 @@ def top_level_imports(path: Path) -> set[str]:
 
 
 def test_nothing_outside_the_standard_library_creeps_in():
-    """apt gives the Pi pygame and qrcode; anything else has to be installed."""
+    """apt gives the Pi these three; anything else has to be installed."""
     stdlib = set(sys.stdlib_module_names)
     extra = set()
     for path in sorted(PACKAGE.glob("*.py")):
