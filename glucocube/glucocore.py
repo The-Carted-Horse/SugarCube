@@ -9,7 +9,10 @@ import urllib.request
 
 log = logging.getLogger("glucocube.glucocore")
 
-GLUCOCORE_BASE = os.environ.get("GLUCOCORE_BASE", "https://app.glucocore.com").rstrip("/")
+# The service's own address. Nobody types this — it is not a setting, and
+# a device that cannot resolve it cannot pair at all, so it is worth being
+# sure of: app.glucocore.com, which this used to dial, does not exist.
+GLUCOCORE_BASE = os.environ.get("GLUCOCORE_BASE", "https://glucocore.app").rstrip("/")
 SESSION_HEADER = "x-tidepool-session-token"
 
 
