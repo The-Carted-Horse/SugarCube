@@ -806,3 +806,50 @@ def test_the_done_page_never_seeds_a_new_draft(wizard, store):
     status, _headers, _body = client.get("/setup/done", headers=AUTH)
     assert status == 200
     assert load_draft(store) == {}
+
+
+# --------------------------------------------------------------- mmol/L ----
+
+def test_the_ranges_step_opens_in_mgdl(wizard):
+    client, _server, _path = wizard
+    _status, _headers, body = client.get("/setup/thresholds", headers=AUTH)
+    assert b'value="mg/dL" checked' in body
+    assert b'value="70"' in body
+
+
+def test_choosing_mmol_mid_wizard_converts_the_boxes(wizard, store):
+    client, _server, _path = wizard
+    step(client, "/setup/thresholds", units="mmol/L", typed_units="mg/dL",
+         low="70", high="180", urgent_low="55", urgent_high="250")
+    display = load_draft(store)["display"]
+    assert display["units"] == "mmol/L"
+    assert (display["low"], display["high"]) == (70, 180)
+
+    _status, _headers, body = client.get("/setup/thresholds", headers=AUTH)
+    assert b'value="mmol/L" checked' in body
+    assert b'value="3.9"' in body
+
+
+def test_a_range_typed_in_mmol_reaches_the_config_as_mgdl(wizard, pairs):
+    client, _server, path = wizard
+    step(client, "/setup/welcome")
+    step(client, "/setup/timezone", tzmode="list", timezone="")
+    step(client, "/setup/pair", how="code", code="123456",
+         device_name="Kitchen display")
+    step(client, "/setup/thresholds", units="mmol/L", typed_units="mmol/L",
+         low="4.0", high="9.0", urgent_low="3.0", urgent_high="14.0")
+    step(client, "/setup/password", admin_password="")
+    step(client, "/setup/review")
+
+    config = load(path)
+    assert config.display.units == "mmol/L"
+    assert (config.display.low, config.display.high) == (72, 162)
+
+
+def test_the_review_says_the_ranges_in_the_unit_that_was_chosen(wizard):
+    client, _server, _path = wizard
+    step(client, "/setup/thresholds", units="mmol/L", typed_units="mg/dL",
+         low="70", high="180", urgent_low="55", urgent_high="250")
+    _status, _headers, body = client.get("/setup/review", headers=AUTH)
+    assert b"3.9" in body and b"10.0" in body
+    assert b"mmol/L" in body

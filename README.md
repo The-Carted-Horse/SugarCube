@@ -40,6 +40,11 @@ board, and recent treatments.
   release straight away.
 - **Per-person thresholds** — low/high/urgent ranges per person, with
   global defaults.
+- **mg/dL or mmol/L** — chosen under **Settings → Ranges**, or followed from
+  a paired GlucoCore account. Readings, the change since the last one, the
+  forecast and the chart's band all read in it, on the display and in the
+  web app. Everything stored stays mg/dL, `/api/dashboard.json` included, so
+  switching converts what is shown rather than moving any threshold.
 - **Guided setup from a phone** — a fresh device shows a QR code that opens
   a step-by-step wizard: Wi-Fi, where in the world it is so the clock is
   right, and the pairing code from GlucoCore that says who it shows, one
@@ -143,7 +148,7 @@ guessing.
 | `/settings/screen` | Live view of the physical screen, and Day/Night |
 | `/settings/people` | One row per person, then a page each |
 | `/settings/glucocore` | Pair this display with a GlucoCore code, or unpair it |
-| `/settings/ranges` | In-range and urgent thresholds, staleness |
+| `/settings/ranges` | mg/dL or mmol/L, in-range and urgent thresholds, staleness |
 | `/settings/network` | Wi-Fi: what it is on, and what else is nearby |
 | `/settings/clock` | Time zone (with what your phone thinks it is) |
 | `/settings/updates` | Version, release channel, install |

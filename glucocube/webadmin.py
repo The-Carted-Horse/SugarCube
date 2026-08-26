@@ -24,6 +24,7 @@ import socket
 from . import config as config_mod
 from . import captive, network, onboarding, predict, synclog, ui, updater
 from . import glucocore, pairing, sync, verify
+from . import units as units_mod
 from .server import DualStackServer
 from .config import SCREEN_PNG, Config, merged_thresholds
 from .store import Store
@@ -338,6 +339,22 @@ setInterval(tick, 15000);
 const esc = s => String(s).replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+// How a reading is written here. Everything the page is given is mg/dL,
+// the way everything inside the device is; these are the last step before
+// it reaches a screen, and the only place that knows which unit it is in.
+let UNITS = 'mg/dL';
+const isMmol = () => UNITS === 'mmol/L';
+function shown(v){ return v == null ? null : (isMmol() ? v / 18 : v); }
+function fmtGlucose(v, blank){
+  const x = shown(v);
+  if (x == null) return blank === undefined ? '---' : blank;
+  return isMmol() ? x.toFixed(1) : String(Math.round(x));
+}
+function fmtDelta(v){
+  const x = shown(v);
+  if (x == null) return '';
+  return (x >= 0 ? '+' : '') + (isMmol() ? x.toFixed(1) : String(Math.round(x)));
+}
 function colorFor(v, th, stale){
   if (v == null || stale) return 'var(--faint)';
   if (v <= th.urgent_low || v >= th.urgent_high) return 'var(--urgent)';
@@ -368,8 +385,8 @@ function chart(u, th, now, W, H){
   let s = `<svg viewBox="0 0 ${W} ${H}" font-family="JetBrains Mono,monospace">`;
   // target range band + bounds
   s += `<rect x="0" y="${Y(th.high)}" width="${W}" height="${Y(th.low)-Y(th.high)}" fill="var(--band)"/>`;
-  s += `<text x="${W-5}" y="${Y(th.high)+13}" font-size="11" fill="var(--faint)" text-anchor="end">${th.high}</text>`;
-  s += `<text x="${W-5}" y="${Y(th.low)-4}" font-size="11" fill="var(--faint)" text-anchor="end">${th.low}</text>`;
+  s += `<text x="${W-5}" y="${Y(th.high)+13}" font-size="11" fill="var(--faint)" text-anchor="end">${fmtGlucose(th.high)}</text>`;
+  s += `<text x="${W-5}" y="${Y(th.low)-4}" font-size="11" fill="var(--faint)" text-anchor="end">${fmtGlucose(th.low)}</text>`;
   // dashed now divider
   s += `<line x1="${X(now)}" x2="${X(now)}" y1="2" y2="${PH-2}" stroke="var(--line)" stroke-dasharray="4 5"/>`;
   // forecast confidence cone, clamped inside the plot area
@@ -446,7 +463,7 @@ function card(u, th, now, idx){
   const eta = new Date(now + 120*60000).toLocaleTimeString(undefined,
     {hour:'2-digit', minute:'2-digit'});
   const fc = f2h != null
-    ? `<span class="val" style="color:${colorFor(f2h, th, false)}">${tilde}${Math.round(f2h)}</span>
+    ? `<span class="val" style="color:${colorFor(f2h, th, false)}">${tilde}${fmtGlucose(f2h)}</span>
        <span class="eta">${eta}</span>` : '';
   const stat = (lbl, val, unit, sub) =>
     `<div><div class="lbl">${lbl}</div><div class="val">${val}<small>${unit}</small></div>` +
@@ -455,11 +472,11 @@ function card(u, th, now, idx){
     <div class="head"><span class="who">${esc(u.name)}</span>
       <span class="badge"><span class="dot" style="background:${dotCol}"></span>${u.source_label || 'TRIO'} \\u00b7 ${ageC(now, u.sgv_date)}</span></div>
     <div class="bigrow">
-      <div class="big" style="color:${col}">${u.sgv != null ? Math.round(u.sgv) : '---'}</div>
+      <div class="big" style="color:${col}">${fmtGlucose(u.sgv)}</div>
       <div class="side">
         <span class="arrow" style="color:${col}">${!stale && ARROWS[u.direction] || ''}</span>
-        <span class="delta">${u.delta != null && !stale ? (u.delta >= 0 ? '+' : '') + Math.round(u.delta) : ''}</span>
-        <span class="unit">MG/DL</span>
+        <span class="delta">${!stale ? fmtDelta(u.delta) : ''}</span>
+        <span class="unit">${isMmol() ? 'MMOL/L' : 'MG/DL'}</span>
       </div>
     </div>
     <div class="fcrow"><span class="lbl">FORECAST 2H</span><span class="rule"></span>${fc}</div>
@@ -482,6 +499,9 @@ async function refresh(){
     if (!r.ok) throw new Error(r.status);
     const d = await r.json();
     lastData = d;
+    // Set before render(): every number on the page goes through the
+    // formatters above, and they read this.
+    UNITS = d.units || 'mg/dL';
     receivedAt = Date.now();
     render();
     const up = document.getElementById('upgrade');
@@ -775,7 +795,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             users.append({
                 "name": user.name,
                 "source_label": {"tidepool": "TWIIST",
-                                 "nightscout": "NS"}.get(source_type, "TRIO"),
+                                 "nightscout": "NS",
+                                 "glucocore": "GLUCOCORE"}.get(source_type,
+                                                               "TRIO"),
                 "thresholds": {
                     **merged_thresholds(dc, user),
                     "stale_minutes": dc.stale_minutes,
@@ -800,7 +822,11 @@ class AdminHandler(BaseHTTPRequestHandler):
         update_state = self.server.store.get_params(updater.PARAMS_KEY)
         return {
             "now": now_ms,
-            "units": dc.units,
+            # Every glucose number in this payload is mg/dL, whatever this
+            # says — the same contract the rest of the device runs on, and
+            # what anything reading this endpoint has always been given.
+            # It says how they are to be *written*.
+            "units": units_mod.normalize(dc.units),
             "update": {
                 "current": updater.current_version(),
                 "latest": update_state.get("latest"),
@@ -905,7 +931,9 @@ class AdminHandler(BaseHTTPRequestHandler):
                 else f"{minutes}m ago" if minutes < 120
                 else f"{minutes // 60}h ago")
         stale = minutes > self.server.config.display.stale_minutes
-        return {"text": f"{label} — {snap.sgv:.0f} mg/dL, {when}",
+        shown_in = self.server.config.display.units
+        return {"text": f"{label} — {units_mod.fmt(snap.sgv, shown_in)} "
+                        f"{units_mod.normalize(shown_in)}, {when}",
                 "short": when, "pill": "stale" if stale else "",
                 "kind": "warn" if stale else "ok"}
 
@@ -978,6 +1006,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             updates_sub = (f"{updater.current_version()} · "
                            f"{channel_label} channel")
 
+        hub_units = display.get("units")
         gc = self._pairing_config()
         people_on_gc = sum(1 for user in users
                            if (user.get("source") or {}).get("type")
@@ -1015,9 +1044,13 @@ class AdminHandler(BaseHTTPRequestHandler):
                 badge=gc_badge, badge_kind="err"),
             ui.menu_item(
                 "/settings/ranges", "Ranges",
-                f"{_g(display.get('low'), 70)}–{_g(display.get('high'), 180)}"
-                f" · urgent under {_g(display.get('urgent_low'), 55)},"
-                f" over {_g(display.get('urgent_high'), 250)}",
+                f"{units_mod.fmt_field(display.get('low', 70), hub_units)}–"
+                f"{units_mod.fmt_field(display.get('high', 180), hub_units)}"
+                f" {units_mod.normalize(hub_units)}"
+                f" · urgent under "
+                f"{units_mod.fmt_field(display.get('urgent_low', 55), hub_units)}"
+                f", over "
+                f"{units_mod.fmt_field(display.get('urgent_high', 250), hub_units)}",
                 lead=ui.icon("ranges")),
         ]
         if wifi_up:
@@ -1212,25 +1245,30 @@ seconds.</p>
         # typed is how you lose it.
         typed = any((form or {}).get(f"th_{key}") for key in
                     ("low", "high", "urgent_low", "urgent_high"))
+        shown_in = units_mod.normalize(
+            self._raw_config().get("display", {}).get("units"))
+        step = units_mod.step(shown_in)
+
+        def override(key):
+            """One threshold box: blank stays blank, a number is converted."""
+            saved = th.get(key)
+            return ui.text_input(
+                f"th_{key}",
+                pick(f"th_{key}",
+                     "" if saved in (None, "") else
+                     units_mod.fmt_field(saved, shown_in)),
+                kind="number", placeholder="default",
+                extra=f'step="{step}"')
+
         ranges = "".join([
             '<details class="ranges"' + (" open" if th or typed else "") + ">",
-            "<summary>Ranges just for this person</summary>",
+            f"<summary>Ranges just for this person ({ui.esc(shown_in)})"
+            "</summary>",
             ui.row("Low / high", '<div class="pair">'
-                   + ui.text_input("th_low", pick("th_low", _g(th.get("low"))),
-                                   kind="number", placeholder="default")
-                   + ui.text_input("th_high", pick("th_high",
-                                                   _g(th.get("high"))),
-                                   kind="number", placeholder="default")
+                   + override("low") + override("high")
                    + "</div>", inline=False),
             ui.row("Urgent low / high", '<div class="pair">'
-                   + ui.text_input("th_urgent_low",
-                                   pick("th_urgent_low",
-                                        _g(th.get("urgent_low"))),
-                                   kind="number", placeholder="default")
-                   + ui.text_input("th_urgent_high",
-                                   pick("th_urgent_high",
-                                        _g(th.get("urgent_high"))),
-                                   kind="number", placeholder="default")
+                   + override("urgent_low") + override("urgent_high")
                    + "</div>", inline=False,
                    hint="Blank uses the ranges everyone shares."),
             "</details>",
@@ -1512,23 +1550,42 @@ when.</p>
   </div>
 </form>"""
 
+    UNIT_CARDS = (
+        ("mg/dL", "mg/dL", "What the United States reads"),
+        ("mmol/L", "mmol/L", "What most of the rest of the world reads"),
+    )
+
     def _page_ranges(self) -> str:
         display = self._raw_config().get("display", {})
+        shown_in = units_mod.normalize(display.get("units"))
+        step = units_mod.step(shown_in)
+
+        def field(key, default):
+            """A threshold, written in the unit this display reads in."""
+            value = display.get(key)
+            return ui.text_input(
+                key, units_mod.fmt_field(default if value in (None, "") else
+                                         value, shown_in),
+                kind="number", extra=f'step="{step}"')
+
         return f"""<h1>Ranges</h1>
 <p class="lede">What counts as in range, and where the numbers turn red.
 Everyone shares these unless their own page overrides them.</p>
 {self._flash()}
 <form method="POST" action="/settings/ranges">
-<fieldset><legend>mg/dL</legend>
+  <label class="lbl">Read in</label>
+  {ui.choice_cards("units", self.UNIT_CARDS, shown_in)}
+  <input type="hidden" name="typed_units" value="{ui.esc(shown_in)}">
+  <p class="note">Switching this converts what is below rather than
+  reinterpreting it — the boxes were filled in
+  {ui.esc(shown_in)}, and saving keeps the thresholds where they are.
+  They come back in the unit you chose.</p>
+<fieldset><legend>{ui.esc(shown_in)}</legend>
   {ui.row("In range", '<div class="pair">'
-          + ui.text_input("low", _g(display.get("low"), 70), kind="number")
-          + ui.text_input("high", _g(display.get("high"), 180), kind="number")
+          + field("low", 70) + field("high", 180)
           + "</div>", inline=False, hint="low and high")}
   {ui.row("Urgent", '<div class="pair">'
-          + ui.text_input("urgent_low", _g(display.get("urgent_low"), 55),
-                          kind="number")
-          + ui.text_input("urgent_high", _g(display.get("urgent_high"), 250),
-                          kind="number")
+          + field("urgent_low", 55) + field("urgent_high", 250)
           + "</div>", inline=False,
           hint="outside these the whole panel turns red")}
   {ui.row("Stale after", ui.text_input(
@@ -2292,12 +2349,14 @@ shows it too.</p>""").encode()
                            or secrets_mod.token_hex(12)),
         }
         thresholds = {}
+        shown_in = units_mod.normalize(
+            raw.get("display", {}).get("units"))
         for key, label in (("low", "Low"), ("high", "High"),
                            ("urgent_low", "Urgent low"),
                            ("urgent_high", "Urgent high")):
             value = _number(form, f"th_{key}", label)
             if value is not None:
-                thresholds[key] = value
+                thresholds[key] = units_mod.from_display(value, shown_in)
         if thresholds:
             _check_ranges({**self._range_defaults(), **thresholds})
             user["thresholds"] = thresholds
@@ -2368,17 +2427,28 @@ shows it too.</p>""").encode()
     def _save_ranges(self, form: dict) -> None:
         raw = self._raw_config()
         display = raw.setdefault("display", {})
-        values = {}
+        # Two units in play, and telling them apart is the whole of it. The
+        # boxes hold numbers in the unit the page was *rendered* in, which
+        # a switch on this very form does not retroactively change; the
+        # radio says what to read in from now on. Reading the boxes in the
+        # newly chosen unit would silently move somebody's urgent low.
+        typed_in = units_mod.normalize(form.get("typed_units")
+                                       or display.get("units"))
+        chosen = units_mod.normalize(form.get("units") or typed_in)
+        values = {"units": chosen}
         for key, label in (("low", "The low"), ("high", "The high"),
                            ("urgent_low", "The urgent low"),
-                           ("urgent_high", "The urgent high"),
-                           ("stale_minutes", "Stale after")):
+                           ("urgent_high", "The urgent high")):
             value = _number(form, key, label)
             if value is not None:
-                values[key] = value
+                values[key] = units_mod.from_display(value, typed_in)
+        stale = _number(form, "stale_minutes", "Stale after")
+        if stale is not None:
+            values["stale_minutes"] = stale
         if values.get("stale_minutes", 1) <= 0:
             raise ValueError("Stale after has to be at least one minute.")
-        _check_ranges({**self._range_defaults(), **values})
+        _check_ranges({**self._range_defaults(),
+                       **{k: v for k, v in values.items() if k != "units"}})
         display.update(values)
         config_mod.write_atomic(raw, self.server.config_path)
 

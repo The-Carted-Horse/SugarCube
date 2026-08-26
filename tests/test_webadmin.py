@@ -787,3 +787,131 @@ def test_an_unknown_post_is_a_404(admin):
 def _now_ms() -> int:
     import time
     return int(time.time() * 1000)
+
+
+# --------------------------------------------------------------- mmol/L ----
+#
+# The device stores mg/dL and always will. What a page shows, and what a
+# form means by the number in it, is the other question.
+
+def units_of(config_path) -> str:
+    return json.loads(config_path.read_text())["display"].get("units", "")
+
+
+def display_of(config_path) -> dict:
+    return json.loads(config_path.read_text())["display"]
+
+
+def test_the_ranges_page_opens_in_mgdl_by_default(admin):
+    client, _server, _path = admin
+    _status, _headers, body = client.get("/settings/ranges", headers=AUTH)
+    page = body.decode()
+    assert 'value="mg/dL" checked' in page
+    assert 'value="70"' in page
+
+
+def test_choosing_mmol_converts_rather_than_reinterprets(admin, restarts,
+                                                          admin_path=None):
+    """70 mg/dL is 3.9 mmol/L — not 70 mmol/L, which is not a reading."""
+    client, _server, path = admin
+    post(client, "/settings/ranges", units="mmol/L", typed_units="mg/dL",
+         low="70", high="180", urgent_low="55", urgent_high="250",
+         stale_minutes="12")
+    saved = display_of(path)
+    assert saved["units"] == "mmol/L"
+    assert (saved["low"], saved["high"]) == (70, 180)
+
+    # And it comes back in the unit that was chosen.
+    _status, _headers, body = client.get("/settings/ranges", headers=AUTH)
+    page = body.decode()
+    assert 'value="mmol/L" checked' in page
+    assert 'value="3.9"' in page and 'value="10.0"' in page
+
+
+def test_a_threshold_typed_in_mmol_is_stored_in_mgdl(admin, restarts):
+    client, _server, path = admin
+    post(client, "/settings/ranges", units="mmol/L", typed_units="mmol/L",
+         low="4.0", high="9.0", urgent_low="3.0", urgent_high="14.0",
+         stale_minutes="12")
+    saved = display_of(path)
+    assert (saved["low"], saved["high"]) == (72, 162)
+    assert (saved["urgent_low"], saved["urgent_high"]) == (54, 252)
+
+
+def test_the_ranges_a_form_shows_are_the_ranges_it_saves(admin, restarts):
+    """Open, save without touching anything, and nothing moves."""
+    client, _server, path = admin
+    post(client, "/settings/ranges", units="mmol/L", typed_units="mg/dL",
+         low="70", high="180", urgent_low="55", urgent_high="250",
+         stale_minutes="12")
+    before = display_of(path)
+    post(client, "/settings/ranges", units="mmol/L", typed_units="mmol/L",
+         low="3.9", high="10.0", urgent_low="3.1", urgent_high="13.9",
+         stale_minutes="12")
+    after = display_of(path)
+    for key in ("low", "high", "urgent_low", "urgent_high"):
+        assert abs(after[key] - before[key]) <= 1, key
+
+
+def test_switching_back_to_mgdl_keeps_the_thresholds_put(admin, restarts):
+    client, _server, path = admin
+    post(client, "/settings/ranges", units="mmol/L", typed_units="mg/dL",
+         low="70", high="180", urgent_low="55", urgent_high="250",
+         stale_minutes="12")
+    post(client, "/settings/ranges", units="mg/dL", typed_units="mmol/L",
+         low="3.9", high="10.0", urgent_low="3.1", urgent_high="13.9",
+         stale_minutes="12")
+    saved = display_of(path)
+    assert saved["units"] == "mg/dL"
+    assert 68 <= saved["low"] <= 72
+    assert 178 <= saved["high"] <= 182
+
+
+def test_a_range_that_is_not_a_range_is_still_refused_in_mmol(admin):
+    """The check runs on mg/dL, after the conversion, as it must."""
+    status, _headers, body = post(client_of(admin), "/settings/ranges",
+                                  units="mmol/L", typed_units="mmol/L",
+                                  low="10.0", high="4.0", urgent_low="3.0",
+                                  urgent_high="14.0", stale_minutes="12")
+    assert status == 400
+    assert b"low" in body.lower()
+
+
+def client_of(admin):
+    return admin[0]
+
+
+def test_the_api_still_answers_in_mgdl_whatever_the_page_shows(admin,
+                                                               restarts,
+                                                               store):
+    """Anything reading this endpoint has always been given mg/dL."""
+    client, server, path = admin
+    store.add_entries("Ada", [{"sgv": 121, "date": 1_700_000_000_000}])
+    post(client, "/settings/ranges", units="mmol/L", typed_units="mg/dL",
+         low="70", high="180", urgent_low="55", urgent_high="250",
+         stale_minutes="12")
+    # Saving restarts the display in real life, which is how the running
+    # config catches up with the file; `restarts` stubs that out.
+    server.config = config_mod.load(path)
+    _status, data = client.json("/api/dashboard.json", headers=AUTH)
+    assert data["units"] == "mmol/L"
+    assert data["thresholds"]["low"] == 70
+    assert data["users"][0]["sgv"] == 121
+
+
+def test_the_person_page_asks_for_overrides_in_the_display_unit(admin,
+                                                                restarts):
+    client, _server, path = admin
+    post(client, "/settings/ranges", units="mmol/L", typed_units="mg/dL",
+         low="70", high="180", urgent_low="55", urgent_high="250",
+         stale_minutes="12")
+    post(client, "/settings/person?i=0", name="Ada", th_low="4.5",
+         th_high="9.5")
+    person = users_of(path)[0]
+    assert person["thresholds"]["low"] == 81
+    assert person["thresholds"]["high"] == 171
+
+    _status, _headers, body = client.get("/settings/person?i=0", headers=AUTH)
+    page = body.decode()
+    assert "mmol/L" in page
+    assert 'value="4.5"' in page and 'value="9.5"' in page

@@ -18,7 +18,7 @@ import time
 from urllib.parse import parse_qs, urlparse
 
 from . import config as config_mod
-from . import glucocore, network, sync, ui, verify
+from . import glucocore, network, sync, ui, units, verify
 
 log = logging.getLogger("glucocube.onboarding")
 
@@ -522,20 +522,39 @@ def _remember_pairing(draft: dict, answer: dict, device_name: str) -> bool:
     return bool(draft["pairing"]["device_token"])
 
 
+UNIT_CARDS = (
+    ("mg/dL", "mg/dL", "What the United States reads"),
+    ("mmol/L", "mmol/L", "What most of the rest of the world reads"),
+)
+
+
 def _render_thresholds(handler, draft, step, banner) -> str:
     display = draft.get("display") or {}
-    value = lambda key, default: display.get(key, default)
+    shown_in = units.normalize(display.get("units"))
+    step_by = units.step(shown_in)
+
+    def field(key, default):
+        value = display.get(key)
+        return ui.text_input(
+            key, units.fmt_field(default if value in (None, "") else value,
+                                 shown_in),
+            kind="number", extra=f'step="{step_by}"')
+
     body = f"""{banner}
 <p class="lede">Readings are coloured against these. The defaults suit most
 people — you can change them per person later.</p>
 <form method="POST" action="/setup/thresholds">
+  <label class="lbl">Read in</label>
+  {ui.choice_cards("units", UNIT_CARDS, shown_in)}
+  <input type="hidden" name="typed_units" value="{ui.esc(shown_in)}">
+  <p class="note">The boxes below are in {ui.esc(shown_in)}. Switching
+  converts them rather than reinterpreting them, so pick the unit first if
+  you are going to.</p>
   {ui.row("In range", '<div class="pair">'
-          + ui.text_input("low", value("low", 70), kind="number")
-          + ui.text_input("high", value("high", 180), kind="number")
-          + "</div>", inline=False, hint="low and high, mg/dL")}
+          + field("low", 70) + field("high", 180)
+          + "</div>", inline=False, hint="low and high")}
   {ui.row("Urgent", '<div class="pair">'
-          + ui.text_input("urgent_low", value("urgent_low", 55), kind="number")
-          + ui.text_input("urgent_high", value("urgent_high", 250), kind="number")
+          + field("urgent_low", 55) + field("urgent_high", 250)
           + "</div>", inline=False,
           hint="below and above these, the panel turns red")}
   {_actions("Continue")}
@@ -604,7 +623,7 @@ writes it down and restarts on the new settings.</p>
 <div class="tablewrap"><table><tbody>
 <tr><td>Display</td><td>{ui.esc(draft.get('device_name', ''))}</td></tr>
 {patient_rows}
-<tr><td>In range</td><td>{display.get('low', 70):g}&ndash;{display.get('high', 180):g} mg/dL</td></tr>
+<tr><td>In range</td><td>{units.fmt_field(display.get('low', 70), display.get('units'))}&ndash;{units.fmt_field(display.get('high', 180), display.get('units'))} {ui.esc(units.normalize(display.get('units')))}</td></tr>
 <tr><td>Settings page</td><td>{ui.esc(access)}</td></tr>
 </tbody></table></div>
 <form method="POST" action="/setup/review">
@@ -850,11 +869,17 @@ def do_post(handler, path: str, form: dict) -> None:
         mark_done(draft, "pair")
     elif step == "thresholds":
         display = dict(draft.get("display") or {})
+        # The boxes hold what the page was rendered in; the cards say what
+        # to read in from here on. Reading the boxes in the newly chosen
+        # unit would move the thresholds instead of converting them.
+        typed_in = units.normalize(form.get("typed_units")
+                                   or display.get("units"))
+        display["units"] = units.normalize(form.get("units") or typed_in)
         for key in ("low", "high", "urgent_low", "urgent_high"):
             value = (form.get(key) or "").strip()
             if value:
                 try:
-                    display[key] = float(value)
+                    display[key] = units.from_display(float(value), typed_in)
                 except ValueError:
                     pass
         draft["display"] = display

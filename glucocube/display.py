@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import pygame
 
-from . import backlight, network, pairing, predict, touch
+from . import backlight, network, pairing, predict, touch, units
 from .config import IDENTIFY_KEY, SCREEN_PNG, Config, admin_url, merged_thresholds
 from .store import Store, UserSnapshot
 
@@ -409,9 +409,15 @@ class Display:
 
     def draw_chart(self, chart: pygame.Rect, snap: UserSnapshot, stale: bool,
                    th: dict, future, est: bool, now_ms: int):
-        """3h history + 2h forecast: range band, trace, cone, dotted forecast."""
+        """3h history + 2h forecast: range band, trace, cone, dotted forecast.
+
+        Every value here is mg/dL, including the axis it is plotted on —
+        the two units are a linear scale apart, so the curve is the same
+        shape either way and only the two numbers written on it change.
+        """
         surface = self.screen
         pal = self.pal
+        shown_in = self.config.display.units
         t0 = now_ms - 180 * 60 * 1000
         t1 = now_ms + 120 * 60 * 1000
         values = [v for _, v in snap.history] + [v for _, v in (future or [])]
@@ -431,11 +437,11 @@ class Display:
         pygame.draw.rect(surface, pal.band,
                          (chart.left, band_top, chart.width, band_bot - band_top))
         lab_px = max(10, int(chart.height * 0.15))
-        self.text(surface, f"{th['high']:.0f}", lab_px, pal.faint,
+        self.text(surface, units.fmt(th["high"], shown_in), lab_px, pal.faint,
                   topright=(chart.right - 5, band_top + 2))
         if band_bot - band_top > lab_px * 2.4:  # skip when the band is thin
-            self.text(surface, f"{th['low']:.0f}", lab_px, pal.faint,
-                      bottomright=(chart.right - 5, band_bot - 2))
+            self.text(surface, units.fmt(th["low"], shown_in), lab_px,
+                      pal.faint, bottomright=(chart.right - 5, band_bot - 2))
 
         # Dashed "now" divider between measured past and forecast.
         x_now = X(now_ms)
@@ -545,7 +551,8 @@ class Display:
         # Big glucose number, left-aligned; arrow/delta/unit column right of it.
         # Blit so the digits' cap top (not the font's line box) lands at
         # num_top — Space Grotesk carries a lot of internal leading.
-        sgv_str = f"{snap.sgv:.0f}" if snap.sgv is not None else "---"
+        shown_in = self.config.display.units
+        sgv_str = units.fmt(snap.sgv, shown_in)
         num_px = int(h * 0.33)
         num_font = self.font(num_px, "num")
         num_img = num_font.render(sgv_str, True, color)
@@ -568,9 +575,11 @@ class Display:
                             arrow_size, snap.direction, color)
         if not stale and snap.delta is not None:
             delta_font = self.font(int(h * 0.08), "num-med")
-            delta_img = delta_font.render(f"{snap.delta:+.0f}", True, self.pal.fg)
+            delta_img = delta_font.render(units.fmt_delta(snap.delta, shown_in),
+                                          True, self.pal.fg)
             surface.blit(delta_img, (col_x, num_top + int(cap * 0.36)))
-        self.label(surface, "MG/DL", int(h * 0.027), self.pal.faint,
+        self.label(surface, units.label(shown_in), int(h * 0.027),
+                   self.pal.faint,
                    topleft=(col_x, num_top + int(cap * 0.80)))
 
         # FORECAST 2H header: label — rule — value + arrival time.
@@ -588,7 +597,8 @@ class Display:
                                   midright=(right, fy))
             tilde = "~" if fc_source == "est" else ""
             value_color = self.glucose_color(horizons[120], False, th)
-            val_rect = self.text(surface, f"{tilde}{horizons[120]:.0f}",
+            val_rect = self.text(surface,
+                                 f"{tilde}{units.fmt(horizons[120], shown_in)}",
                                  int(h * 0.055), value_color, kind="num",
                                  midright=(eta_rect.left - int(w * 0.025), fy))
             rule_end = val_rect.left - int(w * 0.03)

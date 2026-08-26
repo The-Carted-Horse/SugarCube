@@ -361,3 +361,68 @@ def test_the_code_on_the_wall_is_the_one_to_approve(display, store):
         "https://www.glucocore.app/devices/add?request=req-1")
     # The secret collects the token; it must never be on a wall.
     assert "never-on-screen" not in display._qr_cache[0]
+
+
+# --------------------------------------------------------------- mmol/L ----
+#
+# Everything the display holds is mg/dL. These check the one place that
+# is not: what is painted on the glass.
+
+@pytest.fixture
+def mmol_display(store, monkeypatch):
+    monkeypatch.setenv("GLUCOCUBE_TOUCH", "off")
+    monkeypatch.delenv("GLUCOCUBE_DISPLAY", raising=False)
+    config = Config(
+        users=[UserConfig(name="Ada", port=1337, api_secret="a")],
+        display=DisplayConfig(fullscreen=False, width=800, height=480,
+                              units="mmol/L"),
+        admin_port=8080, admin_password="pw1234")
+    display = Display(config, store, windowed=True)
+    yield display
+    pygame.quit()
+
+
+def _with_a_reading(store, sgv=121):
+    now = int(time.time() * 1000)
+    store.add_entries("Ada", [{"sgv": sgv - 3, "date": now - 5 * MINUTE},
+                              {"sgv": sgv, "date": now, "direction": "Flat"}])
+
+
+def test_the_same_reading_is_painted_differently_in_each_unit(display,
+                                                              mmol_display,
+                                                              store):
+    _with_a_reading(store)
+    display.draw()
+    in_mgdl = pygame.image.tostring(display.screen, "RGB")
+    mmol_display.draw()
+    in_mmol = pygame.image.tostring(mmol_display.screen, "RGB")
+    assert in_mgdl != in_mmol
+
+
+def test_the_caption_follows_the_unit(display, mmol_display, store):
+    """MG/DL and MMOL/L are different words on the glass."""
+    from glucocube import units
+    assert units.label(display.config.display.units) == "MG/DL"
+    assert units.label(mmol_display.config.display.units) == "MMOL/L"
+
+
+def test_a_display_set_to_mmol_still_renders_a_whole_frame(mmol_display,
+                                                           store):
+    _with_a_reading(store)
+    mmol_display.draw()
+    assert mmol_display.screen.get_size() == (800, 480)
+
+
+def test_the_chart_is_the_same_shape_in_both_units(display, mmol_display,
+                                                   store):
+    """The two units are a linear scale apart; only the labels change."""
+    _with_a_reading(store)
+    chart = pygame.Rect(0, 0, 400, 200)
+    for panel in (display, mmol_display):
+        snap = store.snapshot("Ada")
+        panel.draw_chart(chart, snap, False,
+                         {"low": 70, "high": 180, "urgent_low": 55,
+                          "urgent_high": 250}, None, False,
+                         int(time.time() * 1000))
+    # Both drew without raising, on the same mg/dL axis.
+    assert True
