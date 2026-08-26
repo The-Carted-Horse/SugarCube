@@ -71,6 +71,27 @@ def get_realtime_token(device_token: str, timeout: float = 30) -> dict:
                     token=device_token, timeout=timeout)
 
 
+def list_commands(device_token: str, timeout: float = 30) -> list[dict]:
+    """Collect what has been queued for this display, marking it delivered.
+
+    Collecting and acknowledging are two steps on purpose: "the display
+    took the instruction and was never heard from again" is then a state
+    somebody can see on the devices screen, rather than a silence.
+    """
+    payload = _request("GET", "/v1/sugar_cubes/me/commands",
+                       token=device_token, timeout=timeout)
+    return list(payload.get("commands") or [])
+
+
+def ack_command(device_token: str, command_id: str, ok: bool = True,
+                detail: str = "", timeout: float = 30) -> None:
+    body: dict = {"id": command_id, "ok": ok}
+    if detail:
+        body["detail"] = detail[:300]
+    _request("POST", "/v1/sugar_cubes/me/commands", token=device_token,
+             body=body, timeout=timeout)
+
+
 def heartbeat(device_token: str, state: dict, timeout: float = 30) -> None:
     _request("POST", "/v1/sugar_cubes/me/heartbeat", token=device_token,
              body=state, timeout=timeout)

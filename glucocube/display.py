@@ -28,7 +28,7 @@ from dataclasses import dataclass
 import pygame
 
 from . import network, predict, touch
-from .config import SCREEN_PNG, Config, admin_url, merged_thresholds
+from .config import IDENTIFY_KEY, SCREEN_PNG, Config, admin_url, merged_thresholds
 from .store import Store, UserSnapshot
 
 
@@ -1039,6 +1039,32 @@ class Display:
                 int(s * 0.04), self.pal.dim, midtop=(cx, line_y),
             )
 
+    def _identify_left(self) -> float:
+        """Seconds this display should still be waving, if it was asked to."""
+        until = self.store.get_params(IDENTIFY_KEY).get("until") or 0
+        return max(0.0, (float(until) - time.time() * 1000) / 1000)
+
+    def draw_identify(self):
+        """Unmissable, and gone by itself.
+
+        The point is telling one display from another across a room, so it
+        flashes rather than merely captioning itself: a band that alternates
+        every half second reads as "this one" from the doorway.
+        """
+        screen = self.screen
+        w, h = screen.get_width(), screen.get_height()
+        s = min(w, h)
+        on = int(time.monotonic() * 2) % 2 == 0
+        band = pygame.Rect(0, 0, w, int(h * 0.22))
+        band.center = (w // 2, h // 2)
+        pygame.draw.rect(screen, self.pal.in_range if on else self.pal.bg,
+                         band)
+        pygame.draw.rect(screen, self.pal.in_range, band,
+                         width=max(2, int(s * 0.01)))
+        self.text(screen, "here!", int(s * 0.13),
+                  self.pal.bg if on else self.pal.in_range, kind="num",
+                  center=band.center)
+
     def draw(self):
         self._sync_theme()
         self.screen.fill(self.pal.bg)
@@ -1049,6 +1075,8 @@ class Display:
             self._toggle_rect = self._qr_rect = pygame.Rect(0, 0, 0, 0)
             self._qr_open_until = 0.0
             self.draw_hotspot_screen()
+            if self._identify_left():
+                self.draw_identify()
             pygame.display.flip()
             if self.fb:
                 self.fb.present(self.screen)
@@ -1059,6 +1087,8 @@ class Display:
             self._toggle_rect = self._qr_rect = pygame.Rect(0, 0, 0, 0)
             self._qr_open_until = 0.0
             self.draw_setup_screen()
+            if self._identify_left():
+                self.draw_identify()
             pygame.display.flip()
             if self.fb:
                 self.fb.present(self.screen)
@@ -1088,6 +1118,8 @@ class Display:
         self.draw_footer(footer)
         if self.qr_open():
             self.draw_settings_qr()
+        if self._identify_left():
+            self.draw_identify()
         pygame.display.flip()
         if self.fb:
             self.fb.present(self.screen)
@@ -1144,6 +1176,11 @@ class Display:
                 # Redraw promptly when the overlay's welcome runs out.
                 timeout = min(timeout,
                               max(0.05, self._qr_open_until - time.monotonic()))
+            identify_left = self._identify_left()
+            if identify_left:
+                # A flash at one frame a second is not a flash. Also brings
+                # the frame that clears it forward to when it runs out.
+                timeout = min(timeout, 0.25, identify_left + 0.02)
             self._wake.wait(timeout)
         self._stop_touch()
         pygame.quit()

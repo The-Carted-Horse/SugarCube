@@ -14,6 +14,10 @@ log = logging.getLogger("glucocube.config")
 
 # Where the display loop drops live screenshots for the /screen.png endpoint.
 SCREEN_PNG = os.path.join(tempfile.gettempdir(), "glucocube-screen.png")
+# Params key the "identify" command writes and the display reads. Here
+# rather than in display.py because --no-display must work on a machine
+# with no pygame, and display.py imports it at module level.
+IDENTIFY_KEY = "__identify"
 
 
 @dataclass

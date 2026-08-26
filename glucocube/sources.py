@@ -26,10 +26,27 @@ class BasePoller(threading.Thread):
         self.user = user
         self.poll_seconds = max(30, int(poll_seconds))
         self.store = store
-        self._stop = threading.Event()
+        # Not _stop: Thread has a private method by that name, and shadowing
+        # it makes join() raise TypeError once the thread has finished —
+        # "'Event' object is not callable", from inside threading itself.
+        self._stopping = threading.Event()
+        # Woken by "refresh now" rather than waiting out the interval. It is
+        # separate from _stop because a poke must not end the loop, and
+        # stop() sets both so a stopping thread never sleeps on either.
+        self._wake = threading.Event()
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stopping.set()
+        self._wake.set()
+
+    def poke(self) -> None:
+        """Poll now, rather than at the end of the current interval."""
+        self._wake.set()
+
+    def _sleep(self, delay: float) -> None:
+        """Wait out the interval, unless something asks for a poll sooner."""
+        self._wake.wait(delay)
+        self._wake.clear()
 
     def _poll_once(self) -> None:
         raise NotImplementedError
@@ -37,7 +54,7 @@ class BasePoller(threading.Thread):
     def run(self) -> None:
         log.info("[%s] %s poller started (every %ds)",
                  self.user, self.kind, self.poll_seconds)
-        while not self._stop.is_set():
+        while not self._stopping.is_set():
             delay = self.poll_seconds
             try:
                 self._poll_once()
@@ -54,7 +71,7 @@ class BasePoller(threading.Thread):
                             self.user, self.kind, exc, delay)
                 synclog.add(self.kind, self.user,
                             f"poll failed: {exc} (retry in {delay}s)", ok=False)
-            self._stop.wait(delay)
+            self._sleep(delay)
 
 
 def start_pollers(users, store: Store, glucocore_token: str = "") -> list[BasePoller]:

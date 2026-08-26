@@ -82,6 +82,63 @@ def wait_for_connected_display(timeout: float = 45.0) -> bool:
     return False
 
 
+# Long enough to walk into the other room and look at the wall.
+IDENTIFY_SECONDS = 30
+
+
+def command_actions(config, store, pollers) -> dict:
+    """What GlucoCore's buttons do to this display.
+
+    Built here because this is where the running pieces are — the pollers
+    to poke, the store to clear, the process to restart. Each returns the
+    line that ends up on the devices screen beside the command, so "done"
+    is never the whole answer.
+    """
+    from .webadmin import restart_soon
+
+    def identify() -> str:
+        store.replace_params(
+            config_mod.IDENTIFY_KEY,
+            {"until": int(time.time() * 1000) + IDENTIFY_SECONDS * 1000})
+        return f"flashing for {IDENTIFY_SECONDS} seconds"
+
+    def restart() -> str:
+        # Acknowledged first, then gone: the delay is what lets the
+        # acknowledgement leave before the process does.
+        restart_soon(2.0)
+        return "restarting"
+
+    def refresh() -> str:
+        if not pollers:
+            # Everyone here is fed by an uploader — there is nothing to
+            # fetch, and saying so beats a tick that means nothing.
+            return "nothing to fetch: every person here is fed by an uploader"
+        for poller in pollers:
+            poller.poke()
+        return (f"polling {len(pollers)} source"
+                f"{'s' if len(pollers) != 1 else ''} now")
+
+    def clear_cache() -> str:
+        removed = store.clear_readings([user.name for user in config.users])
+        for poller in pollers:
+            poller.poke()
+        return f"dropped {removed} stored rows; fetching again"
+
+    def check_update() -> str:
+        from .updater import check_and_maybe_force
+        state = check_and_maybe_force(store, config.update_channel)
+        if state.get("forcing"):
+            return f"installing {state.get('latest', '')}"
+        if state.get("available"):
+            return f"{state.get('latest', '')} is available"
+        channel = config_mod.CHANNEL_LABELS[
+            config_mod.normalize_channel(config.update_channel)]
+        return f"up to date on the {channel.lower()} channel"
+
+    return {"identify": identify, "restart": restart, "refresh": refresh,
+            "clear_cache": clear_cache, "check_update": check_update}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="glucocube")
     parser.add_argument(
@@ -138,6 +195,7 @@ def main() -> int:
             },
             store,
             _on_remote_config,
+            actions=command_actions(config, store, pollers),
         )
 
     from .webadmin import start_admin

@@ -533,22 +533,22 @@ class NetworkWatcher(threading.Thread):
         self.hotspot_password = hotspot_password
         self._fails = 0
         self._last_scan = 0.0
-        self._stop = threading.Event()
+        self._stopping = threading.Event()
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stopping.set()
 
     def run(self) -> None:
         if not available():
             log.info("nmcli not found; Wi-Fi provisioning disabled")
             return
-        self._stop.wait(self.FIRST_CHECK_DELAY)
-        while not self._stop.is_set():
+        self._stopping.wait(self.FIRST_CHECK_DELAY)
+        while not self._stopping.is_set():
             try:
                 self._tick()
             except Exception as exc:  # noqa: BLE001 - never kill the watcher
                 log.warning("Network watcher error: %s", exc)
-            self._stop.wait(self.CHECK_SECONDS)
+            self._stopping.wait(self.CHECK_SECONDS)
 
     def _tick(self) -> None:
         # A join in progress has deliberately torn the hotspot down and

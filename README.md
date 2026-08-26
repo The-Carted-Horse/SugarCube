@@ -160,6 +160,25 @@ reason appears both on the device's own screen and at the top of the page**
 (wrong password, network not found, and so on) — no SSH needed to find out
 what went wrong.
 
+### From GlucoCore's devices screen
+
+A paired display collects the commands queued for it — on its realtime
+channel when it has one, otherwise within the minute — and says what it
+did with each, so the devices screen shows the outcome rather than a
+silence:
+
+| Command | On this display |
+|---|---|
+| Identify | Flashes a band across the screen for 30 seconds |
+| Restart | Restarts the display; it comes back in a few seconds |
+| Refresh now | Polls every pull source immediately |
+| Clear cache | Drops stored readings and fetches again (therapy settings stay) |
+| Check for updates | Runs the release check, and installs a forced release |
+
+The heartbeat carries the version it is running and the config version it
+has applied, which is what lets that screen tell a display that is behind
+from one that is simply offline.
+
 ## Updates
 
 ### Upgrading from 1.x (SugarCube)

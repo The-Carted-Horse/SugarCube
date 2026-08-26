@@ -366,7 +366,7 @@ class UpdateChecker(threading.Thread):
         # page is picked up by the next check rather than at the next
         # boot. None (tests, callers that predate channels) means stable.
         self.config = config
-        self._stop = threading.Event()
+        self._stopping = threading.Event()
 
     @property
     def channel(self) -> str:
@@ -374,13 +374,13 @@ class UpdateChecker(threading.Thread):
             getattr(self.config, "update_channel", STABLE))
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stopping.set()
 
     def run(self) -> None:
-        self._stop.wait(self.FIRST_CHECK_DELAY)
-        while not self._stop.is_set():
+        self._stopping.wait(self.FIRST_CHECK_DELAY)
+        while not self._stopping.is_set():
             try:
                 check_and_maybe_force(self.store, self.channel)
             except Exception as exc:  # noqa: BLE001 - never kill the loop
                 log.warning("Update checker error: %s", exc)
-            self._stop.wait(self.CHECK_SECONDS)
+            self._stopping.wait(self.CHECK_SECONDS)

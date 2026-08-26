@@ -260,3 +260,62 @@ def test_a_tap_from_the_panel_is_queued_for_the_draw_loop(display):
 def test_the_settings_url_carries_the_login(display):
     url = display._settings_url()
     assert url is None or "key=pw1234" in url
+
+
+# ------------------------------------------------------------- identify ----
+#
+# "Which of these is the kitchen one?" is a question you answer by looking
+# at the wall, so the command has to be visible from across a room and has
+# to stop by itself.
+
+def test_the_screen_is_ordinary_until_it_is_asked_to_wave(display, store):
+    from glucocube.config import IDENTIFY_KEY
+    assert display._identify_left() == 0
+    store.replace_params(IDENTIFY_KEY, {"until": _in(30)})
+    assert 0 < display._identify_left() <= 30
+
+
+def test_an_identify_that_has_run_out_is_over(display, store):
+    from glucocube.config import IDENTIFY_KEY
+    store.replace_params(IDENTIFY_KEY, {"until": _in(-1)})
+    assert display._identify_left() == 0
+
+
+def test_identifying_changes_what_is_on_the_screen(display, store):
+    from glucocube.config import IDENTIFY_KEY
+    store.add_entries("Ada", [{"sgv": 120, "date": int(time.time() * 1000)}])
+    display.draw()
+    before = pygame.image.tostring(display.screen, "RGB")
+
+    store.replace_params(IDENTIFY_KEY, {"until": _in(30)})
+    display.draw()
+    after = pygame.image.tostring(display.screen, "RGB")
+    assert before != after
+
+
+def test_it_flashes_rather_than_merely_captioning_itself(display, store,
+                                                          monkeypatch):
+    """A steady band is easy to miss; the point is being noticed."""
+    from glucocube.config import IDENTIFY_KEY
+    store.replace_params(IDENTIFY_KEY, {"until": _in(30)})
+    frames = []
+    for tick in (0.0, 0.6):
+        monkeypatch.setattr(time, "monotonic", lambda tick=tick: tick)
+        display.draw()
+        frames.append(pygame.image.tostring(display.screen, "RGB"))
+    assert frames[0] != frames[1]
+
+
+def test_a_display_still_being_set_up_can_be_identified_too(display, store):
+    """Which is when telling two of them apart matters most."""
+    from glucocube.config import IDENTIFY_KEY
+    store.replace_params(IDENTIFY_KEY, {"until": _in(30)})
+    display.draw()                       # no readings: the setup screen
+    lit = pygame.image.tostring(display.screen, "RGB")
+    store.replace_params(IDENTIFY_KEY, {})
+    display.draw()
+    assert lit != pygame.image.tostring(display.screen, "RGB")
+
+
+def _in(seconds: float) -> int:
+    return int((time.time() + seconds) * 1000)

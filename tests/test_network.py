@@ -519,7 +519,7 @@ def test_a_failing_tick_does_not_kill_the_watcher(watcher, monkeypatch):
     monkeypatch.setattr(network, "connectivity",
                         lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     monkeypatch.setattr(network, "available", lambda: True)
-    watcher._stop.set()          # one pass through the loop, then out
+    watcher._stopping.set()      # one pass through the loop, then out
     watcher.run()                # must not raise
 
 
