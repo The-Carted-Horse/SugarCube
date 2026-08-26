@@ -486,6 +486,19 @@ def test_a_refused_sign_in_is_shown_on_the_same_step(wizard, monkeypatch):
     assert b"did not work" in body
 
 
+def test_a_failed_sign_in_shows_what_actually_happened(wizard, monkeypatch):
+    """Same as the settings page: the reason must not be swallowed."""
+    client, _server, _path = wizard
+    monkeypatch.setattr(verify, "glucocore_login",
+                        lambda *a, **k: Result(
+                            False, "Could not reach GlucoCore.",
+                            "URLError: Name or service not known"))
+    _status, _headers, body = step(client, "/setup/account", mode="login",
+                                   email="c@example.invalid", password="pw")
+    assert b"Technical detail" in body
+    assert b"Name or service not known" in body
+
+
 def test_signing_in_lists_the_patients_to_choose_from(wizard, store, account):
     client, _server, _path = wizard
     status, headers, _body = step(client, "/setup/account", mode="login",

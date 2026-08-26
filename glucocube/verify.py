@@ -92,12 +92,26 @@ def _guarded(identity: str, fn, timeout: float) -> Result:
         _slots.release()
 
 
-def _network_message(exc: Exception, secret: str, what: str) -> Result:
+def _network_message(exc: Exception, secret: str, what: str, *,
+                     address: str = "") -> Result:
+    """Why a check failed, in words the person reading them can act on.
+
+    `address` is the address the app dialled when the person did not type
+    it — GlucoCore's, which is built into the app. Telling someone to
+    check the spelling of an address they were never shown sends them
+    hunting for a typo they cannot have made; naming it, and saying it is
+    not theirs to correct, is the difference between a dead end and a
+    fault report somebody can act on.
+    """
     detail = _scrub(f"{type(exc).__name__}: {exc}", secret)
     if isinstance(exc, urllib.error.HTTPError):
         if exc.code in (401, 403):
             return Result(False, f"{what} rejected those credentials.", detail)
         if exc.code == 404:
+            if address:
+                return Result(False, f"{address} answered, but not where "
+                                     f"{what} was expected — the service may "
+                                     "have moved.", detail)
             return Result(False, "That address answered, but it is not a "
                                  "Nightscout site.", detail)
         return Result(False, f"{what} answered with an error ({exc.code}).",
@@ -106,6 +120,11 @@ def _network_message(exc: Exception, secret: str, what: str) -> Result:
         return Result(False, "The site's HTTPS certificate could not be "
                              "verified.", detail)
     if isinstance(exc, (urllib.error.URLError, socket.gaierror, OSError)):
+        if address:
+            return Result(False, f"Could not reach {what} at {address}. "
+                                 "Check this device is online — the address "
+                                 "is built in, so there is nothing to correct "
+                                 "here.", detail)
         return Result(False, "Could not reach that address — check the "
                              "spelling, and that this device is online.",
                       detail)
@@ -157,7 +176,8 @@ def glucocore_session(email: str, password: str,
             token, userid = glucocore.login(email, password, timeout=timeout * 0.8)
             patients = glucocore.list_patients(token, userid, timeout=timeout * 0.5)
         except Exception as exc:  # noqa: BLE001
-            result = _network_message(exc, password, "GlucoCore")
+            result = _network_message(exc, password, "GlucoCore",
+                                      address=glucocore.GLUCOCORE_BASE)
             if isinstance(exc, urllib.error.HTTPError) and exc.code == 401:
                 return Result(False, "That email or password did not work.", result.detail)
             return result

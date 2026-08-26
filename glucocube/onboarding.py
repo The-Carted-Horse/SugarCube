@@ -726,8 +726,9 @@ def do_post(handler, path: str, form: dict) -> None:
         else:
             result = verify.glucocore_login(email, password)
             if not result.ok:
-                handler._send(render(handler, draft, "account", banner=ui.banner(
-                    "err", result.message)).encode(),
+                handler._send(render(handler, draft, "account",
+                                     banner=ui.failure(result.message,
+                                                       result.detail)).encode(),
                     "text/html; charset=utf-8", 400)
                 return
             try:
@@ -758,8 +759,10 @@ def do_post(handler, path: str, form: dict) -> None:
             return
         result = verify.glucocore_login(email, password)
         if not result.ok:
-            handler._send(render(handler, draft, "verify_email", banner=ui.banner(
-                "err", result.message)).encode(), "text/html; charset=utf-8", 400)
+            handler._send(render(handler, draft, "verify_email",
+                                 banner=ui.failure(result.message,
+                                                   result.detail)).encode(),
+                          "text/html; charset=utf-8", 400)
             return
         token, userid = glucocore.login(email, password)
         draft["account"].update({

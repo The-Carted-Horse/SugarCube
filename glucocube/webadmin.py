@@ -2009,7 +2009,8 @@ check, on whichever channel published it.</p>"""
         result, session = verify.glucocore_session(email,
                                                    form.get("password", ""))
         if not result.ok or not session.get("token"):
-            self._glucocore_page(form, ui.banner("err", ui.esc(result.message)))
+            self._glucocore_page(form, ui.failure(result.message,
+                                                  result.detail))
             return
         gc = self.server.config.glucocore
         self.server.store.replace_params(self.PAIR_KEY, {

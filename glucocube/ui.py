@@ -414,6 +414,21 @@ def menu_item(href: str, title: str, sub: str = "", *, lead: str = "",
     )
 
 
+def failure(message: str, detail: str = "") -> str:
+    """A check that failed, with the technical half behind a disclosure.
+
+    verify.Result carries both halves for a reason — the message says what
+    to do, the detail says what actually happened — and a page that shows
+    only the first half turns "DNS does not know that host" into a
+    guessing game.
+    """
+    body = banner("err", esc(message))
+    if detail:
+        body += ("<details><summary>Technical detail</summary>"
+                 f'<pre class="detail">{esc(detail)}</pre></details>')
+    return body
+
+
 def facts(pairs) -> str:
     """Read-only label/value lines. Values may contain markup."""
     body = "".join(f"<dt>{esc(label)}</dt><dd>{value}</dd>"

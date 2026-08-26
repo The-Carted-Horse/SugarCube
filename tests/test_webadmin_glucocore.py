@@ -159,6 +159,22 @@ def test_a_refused_sign_in_says_so_and_keeps_nothing(admin, monkeypatch):
         'action="/settings/glucocore/signin"') == 1
 
 
+def test_a_failed_sign_in_shows_what_actually_happened(admin, monkeypatch):
+    """The message says what to do; the detail says why it did not work."""
+    client, _server, _path = admin
+    monkeypatch.setattr(verify, "glucocore_session",
+                        lambda *a, **k: (
+                            Result(False, "Could not reach GlucoCore.",
+                                   "URLError: Name or service not known"),
+                            {}))
+    _status, _headers, body = post(client, "/settings/glucocore/signin",
+                                   email="a@b.c", password="pw")
+    page_html = body.decode()
+    assert "Could not reach GlucoCore." in page_html
+    assert "Technical detail" in page_html
+    assert "Name or service not known" in page_html
+
+
 def test_signing_in_leads_to_a_choice_of_people(admin, monkeypatch):
     client, _server, path = admin
     signed_in(monkeypatch)

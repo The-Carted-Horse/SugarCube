@@ -12,7 +12,7 @@ import urllib.error
 
 import pytest
 
-from glucocube import nspull, tidepool, verify
+from glucocube import glucocore, nspull, tidepool, verify
 from glucocube.verify import Result
 
 
@@ -258,3 +258,98 @@ def test_a_push_person_has_nothing_to_test(config):
     result = verify.source(config)
     assert result.ok is True
     assert "Nothing to test" in result.message
+
+
+# ------------------------------------------------------------ glucocore ----
+#
+# GlucoCore's address is built into the app rather than typed by anyone,
+# so a failure to reach it has to read differently from a mistyped
+# Nightscout URL — and the sign-in has to hand back the session it just
+# proved works, because signing in twice would trip the throttle.
+
+@pytest.mark.parametrize("email, password", [
+    ("", "pw"), ("  ", "pw"), ("cassidy@example.invalid", ""),
+])
+def test_glucocore_needs_both_halves_before_it_tries(monkeypatch, email,
+                                                     password):
+    monkeypatch.setattr(glucocore, "login", _never_called)
+    result, session = verify.glucocore_session(email, password)
+    assert result.ok is False
+    assert session == {}
+
+
+def test_a_signed_in_session_comes_back_with_the_patients(monkeypatch):
+    monkeypatch.setattr(glucocore, "login",
+                        lambda email, password, timeout=30: ("tok", "u-1"))
+    monkeypatch.setattr(glucocore, "list_patients",
+                        lambda token, userid, timeout=30: [{"userId": "p-1"}])
+    result, session = verify.glucocore_session("cassidy@example.invalid", "pw")
+    assert result.ok is True
+    assert "1 patient" in result.message
+    assert session == {"token": "tok", "userid": "u-1",
+                       "patients": [{"userId": "p-1"}]}
+
+
+def test_an_account_with_nobody_on_it_still_signed_in(monkeypatch):
+    monkeypatch.setattr(glucocore, "login",
+                        lambda email, password, timeout=30: ("tok", "u-1"))
+    monkeypatch.setattr(glucocore, "list_patients",
+                        lambda token, userid, timeout=30: [])
+    result, _session = verify.glucocore_session("cassidy@example.invalid", "pw")
+    assert result.ok is True
+    assert "no patients are visible yet" in result.message
+
+
+def test_a_rejected_glucocore_password_says_which_half_was_wrong(monkeypatch):
+    monkeypatch.setattr(glucocore, "login", _raise(http_error(401)))
+    result, session = verify.glucocore_session("cassidy@example.invalid",
+                                               "wrong")
+    assert "That email or password did not work." == result.message
+    assert session == {}
+
+
+def test_an_unreachable_glucocore_does_not_blame_a_typo(monkeypatch):
+    """Nobody typed this address, so there is no spelling to check."""
+    monkeypatch.setattr(glucocore, "login",
+                        _raise(urllib.error.URLError(
+                            socket.gaierror(-2, "Name or service not known"))))
+    result, _session = verify.glucocore_session("cassidy@example.invalid", "pw")
+    assert result.ok is False
+    assert "spelling" not in result.message
+    # It names what could not be reached, so a fault report can say so.
+    assert glucocore.GLUCOCORE_BASE in result.message
+    assert "Name or service not known" in result.detail
+
+
+def test_a_mistyped_nightscout_address_still_says_to_check_it(monkeypatch):
+    """The other half of the same branch: there, the address *was* typed."""
+    monkeypatch.setattr(nspull, "probe",
+                        _raise(urllib.error.URLError("no route")))
+    result = verify.nightscout_site("ns.exampl.invalid", "key")
+    assert "check the spelling" in result.message
+
+
+def test_a_glucocore_that_answers_from_the_wrong_place_says_so(monkeypatch):
+    monkeypatch.setattr(glucocore, "login", _raise(http_error(404)))
+    result, _session = verify.glucocore_session("cassidy@example.invalid", "pw")
+    assert "Nightscout" not in result.message
+    assert "may have moved" in result.message
+
+
+def test_a_glucocore_password_is_never_shown_back(monkeypatch):
+    secret = "sup3rsecret"
+    monkeypatch.setattr(glucocore, "login",
+                        _raise(RuntimeError(f"bad login for {secret}")))
+    result, _session = verify.glucocore_session("cassidy@example.invalid",
+                                                secret)
+    assert secret not in result.message + result.detail
+
+
+def test_a_slow_glucocore_hands_back_no_session(monkeypatch):
+    """A worker that overran must not leak a session nobody is waiting on."""
+    monkeypatch.setattr(glucocore, "login",
+                        lambda *a, **k: time.sleep(30))
+    result, session = verify.glucocore_session("cassidy@example.invalid", "pw",
+                                               timeout=0.3)
+    assert result.ok is False
+    assert session == {}
