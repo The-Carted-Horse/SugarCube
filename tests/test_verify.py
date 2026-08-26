@@ -262,61 +262,66 @@ def test_a_push_person_has_nothing_to_test(config):
 
 # ------------------------------------------------------------ glucocore ----
 #
-# GlucoCore's address is built into the app rather than typed by anyone,
-# so a failure to reach it has to read differently from a mistyped
-# Nightscout URL — and the sign-in has to hand back the session it just
-# proved works, because signing in twice would trip the throttle.
+# A display pairs with a six-digit code rather than an account password,
+# so what is checked here is the code: its shape before anything is sent,
+# and that GlucoCore's deliberate refusal to say *why* a code failed is
+# repeated rather than guessed at.
 
-@pytest.mark.parametrize("email, password", [
-    ("", "pw"), ("  ", "pw"), ("cassidy@example.invalid", ""),
-])
-def test_glucocore_needs_both_halves_before_it_tries(monkeypatch, email,
-                                                     password):
-    monkeypatch.setattr(glucocore, "login", _never_called)
-    result, session = verify.glucocore_session(email, password)
+@pytest.mark.parametrize("code", ["", "12345", "1234567", "abcdef", "    "])
+def test_a_code_the_wrong_shape_is_not_sent(monkeypatch, code):
+    monkeypatch.setattr(glucocore, "claim", _never_called)
+    result, claimed = verify.glucocore_claim(code, "mac-abc")
     assert result.ok is False
-    assert session == {}
+    assert "6 digits" in result.message
+    assert claimed == {}
 
 
-def test_a_signed_in_session_comes_back_with_the_patients(monkeypatch):
-    monkeypatch.setattr(glucocore, "login",
-                        lambda email, password, timeout=30: ("tok", "u-1"))
-    monkeypatch.setattr(glucocore, "list_patients",
-                        lambda token, userid, timeout=30: [{"userId": "p-1"}])
-    result, session = verify.glucocore_session("cassidy@example.invalid", "pw")
+def test_a_code_typed_with_spaces_is_still_a_code(monkeypatch):
+    """Nobody reads six digits out in one breath."""
+    seen = {}
+
+    def claim(code, hardware_id, name="", timeout=30):
+        seen["code"] = code
+        return {"deviceToken": "device-token", "device": {"id": "dev-42"}}
+
+    monkeypatch.setattr(glucocore, "claim", claim)
+    result, claimed = verify.glucocore_claim("123 456", "mac-abc")
     assert result.ok is True
-    assert "1 patient" in result.message
-    assert session == {"token": "tok", "userid": "u-1",
-                       "patients": [{"userId": "p-1"}]}
+    assert seen["code"] == "123456"
+    assert claimed["deviceToken"] == "device-token"
 
 
-def test_an_account_with_nobody_on_it_still_signed_in(monkeypatch):
-    monkeypatch.setattr(glucocore, "login",
-                        lambda email, password, timeout=30: ("tok", "u-1"))
-    monkeypatch.setattr(glucocore, "list_patients",
-                        lambda token, userid, timeout=30: [])
-    result, _session = verify.glucocore_session("cassidy@example.invalid", "pw")
-    assert result.ok is True
-    assert "no patients are visible yet" in result.message
+def test_a_device_with_no_hardware_id_cannot_pair(monkeypatch):
+    monkeypatch.setattr(glucocore, "claim", _never_called)
+    result, _claimed = verify.glucocore_claim("123456", "")
+    assert result.ok is False
 
 
-def test_a_rejected_glucocore_password_says_which_half_was_wrong(monkeypatch):
-    monkeypatch.setattr(glucocore, "login", _raise(http_error(401)))
-    result, session = verify.glucocore_session("cassidy@example.invalid",
-                                               "wrong")
-    assert "That email or password did not work." == result.message
-    assert session == {}
+def test_a_refused_code_says_the_one_thing_that_helps(monkeypatch):
+    """Wrong, expired, spent and too-fast all answer alike, on purpose."""
+    monkeypatch.setattr(glucocore, "claim", _raise(http_error(400)))
+    result, claimed = verify.glucocore_claim("123456", "mac-abc")
+    assert result.ok is False
+    assert "make a new one in GlucoCore" in result.message
+    assert claimed == {}
+
+
+def test_a_claim_that_answers_without_a_token_is_not_a_pairing(monkeypatch):
+    monkeypatch.setattr(glucocore, "claim",
+                        lambda *a, **k: {"device": {"id": "dev-42"}})
+    result, claimed = verify.glucocore_claim("123456", "mac-abc")
+    assert result.ok is False
+    assert claimed == {}
 
 
 def test_an_unreachable_glucocore_does_not_blame_a_typo(monkeypatch):
     """Nobody typed this address, so there is no spelling to check."""
-    monkeypatch.setattr(glucocore, "login",
+    monkeypatch.setattr(glucocore, "claim",
                         _raise(urllib.error.URLError(
                             socket.gaierror(-2, "Name or service not known"))))
-    result, _session = verify.glucocore_session("cassidy@example.invalid", "pw")
+    result, _claimed = verify.glucocore_claim("123456", "mac-abc")
     assert result.ok is False
     assert "spelling" not in result.message
-    # It names what could not be reached, so a fault report can say so.
     assert glucocore.GLUCOCORE_BASE in result.message
     assert "Name or service not known" in result.detail
 
@@ -329,27 +334,29 @@ def test_a_mistyped_nightscout_address_still_says_to_check_it(monkeypatch):
     assert "check the spelling" in result.message
 
 
-def test_a_glucocore_that_answers_from_the_wrong_place_says_so(monkeypatch):
-    monkeypatch.setattr(glucocore, "login", _raise(http_error(404)))
-    result, _session = verify.glucocore_session("cassidy@example.invalid", "pw")
-    assert "Nightscout" not in result.message
-    assert "may have moved" in result.message
+def test_the_code_is_never_shown_back(monkeypatch):
+    """It is single-use, but it is still somebody's key to an account."""
+    monkeypatch.setattr(glucocore, "claim",
+                        _raise(RuntimeError("claim failed for 123456")))
+    result, _claimed = verify.glucocore_claim("123456", "mac-abc")
+    assert "123456" not in result.message + result.detail
+    assert "***" in result.detail
 
 
-def test_a_glucocore_password_is_never_shown_back(monkeypatch):
-    secret = "sup3rsecret"
-    monkeypatch.setattr(glucocore, "login",
-                        _raise(RuntimeError(f"bad login for {secret}")))
-    result, _session = verify.glucocore_session("cassidy@example.invalid",
-                                                secret)
-    assert secret not in result.message + result.detail
-
-
-def test_a_slow_glucocore_hands_back_no_session(monkeypatch):
-    """A worker that overran must not leak a session nobody is waiting on."""
-    monkeypatch.setattr(glucocore, "login",
-                        lambda *a, **k: time.sleep(30))
-    result, session = verify.glucocore_session("cassidy@example.invalid", "pw",
-                                               timeout=0.3)
+def test_a_slow_service_hands_back_no_pairing(monkeypatch):
+    """A worker that overran must not leak a token nobody is waiting on."""
+    monkeypatch.setattr(glucocore, "claim", lambda *a, **k: time.sleep(30))
+    result, claimed = verify.glucocore_claim("123456", "mac-abc", timeout=0.3)
     assert result.ok is False
-    assert session == {}
+    assert claimed == {}
+
+
+def test_the_same_code_twice_in_a_row_is_throttled(monkeypatch):
+    """The service answers a rate-limit exactly as it answers a wrong code."""
+    monkeypatch.setattr(glucocore, "claim",
+                        lambda *a, **k: {"deviceToken": "t", "device": {}})
+    first, _ = verify.glucocore_claim("123456", "mac-abc")
+    second, _ = verify.glucocore_claim("123456", "mac-abc")
+    assert first.ok is True
+    assert second.ok is False
+    assert "wait" in second.message

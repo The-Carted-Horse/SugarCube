@@ -42,8 +42,8 @@ board, and recent treatments.
   global defaults.
 - **Guided setup from a phone** — a fresh device shows a QR code that opens
   a step-by-step wizard: Wi-Fi, where in the world it is so the clock is
-  right, who it's for, where each person's data comes from, and the
-  credentials for it, one question per screen. Credentials are
+  right, and the pairing code from GlucoCore that says who it shows, one
+  question per screen. Credentials are
   tested before they're saved, and nothing is written until the last step.
   With no network at all the device opens its own setup hotspot — join it
   and the wizard opens by itself, no second QR code to scan. Once a network
@@ -83,14 +83,16 @@ finishes by printing the URL and API secret for each person's uploader.
   [Tidepool](https://www.tidepool.org) account (one-time), then enter the
   Tidepool login in the web settings under their data source.
 - **Nightscout**: enter the site URL and its API secret or access token.
-- **GlucoCore**: open **Settings → GlucoCore**, sign in, and choose whose
-  glucose this display shows. Pairing can also be done during guided setup;
-  either way the account password is used once and only a read-only device
-  token is kept. Pairing adds those people to the display — anyone already
-  fed by Trio, twiist or Nightscout keeps the source they have — and who
-  appears, along with their ranges, then follows what GlucoCore says.
-  Unpairing on the same page turns them back into uploader-fed people, each
-  with their own port and API secret.
+- **GlucoCore**: in GlucoCore, open **Devices**, add this display and choose
+  who it shows; it gives you a six-digit code. Enter that under **Settings →
+  GlucoCore** on the display (or during guided setup) and it pairs. The code
+  lasts ten minutes and works once, and the display never handles the account
+  password — it holds a token scoped to those people, revocable from
+  GlucoCore. Pairing adds them to the display: anyone already fed by Trio,
+  twiist or Nightscout keeps the source they have. Who appears, what they are
+  called and their ranges then follow what GlucoCore says. Unpairing on the
+  same page turns them back into uploader-fed people, each with their own
+  port and API secret.
 
 ## The web app
 
@@ -132,7 +134,7 @@ guessing.
 |---|---|
 | `/settings/screen` | Live view of the physical screen, and Day/Night |
 | `/settings/people` | One row per person, then a page each |
-| `/settings/glucocore` | Pair this display with a GlucoCore account, or unpair it |
+| `/settings/glucocore` | Pair this display with a GlucoCore code, or unpair it |
 | `/settings/ranges` | In-range and urgent thresholds, staleness |
 | `/settings/network` | Wi-Fi: what it is on, and what else is nearby |
 | `/settings/clock` | Time zone (with what your phone thinks it is) |

@@ -19,7 +19,7 @@ import urllib.parse
 
 import pytest
 
-from glucocube import glucocore, network, onboarding, verify
+from glucocube import network, onboarding, verify
 from glucocube import webadmin
 from glucocube.config import load
 from glucocube.onboarding import (
@@ -40,23 +40,22 @@ from glucocube.webadmin import AdminServer
 
 from helpers import Client
 
-PATIENTS = [
-    {"userId": "pat-1", "name": "Ada"},
-    {"userId": "pat-2", "name": "Bo"},
-]
+PAIRED_CONFIG = {
+    "version": 2,
+    "patientIds": ["pat-1", "pat-2"],
+    "display": {"low": 75, "high": 165},
+    "perPatient": {"pat-1": {"label": "Ada"}, "pat-2": {"label": "Bo"}},
+}
 
 
-def draft_with(done=(), wifi=None, pending_verification=False) -> dict:
+def draft_with(done=(), wifi=None) -> dict:
     return {
         "version": onboarding.DRAFT_VERSION,
         "started_at": 0,
         "done": list(done),
         "wifi": wifi or {},
-        "account": {"email": "c@example.invalid",
-                    "pending_verification": pending_verification},
         "device_name": "",
-        "patient_ids": [],
-        "patient_names": {},
+        "pairing": {},
         "display": {},
         "admin_password": "",
         "admin_password_off": False,
@@ -68,16 +67,7 @@ def draft_with(done=(), wifi=None, pending_verification=False) -> dict:
 
 def test_the_steps_for_a_device_already_online():
     assert steps_for(draft_with()) == [
-        "welcome", "timezone", "account", "device_name", "patients",
-        "thresholds", "password", "review"]
-
-
-def test_an_account_being_created_here_has_an_email_to_check():
-    """Signing in to an existing account skips it; signing up cannot."""
-    assert "verify_email" not in steps_for(draft_with())
-    steps = steps_for(draft_with(pending_verification=True))
-    assert steps.index("account") < steps.index("verify_email")
-    assert steps.index("verify_email") < steps.index("device_name")
+        "welcome", "timezone", "pair", "thresholds", "password", "review"]
 
 
 def test_wifi_is_asked_about_only_when_the_device_has_none(monkeypatch):
@@ -94,10 +84,10 @@ def test_a_skipped_wifi_step_does_not_come_back(monkeypatch):
 
 
 def test_wifi_comes_before_anything_that_needs_the_internet(monkeypatch):
-    """Signing in to GlucoCore over no network at all is not a question."""
+    """Redeeming a code over no network at all is not a question."""
     monkeypatch.setattr(network, "hotspot_active_cached", lambda ttl=5.0: True)
     steps = steps_for(draft_with())
-    assert steps.index("wifi") < steps.index("account")
+    assert steps.index("wifi") < steps.index("pair")
 
 
 def test_the_time_zone_is_asked_before_anything_that_shows_a_time():
@@ -107,7 +97,7 @@ def test_the_time_zone_is_asked_before_anything_that_shows_a_time():
 
 def test_the_current_step_is_the_first_one_not_done():
     draft = draft_with(done=["welcome", "timezone"])
-    assert current_step(draft) == "account"
+    assert current_step(draft) == "pair"
 
 
 def test_a_finished_draft_rests_on_review():
@@ -117,22 +107,14 @@ def test_a_finished_draft_rests_on_review():
 
 @pytest.mark.parametrize("step, expected", [
     ("welcome", "timezone"),
-    ("timezone", "account"),
-    ("account", "device_name"),
-    ("device_name", "patients"),
-    ("patients", "thresholds"),
+    ("timezone", "pair"),
+    ("pair", "thresholds"),
     ("thresholds", "password"),
     ("password", "review"),
     ("review", "review"),
 ])
 def test_next_step_walks_the_list(step, expected):
     assert next_step(draft_with(), step) == expected
-
-
-def test_verifying_an_email_leads_back_into_the_wizard():
-    draft = draft_with(pending_verification=True)
-    assert next_step(draft, "account") == "verify_email"
-    assert next_step(draft, "verify_email") == "device_name"
 
 
 def test_next_step_from_an_unknown_step_recovers():
@@ -147,7 +129,7 @@ def test_a_step_maps_to_its_url(step):
 
 def test_every_step_has_a_screen_and_a_title():
     """The three lists that describe the wizard cannot drift apart."""
-    for step in steps_for(draft_with(pending_verification=True)):
+    for step in steps_for(draft_with()):
         assert step in onboarding.RENDERERS
         assert step in onboarding.TITLES
 
@@ -193,11 +175,10 @@ def test_seeding_carries_over_the_ranges_already_set(config_path):
     assert draft["display"]["high"] == 180
 
 
-def test_seeding_starts_with_nobody_chosen(config_path):
+def test_seeding_starts_with_nothing_paired(config_path):
     """Who appears comes from GlucoCore, not from what was on the device."""
     draft = seed_draft(str(config_path))
-    assert draft["patient_ids"] == []
-    assert draft["account"] == {}
+    assert draft["pairing"] == {}
     assert draft["committed_at"] is None
 
 
@@ -299,32 +280,18 @@ def wizard(tmp_path, store, monkeypatch):
 
 
 @pytest.fixture
-def account(monkeypatch):
-    """A GlucoCore account that signs in and can see two patients."""
-    monkeypatch.setattr(verify, "glucocore_login",
-                        lambda email, password, timeout=10.0: Result(
-                            True, "Signed in."))
-    monkeypatch.setattr(glucocore, "login",
-                        lambda email, password, timeout=30: ("session-token",
-                                                             "u-1"))
-    monkeypatch.setattr(glucocore, "list_patients",
-                        lambda token, userid, timeout=30: PATIENTS)
-    return PATIENTS
-
-
-@pytest.fixture
-def registers(monkeypatch):
-    """GlucoCore accepting the display, and recording what it was told."""
+def pairs(monkeypatch):
+    """A pairing code GlucoCore accepts, recording what the display sent."""
     calls = []
 
-    def register(token, name, hardware_id, patient_ids, config=None,
-                 timeout=60):
-        calls.append({"token": token, "name": name,
-                      "hardware_id": hardware_id,
-                      "patient_ids": list(patient_ids), "config": config})
-        return {"deviceToken": "device-token", "device": {"id": "dev-42"}}
+    def claim(code, hardware_id, name="", timeout=10.0):
+        calls.append({"code": code, "hardware_id": hardware_id, "name": name})
+        return (Result(True, "Paired."),
+                {"deviceToken": "device-token",
+                 "device": {"id": "dev-42", "name": name or "Kitchen display",
+                            "config": PAIRED_CONFIG}})
 
-    monkeypatch.setattr(glucocore, "register_device", register)
+    monkeypatch.setattr(verify, "glucocore_claim", claim)
     return calls
 
 
@@ -344,10 +311,7 @@ def step_many(client, path, pairs):
 def _through_to_the_password_step(client):
     step(client, "/setup/welcome")
     step(client, "/setup/timezone", tzmode="list", timezone="")
-    step(client, "/setup/account", mode="login", email="c@example.invalid",
-         password="pw")
-    step(client, "/setup/device_name", device_name="Kitchen display")
-    step(client, "/setup/patients", patient_ids="pat-1")
+    step(client, "/setup/pair", code="123456", device_name="Kitchen display")
     step(client, "/setup/thresholds")
 
 
@@ -359,10 +323,8 @@ def test_setup_starts_at_the_first_step(wizard):
 
 
 @pytest.mark.parametrize("path", ["/setup/welcome", "/setup/timezone",
-                                  "/setup/account", "/setup/verify_email",
-                                  "/setup/device_name", "/setup/patients",
-                                  "/setup/thresholds", "/setup/password",
-                                  "/setup/review"])
+                                  "/setup/pair", "/setup/thresholds",
+                                  "/setup/password", "/setup/review"])
 def test_every_screen_renders(wizard, path):
     client, _server, _path = wizard
     status, _headers, body = client.get(path, headers=AUTH)
@@ -377,18 +339,16 @@ def test_an_unknown_step_returns_to_the_start(wizard):
 
 
 def test_walking_the_whole_wizard_writes_one_config_at_the_end(
-        wizard, store, account, registers):
+        wizard, store, pairs):
     client, _server, path = wizard
     before = path.read_text()
 
     step(client, "/setup/welcome")
     step(client, "/setup/timezone", tzmode="list", timezone="Europe/London")
-    step(client, "/setup/account", mode="login", email="c@example.invalid",
-         password="pw")
-    step(client, "/setup/device_name", device_name="Kitchen display")
-    step(client, "/setup/patients", patient_ids="pat-1")
+    step(client, "/setup/pair", code="123456", device_name="Kitchen display")
 
-    # Nothing is written until the last step.
+    # Nothing is written until the last step — the pairing included. A code
+    # is spent by then, but the device it belongs to is still only a draft.
     assert path.read_text() == before
 
     step(client, "/setup/thresholds", low="80", high="160")
@@ -398,44 +358,42 @@ def test_walking_the_whole_wizard_writes_one_config_at_the_end(
     assert status == 200
     assert b"GlucoCube" in body
     config = load(path)
-    assert [u.name for u in config.users] == ["Ada"]
+    assert [u.name for u in config.users] == ["Ada", "Bo"]
     assert config.users[0].source["patient_id"] == "pat-1"
     assert config.glucocore.device_token == "device-token"
     assert config.glucocore.name == "Kitchen display"
     assert config.display.timezone == "Europe/London"
     assert (config.display.low, config.display.high) == (80, 160)
     assert config.admin_password == "newpassword"
-    # The draft is left as a tombstone, without the credentials in it.
+    # The draft is left as a tombstone, without the token in it.
     assert load_draft(store) == {}
 
 
-def test_the_display_is_registered_with_what_was_answered(
-        wizard, account, registers):
+def test_the_code_and_this_device_are_the_whole_request(wizard, pairs):
     client, _server, _path = wizard
     _through_to_the_password_step(client)
     step(client, "/setup/password", admin_password="")
     step(client, "/setup/review")
 
-    assert len(registers) == 1
-    sent = registers[0]
-    assert sent["token"] == "session-token"
-    assert sent["name"] == "Kitchen display"
-    assert sent["patient_ids"] == ["pat-1"]
+    assert len(pairs) == 1
+    sent = pairs[0]
+    assert sent["code"] == "123456"
     assert sent["hardware_id"]
-    assert sent["config"]["patientIds"] == ["pat-1"]
+    assert sent["name"] == "Kitchen display"
 
 
-def test_two_people_each_get_their_own_panel_and_port(wizard, account,
-                                                      registers):
+def test_the_wizard_never_asks_for_a_password_for_the_account(wizard):
+    """A Pi on a shelf holding somebody's password is the thing to avoid."""
+    client, _server, _path = wizard
+    _status, _headers, body = client.get("/setup/pair", headers=AUTH)
+    assert b'name="code"' in body
+    assert b'type="password"' not in body
+    assert b'name="email"' not in body
+
+
+def test_two_people_each_get_their_own_panel_and_port(wizard, pairs):
     client, _server, path = wizard
-    step(client, "/setup/welcome")
-    step(client, "/setup/timezone", tzmode="list", timezone="")
-    step(client, "/setup/account", mode="login", email="c@example.invalid",
-         password="pw")
-    step(client, "/setup/device_name", device_name="Hall")
-    step_many(client, "/setup/patients", [("patient_ids", "pat-1"),
-                                          ("patient_ids", "pat-2")])
-    step(client, "/setup/thresholds")
+    _through_to_the_password_step(client)
     step(client, "/setup/password", admin_password="")
     step(client, "/setup/review")
 
@@ -444,17 +402,15 @@ def test_two_people_each_get_their_own_panel_and_port(wizard, account,
     assert config.users[0].port != config.users[1].port
 
 
-def test_the_placeholders_an_image_ships_with_do_not_survive(
-        wizard, account, registers):
+def test_the_placeholders_an_image_ships_with_do_not_survive(wizard, pairs):
     client, _server, path = wizard
     _through_to_the_password_step(client)
     step(client, "/setup/password", admin_password="")
     step(client, "/setup/review")
-    assert [u.name for u in load(path).users] == ["Ada"]
+    assert [u.name for u in load(path).users] == ["Ada", "Bo"]
 
 
-def test_a_person_fed_by_an_uploader_is_left_alone(wizard, account,
-                                                   registers):
+def test_a_person_fed_by_an_uploader_is_left_alone(wizard, pairs):
     client, server, path = wizard
     raw = json.loads(path.read_text())
     raw["users"] = [{"name": "Cass", "port": 1337, "api_secret": "cass-secret",
@@ -473,164 +429,62 @@ def test_a_person_fed_by_an_uploader_is_left_alone(wizard, account,
     assert users["Ada"].source["patient_id"] == "pat-1"
 
 
-# --------------------------------------------------------- the account ----
+# ------------------------------------------------------------- pairing ----
 
-def test_a_refused_sign_in_is_shown_on_the_same_step(wizard, monkeypatch):
+def test_the_bands_the_pairing_carries_fill_in_the_next_question(wizard,
+                                                                 pairs):
+    """The ranges step opens on what GlucoCore already holds for it."""
     client, _server, _path = wizard
-    monkeypatch.setattr(verify, "glucocore_login",
-                        lambda *a, **k: Result(
-                            False, "That email or password did not work."))
-    status, _headers, body = step(client, "/setup/account", mode="login",
-                                  email="c@example.invalid", password="wrong")
+    step(client, "/setup/pair", code="123456")
+    _status, _headers, body = client.get("/setup/thresholds", headers=AUTH)
+    assert b'value="75"' in body
+    assert b'value="165"' in body
+
+
+def test_a_refused_code_stays_on_the_same_step(wizard, monkeypatch):
+    client, _server, _path = wizard
+    monkeypatch.setattr(verify, "glucocore_claim",
+                        lambda *a, **k: (
+                            Result(False, "That code was not accepted.",
+                                   "HTTPError: 400"), {}))
+    status, _headers, body = step(client, "/setup/pair", code="000000")
     assert status == 400
-    assert b"did not work" in body
-
-
-def test_a_failed_sign_in_shows_what_actually_happened(wizard, monkeypatch):
-    """Same as the settings page: the reason must not be swallowed."""
-    client, _server, _path = wizard
-    monkeypatch.setattr(verify, "glucocore_login",
-                        lambda *a, **k: Result(
-                            False, "Could not reach GlucoCore.",
-                            "URLError: Name or service not known"))
-    _status, _headers, body = step(client, "/setup/account", mode="login",
-                                   email="c@example.invalid", password="pw")
+    assert b"was not accepted" in body
+    # The detail says why, the way the settings page does.
     assert b"Technical detail" in body
-    assert b"Name or service not known" in body
 
 
-def test_signing_in_lists_the_patients_to_choose_from(wizard, store, account):
+def test_a_pairing_with_nobody_on_it_is_refused(wizard, monkeypatch):
     client, _server, _path = wizard
-    status, headers, _body = step(client, "/setup/account", mode="login",
-                                  email="c@example.invalid", password="pw")
-    assert (status, headers["Location"]) == (303, "/setup/device_name")
-    assert load_draft(store)["available_patients"] == PATIENTS
-    _status, _headers, body = client.get("/setup/patients", headers=AUTH)
-    assert b"Ada" in body and b"Bo" in body
-
-
-def test_creating_an_account_waits_for_the_email_to_be_verified(
-        wizard, store, monkeypatch):
-    client, _server, _path = wizard
-    monkeypatch.setattr(glucocore, "signup",
-                        lambda email, password, name="", timeout=30: {})
-    status, headers, _body = step(client, "/setup/account", mode="signup",
-                                  email="c@example.invalid",
-                                  password="sup3rsecret", name="Cass")
-    assert (status, headers["Location"]) == (303, "/setup/verify_email")
-    assert load_draft(store)["account"]["pending_verification"] is True
-
-
-def test_a_signup_that_the_service_refuses_says_so(wizard, monkeypatch):
-    client, _server, _path = wizard
-    monkeypatch.setattr(glucocore, "signup",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            RuntimeError("that email is already registered")))
-    status, _headers, body = step(client, "/setup/account", mode="signup",
-                                  email="c@example.invalid", password="pw")
+    monkeypatch.setattr(verify, "glucocore_claim",
+                        lambda *a, **k: (
+                            Result(True, "Paired."),
+                            {"deviceToken": "device-token",
+                             "device": {"id": "dev-42",
+                                        "config": {"patientIds": []}}}))
+    status, _headers, body = step(client, "/setup/pair", code="123456")
     assert status == 400
-    assert b"already registered" in body
+    assert b"nobody on it yet" in body
 
 
-def test_a_verified_account_carries_on_into_the_wizard(wizard, store,
-                                                       monkeypatch, account):
+def test_a_code_is_not_spent_twice(wizard, pairs):
+    """It is redeemed once, at its own step; review reads what came back."""
     client, _server, _path = wizard
-    monkeypatch.setattr(glucocore, "signup",
-                        lambda email, password, name="", timeout=30: {})
-    step(client, "/setup/welcome")
-    step(client, "/setup/timezone", tzmode="list", timezone="")
-    step(client, "/setup/account", mode="signup", email="c@example.invalid",
-         password="sup3rsecret")
-    # Verifying drops the step from the list it was in, so "what is next"
-    # is the first thing still unanswered rather than the step after it.
-    status, headers, _body = step(client, "/setup/verify_email")
-    assert (status, headers["Location"]) == (303, "/setup/device_name")
-    draft = load_draft(store)
-    assert draft["account"]["pending_verification"] is False
-    # The password was only held to sign in with once verification landed.
-    assert "password" not in draft["account"]
+    _through_to_the_password_step(client)
+    step(client, "/setup/password", admin_password="")
+    step(client, "/setup/review")
+    assert len(pairs) == 1
 
 
-def test_an_email_not_verified_yet_comes_back_to_the_same_step(
-        wizard, monkeypatch):
-    client, _server, _path = wizard
-    monkeypatch.setattr(glucocore, "signup",
-                        lambda email, password, name="", timeout=30: {})
-    step(client, "/setup/account", mode="signup", email="c@example.invalid",
-         password="sup3rsecret")
-    monkeypatch.setattr(verify, "glucocore_login",
-                        lambda *a, **k: Result(False, "Not verified yet."))
-    status, _headers, body = step(client, "/setup/verify_email")
-    assert status == 400
-    assert b"Not verified yet." in body
-
-
-# ------------------------------------------------- the display, and who ----
-
-def test_the_display_needs_a_name(wizard):
-    client, _server, _path = wizard
-    status, _headers, body = step(client, "/setup/device_name",
-                                  device_name="   ")
-    assert status == 400
-    assert b"Enter a name for this display" in body
-
-
-def test_choosing_nobody_is_refused(wizard):
-    client, _server, _path = wizard
-    status, _headers, body = step(client, "/setup/patients")
-    assert status == 400
-    assert b"Choose at least one person" in body
-
-
-def test_the_chosen_names_are_remembered_for_the_review(wizard, store,
-                                                        account):
-    client, _server, _path = wizard
-    step(client, "/setup/account", mode="login", email="c@example.invalid",
-         password="pw")
-    step(client, "/setup/patients", patient_ids="pat-2")
-    assert load_draft(store)["patient_names"] == {"pat-2": "Bo"}
-    _status, _headers, body = client.get("/setup/review", headers=AUTH)
-    assert b"Bo" in body
-
-
-def test_a_review_missing_an_answer_does_not_write_anything(wizard, account,
-                                                            registers):
-    """Straight to the last step with nothing filled in."""
+def test_a_review_with_nothing_paired_writes_nothing(wizard, pairs):
+    """Straight to the last step without ever entering a code."""
     client, _server, path = wizard
     before = path.read_text()
     status, _headers, body = step(client, "/setup/review")
     assert status == 400
-    assert b"go back and complete each step" in body
+    assert b"not paired yet" in body
     assert path.read_text() == before
-    assert not registers
-
-
-def test_a_registration_that_fails_leaves_the_device_as_it_was(
-        wizard, account, monkeypatch):
-    client, _server, path = wizard
-    before = path.read_text()
-    monkeypatch.setattr(glucocore, "register_device",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            RuntimeError("GlucoCore is having a moment")))
-    _through_to_the_password_step(client)
-    step(client, "/setup/password", admin_password="")
-    status, _headers, body = step(client, "/setup/review")
-    assert status == 500
-    assert b"having a moment" in body
-    assert path.read_text() == before
-
-
-def test_a_registration_with_no_token_is_not_a_pairing(wizard, account,
-                                                       monkeypatch):
-    client, _server, path = wizard
-    before = path.read_text()
-    monkeypatch.setattr(glucocore, "register_device",
-                        lambda *a, **k: {"device": {"id": "dev-42"}})
-    _through_to_the_password_step(client)
-    step(client, "/setup/password", admin_password="")
-    status, _headers, _body = step(client, "/setup/review")
-    assert status == 500
-    assert path.read_text() == before
+    assert not pairs
 
 
 # ------------------------------------------------------------ the clock ----
@@ -654,7 +508,7 @@ def test_a_short_password_is_refused(wizard):
     assert b"at least 6 characters" in body
 
 
-def test_a_blank_password_keeps_the_one_in_use(wizard, account, registers):
+def test_a_blank_password_keeps_the_one_in_use(wizard, pairs):
     client, _server, path = wizard
     _through_to_the_password_step(client)
     step(client, "/setup/password", admin_password="")
@@ -667,8 +521,7 @@ def test_a_blank_password_keeps_the_one_in_use(wizard, account, registers):
 # Someone whose device is only reachable from a network they trust can say
 # so here rather than being handed a password they then have to look up.
 
-def test_choosing_no_password_finishes_without_one(wizard, account,
-                                                   registers):
+def test_choosing_no_password_finishes_without_one(wizard, pairs):
     client, server, path = wizard
     _through_to_the_password_step(client)
     step(client, "/setup/password", mode="off")
@@ -690,8 +543,8 @@ def test_the_password_step_remembers_which_way_it_was_answered(wizard):
     assert b'value="off" checked' in body
 
 
-def test_choosing_a_password_after_no_password_drops_the_flag(
-        wizard, account, registers):
+def test_choosing_a_password_after_no_password_drops_the_flag(wizard,
+                                                              pairs):
     client, _server, path = wizard
     _through_to_the_password_step(client)
     step(client, "/setup/password", mode="off")
@@ -712,7 +565,7 @@ def test_a_short_password_comes_back_on_the_card_it_was_sent_from(wizard):
     assert b'value="on" checked' in body
 
 
-def test_the_review_says_which_way_the_page_will_be_reachable(wizard, account):
+def test_the_review_says_which_way_the_page_will_be_reachable(wizard, pairs):
     client, _server, _path = wizard
     _through_to_the_password_step(client)
     step(client, "/setup/password", mode="off")
@@ -780,28 +633,20 @@ def test_setup_can_still_be_re_run_deliberately(wizard, store):
     assert (status, headers["Location"]) == (303, "/setup/welcome")
 
 
-def test_the_committed_draft_keeps_no_credentials(wizard, store, account,
-                                                  registers, monkeypatch):
-    """The draft holds a GlucoCore session; only a tombstone stays."""
+def test_the_committed_draft_keeps_no_credentials(wizard, store, pairs):
+    """The draft holds this display's token until it is written down."""
     client, _server, _path = wizard
-    monkeypatch.setattr(glucocore, "signup",
-                        lambda email, password, name="", timeout=30: {})
-    step(client, "/setup/welcome")
-    step(client, "/setup/timezone", tzmode="list", timezone="")
-    step(client, "/setup/account", mode="signup", email="c@example.invalid",
-         password="sup3rsecret")
-    step(client, "/setup/verify_email")
-    step(client, "/setup/device_name", device_name="Kitchen display")
-    step(client, "/setup/patients", patient_ids="pat-1")
-    step(client, "/setup/thresholds")
+    _through_to_the_password_step(client)
+    # It is in the draft while the wizard is in flight — that is what lets
+    # the last step write it without spending the code again.
+    assert "device-token" in json.dumps(load_draft(store))
+
     step(client, "/setup/password")
     step(client, "/setup/review")
 
     tombstone = store.get_params(onboarding.SETUP_KEY)
     assert tombstone["committed_at"]
-    dumped = json.dumps(tombstone)
-    assert "sup3rsecret" not in dumped
-    assert "session-token" not in dumped
+    assert "device-token" not in json.dumps(tombstone)
     assert load_draft(store) == {}
 
 

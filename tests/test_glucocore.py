@@ -65,19 +65,32 @@ class GlucoCoreRequestTest(unittest.TestCase):
             sent["returned"] = fn()
         return sent
 
-    def test_a_login_goes_to_the_services_own_host(self):
+    def test_a_claim_goes_to_the_services_own_host(self):
         sent = self._capture(
-            lambda: glucocore.login("cassidy@example.invalid", "pw"),
-            json.dumps({"userid": "u-1"}).encode())
-        self.assertEqual(sent["url"], "https://glucocore.app/auth/login")
+            lambda: glucocore.claim("123456", "mac-abc", "Kitchen display"),
+            json.dumps({"data": {"deviceToken": "device-token"}}).encode())
+        self.assertEqual(sent["url"], "https://glucocore.app/v1/sugar_cubes/claim")
         self.assertEqual(sent["method"], "POST")
-        self.assertEqual(sent["returned"], ("session-token", "u-1"))
+        self.assertEqual(json.loads(sent["body"]),
+                         {"code": "123456", "hardwareId": "mac-abc",
+                          "name": "Kitchen display"})
+        self.assertEqual(sent["returned"], {"deviceToken": "device-token"})
 
-    def test_a_login_that_answers_without_a_token_is_an_error(self):
-        with self.assertRaises(RuntimeError):
-            self._capture(
-                lambda: glucocore.login("cassidy@example.invalid", "pw"),
-                json.dumps({}).encode())
+    def test_a_claim_carries_nothing_that_could_authenticate_it(self):
+        """The whole point of the code: a display has no credential yet."""
+        sent = self._capture(
+            lambda: glucocore.claim("123456", "mac-abc"),
+            json.dumps({"data": {}}).encode())
+        headers = {name.lower() for name in sent["headers"]}
+        self.assertNotIn(glucocore.SESSION_HEADER, headers)
+        self.assertNotIn("authorization", headers)
+
+    def test_a_claim_without_a_name_does_not_send_an_empty_one(self):
+        """Blank means "keep the name the account gave it"."""
+        sent = self._capture(
+            lambda: glucocore.claim("123456", "mac-abc"),
+            json.dumps({"data": {}}).encode())
+        self.assertNotIn("name", json.loads(sent["body"]))
 
     def test_the_device_token_travels_as_the_session_header(self):
         sent = self._capture(
@@ -90,16 +103,21 @@ class GlucoCoreRequestTest(unittest.TestCase):
                    for name, value in sent["headers"].items()}
         self.assertEqual(headers[glucocore.SESSION_HEADER], "device-token")
 
-    def test_registering_sends_what_the_display_was_told_to_show(self):
-        sent = self._capture(lambda: glucocore.register_device(
-            "session-token", "Kitchen display", "mac-abc", ["pat-1"],
-            config={"version": 1}))
-        self.assertEqual(sent["url"], "https://glucocore.app/v1/sugar_cubes")
-        body = json.loads(sent["body"])
-        self.assertEqual(body["name"], "Kitchen display")
-        self.assertEqual(body["hardwareId"], "mac-abc")
-        self.assertEqual(body["patientIds"], ["pat-1"])
-        self.assertEqual(body["config"], {"version": 1})
+    def test_the_data_read_asks_for_the_types_the_display_draws(self):
+        sent = self._capture(lambda: glucocore.fetch_patient_data(
+            "device-token", "pat-1", "2026-01-01T00:00:00.000Z"), b"[]")
+        self.assertIn("/data/pat-1", sent["url"])
+        self.assertIn("type=cbg,bolus,food,dosingDecision", sent["url"])
+        self.assertIn("startDate=2026-01-01T00:00:00.000Z", sent["url"])
+
+    def test_an_envelope_is_unwrapped_and_a_bare_answer_is_not(self):
+        """The service wraps most answers in `data` and a few not at all."""
+        wrapped = self._capture(lambda: glucocore.get_config("t"),
+                                json.dumps({"data": {"version": 3}}).encode())
+        self.assertEqual(wrapped["returned"], {"version": 3})
+        bare = self._capture(lambda: glucocore.get_config("t"),
+                             json.dumps({"version": 3}).encode())
+        self.assertEqual(bare["returned"], {"version": 3})
 
 
 if __name__ == "__main__":

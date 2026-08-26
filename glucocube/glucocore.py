@@ -1,6 +1,5 @@
 """GlucoCore cloud client — login, registration, config sync, heartbeat."""
 
-import base64
 import json
 import logging
 import os
@@ -38,44 +37,22 @@ def _request(method: str, path: str, *, token: str | None = None,
     return payload
 
 
-def login(email: str, password: str, timeout: float = 30) -> tuple[str, str]:
-    creds = base64.b64encode(f"{email}:{password}".encode()).decode()
-    req = urllib.request.Request(
-        f"{GLUCOCORE_BASE}/auth/login",
-        method="POST",
-        headers={"Authorization": f"Basic {creds}"},
-        data=b"",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        token = resp.headers.get(SESSION_HEADER)
-        userid = (json.loads(resp.read()) or {}).get("userid")
-    if not token or not userid:
-        raise RuntimeError("GlucoCore login gave no session token/userid")
-    return token, userid
+def claim(code: str, hardware_id: str, name: str = "",
+          timeout: float = 60) -> dict:
+    """Redeem a pairing code for this display's own token.
 
+    The account mints a six-digit code in GlucoCore and reads it out to
+    the display. This is the only call on that face with nothing to
+    authenticate with, which is the point of it: the alternative is a Pi
+    on a shelf that has been told somebody's password.
 
-def signup(email: str, password: str, name: str = "", timeout: float = 30) -> dict:
-    return _request(
-        "POST",
-        "/v1/signup",
-        body={"email": email, "password": password, "confirmation": password, "name": name},
-        timeout=timeout,
-    )
-
-
-def list_patients(token: str, user_id: str, timeout: float = 30) -> list[dict]:
-    payload = _request("GET", f"/v1/users/{user_id}/accessible_patients",
-                       token=token, timeout=timeout)
-    return list(payload.get("patients") or [])
-
-
-def register_device(token: str, name: str, hardware_id: str,
-                    patient_ids: list[str], config: dict | None = None,
-                    timeout: float = 60) -> dict:
-    body = {"name": name, "hardwareId": hardware_id, "patientIds": patient_ids}
-    if config:
-        body["config"] = config
-    return _request("POST", "/v1/sugar_cubes", token=token, body=body, timeout=timeout)
+    The answer carries the device — its config included, so who to show
+    and their ranges arrive with the token — and the token itself.
+    """
+    body: dict = {"code": code, "hardwareId": hardware_id}
+    if name:
+        body["name"] = name
+    return _request("POST", "/v1/sugar_cubes/claim", body=body, timeout=timeout)
 
 
 def get_config(device_token: str, timeout: float = 30) -> dict:

@@ -42,14 +42,11 @@ class PushListener(threading.Thread):
     def _handle_config(self, remote: dict, version: int) -> None:
         if version <= self._last_version():
             return
-        patient_names = {}
-        for patient_id in remote.get("patientIds") or []:
-            patient_names[patient_id] = remote.get("patientNames", {}).get(
-                patient_id, patient_id,
-            )
-        config = sync.apply_remote_config(
-            self.config_path, remote, version, patient_names=patient_names,
-        )
+        # Names come out of the config's own `perPatient` labels. This used
+        # to read a `patientNames` map that the service has never sent, so
+        # every person on a pushed config was named by their patient id.
+        config = sync.apply_remote_config(self.config_path, remote, version,
+                                          store=self.store)
         self._save_version(version)
         self.on_config(config)
 
