@@ -105,6 +105,16 @@ def _network_message(exc: Exception, secret: str, what: str, *,
     """
     detail = _scrub(f"{type(exc).__name__}: {exc}", secret)
     if isinstance(exc, urllib.error.HTTPError):
+        if 300 <= exc.code < 400:
+            # The client follows a permanent redirect that stays on the
+            # service. One that reaches here went somewhere else, or never
+            # settled — neither is something a person can fix by retyping.
+            where = exc.headers.get("Location") if exc.headers else ""
+            return Result(False, f"{what} is redirecting this device"
+                                 + (f" to {where}" if where else "")
+                                 + ", and it will not follow that. The"
+                                   " address it is set to use may be wrong.",
+                          detail)
         if exc.code in (401, 403):
             return Result(False, f"{what} rejected those credentials.", detail)
         if exc.code == 404:

@@ -360,3 +360,17 @@ def test_the_same_code_twice_in_a_row_is_throttled(monkeypatch):
     assert first.ok is True
     assert second.ok is False
     assert "wait" in second.message
+
+
+def test_a_redirect_the_client_would_not_follow_explains_itself(monkeypatch):
+    """"answered with an error (308)" is not something anyone can act on."""
+    import email.message
+    headers = email.message.Message()
+    headers["Location"] = "https://elsewhere.example/collect"
+    monkeypatch.setattr(glucocore, "claim", _raise(urllib.error.HTTPError(
+        "https://glucocore.app/v1/sugar_cubes/claim", 308, "Permanent Redirect",
+        headers, None)))
+    result, _claimed = verify.glucocore_claim("123456", "mac-abc")
+    assert result.ok is False
+    assert "redirecting" in result.message
+    assert "elsewhere.example" in result.message

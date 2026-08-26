@@ -7,10 +7,13 @@ not exist, and every sign-in failed with "could not reach that address",
 so it is pinned here rather than left to a constant nobody reads.
 """
 
+import email.message
 import importlib
+import io
 import json
 import os
 import unittest
+import urllib.error
 from unittest import mock
 
 from glucocube import glucocore
@@ -118,6 +121,152 @@ class GlucoCoreRequestTest(unittest.TestCase):
         bare = self._capture(lambda: glucocore.get_config("t"),
                              json.dumps({"version": 3}).encode())
         self.assertEqual(bare["returned"], {"version": 3})
+
+
+class RedirectTest(unittest.TestCase):
+    """A POST that is 308'd.
+
+    urllib refuses to follow one — `redirect_request` raises for anything
+    that is not GET or HEAD — so a service behind an apex-to-www redirect
+    answered every sign-in and every pairing with "an error (308)".
+    """
+
+    def _urlopen(self, answers):
+        """A urlopen that 308s until it runs out of answers."""
+        seen = []
+
+        class Response:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self):
+                return self._payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def urlopen(request, timeout=None, **kwargs):
+            seen.append({"url": request.full_url,
+                         "method": request.get_method(),
+                         "body": request.data,
+                         "headers": dict(request.header_items())})
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return Response(answer)
+
+        return urlopen, seen
+
+    @staticmethod
+    def _moved(location, code=308):
+        headers = email.message.Message()
+        headers["Location"] = location
+        return urllib.error.HTTPError("https://glucocore.app/v1/sugar_cubes/claim",
+                                      code, "Permanent Redirect", headers,
+                                      io.BytesIO(b""))
+
+    def test_a_redirected_post_arrives_at_the_place_it_was_sent(self):
+        urlopen, seen = self._urlopen([
+            self._moved("https://www.glucocore.app/v1/sugar_cubes/claim"),
+            json.dumps({"data": {"deviceToken": "device-token"}}).encode(),
+        ])
+        with mock.patch("urllib.request.urlopen", urlopen):
+            answer = glucocore.claim("123456", "mac-abc")
+        self.assertEqual(answer, {"deviceToken": "device-token"})
+        self.assertEqual(seen[1]["url"],
+                         "https://www.glucocore.app/v1/sugar_cubes/claim")
+
+    def test_the_method_and_the_body_survive_the_redirect(self):
+        """Which is the whole reason urllib will not do this for us."""
+        urlopen, seen = self._urlopen([
+            self._moved("https://www.glucocore.app/v1/sugar_cubes/claim"),
+            json.dumps({"data": {}}).encode(),
+        ])
+        with mock.patch("urllib.request.urlopen", urlopen):
+            glucocore.claim("123456", "mac-abc")
+        self.assertEqual(seen[1]["method"], "POST")
+        self.assertEqual(json.loads(seen[1]["body"]),
+                         {"code": "123456", "hardwareId": "mac-abc"})
+
+    def test_a_relative_location_is_resolved_against_the_service(self):
+        urlopen, seen = self._urlopen([
+            self._moved("/v1/sugar_cubes/claim/"),
+            json.dumps({"data": {}}).encode(),
+        ])
+        with mock.patch("urllib.request.urlopen", urlopen):
+            glucocore.claim("123456", "mac-abc")
+        self.assertEqual(seen[1]["url"],
+                         "https://glucocore.app/v1/sugar_cubes/claim/")
+
+    def test_the_token_does_not_travel_off_the_service(self):
+        """A Location anywhere else is where a device token gets stolen."""
+        urlopen, _seen = self._urlopen([
+            self._moved("https://elsewhere.example/collect"),
+        ])
+        with mock.patch("urllib.request.urlopen", urlopen):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                glucocore.get_config("device-token")
+        self.assertEqual(caught.exception.code, 308)
+
+    def test_a_redirect_off_https_is_refused(self):
+        urlopen, _seen = self._urlopen([
+            self._moved("http://glucocore.app/v1/sugar_cubes/claim"),
+        ])
+        with mock.patch("urllib.request.urlopen", urlopen):
+            with self.assertRaises(urllib.error.HTTPError):
+                glucocore.claim("123456", "mac-abc")
+
+    def test_the_session_header_is_carried_across_the_redirect(self):
+        urlopen, seen = self._urlopen([
+            self._moved("https://www.glucocore.app/v1/sugar_cubes/me/heartbeat"),
+            json.dumps({"data": {"ok": True}}).encode(),
+        ])
+        with mock.patch("urllib.request.urlopen", urlopen):
+            glucocore.heartbeat("device-token", {"pushConnected": True})
+        carried = {name.lower(): value
+                   for name, value in seen[1]["headers"].items()}
+        self.assertEqual(carried[glucocore.SESSION_HEADER], "device-token")
+
+    def test_a_redirect_that_never_settles_gives_up(self):
+        urlopen, _seen = self._urlopen([
+            self._moved("https://www.glucocore.app/a"),
+            self._moved("https://glucocore.app/a"),
+            self._moved("https://www.glucocore.app/a"),
+            self._moved("https://glucocore.app/a"),
+        ])
+        with mock.patch("urllib.request.urlopen", urlopen):
+            with self.assertRaises(urllib.error.URLError):
+                glucocore.claim("123456", "mac-abc")
+
+    def test_an_ordinary_error_is_still_an_error(self):
+        urlopen, _seen = self._urlopen([
+            urllib.error.HTTPError("https://glucocore.app/v1/sugar_cubes/claim",
+                                   400, "Bad Request", email.message.Message(),
+                                   io.BytesIO(b"")),
+        ])
+        with mock.patch("urllib.request.urlopen", urlopen):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                glucocore.claim("000000", "mac-abc")
+        self.assertEqual(caught.exception.code, 400)
+
+
+class SameSiteTest(unittest.TestCase):
+    def test_where_a_token_may_follow(self):
+        for before, after, allowed in [
+            ("https://glucocore.app/x", "https://www.glucocore.app/x", True),
+            ("https://www.glucocore.app/x", "https://glucocore.app/x", True),
+            ("https://glucocore.app/x", "https://glucocore.app/y", True),
+            ("https://glucocore.app/x", "https://glucocore.app.evil/x", False),
+            ("https://glucocore.app/x", "https://evil.example/x", False),
+            ("https://glucocore.app/x", "http://glucocore.app/x", False),
+            ("https://glucocore.app/x", "/relative", False),
+            ("http://localhost:3000/x", "http://localhost:3000/y", True),
+        ]:
+            with self.subTest(after=after):
+                self.assertIs(glucocore._same_site(before, after), allowed)
 
 
 if __name__ == "__main__":
