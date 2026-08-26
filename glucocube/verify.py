@@ -135,11 +135,22 @@ def tidepool_login(email: str, password: str,
     return _guarded(f"tidepool:{email}", run, timeout)
 
 
-def glucocore_login(email: str, password: str,
-                    timeout: float = DEFAULT_TIMEOUT) -> Result:
+def glucocore_session(email: str, password: str,
+                      timeout: float = DEFAULT_TIMEOUT) -> tuple[Result, dict]:
+    """Sign in, and hand back the session token and the patients on it.
+
+    Pairing needs the token it just proved works. Signing in twice — once
+    to check, once to keep — would trip the throttle above and, worse,
+    could succeed the first time and fail the second, so the check and
+    the thing being checked are one call.
+
+    The session is returned only on success; the caller stores it, and it
+    is the one place a GlucoCore password is held long enough to be used.
+    """
     email = (email or "").strip()
     if not email or not password:
-        return Result(False, "Enter your GlucoCore email and password.")
+        return Result(False, "Enter your GlucoCore email and password."), {}
+    session: dict = {}
 
     def run() -> Result:
         try:
@@ -150,12 +161,21 @@ def glucocore_login(email: str, password: str,
             if isinstance(exc, urllib.error.HTTPError) and exc.code == 401:
                 return Result(False, "That email or password did not work.", result.detail)
             return result
+        session.update(token=token, userid=userid, patients=list(patients))
         count = len(patients)
         if count == 0:
             return Result(True, "Signed in, but no patients are visible yet.")
         return Result(True, f"Signed in — {count} patient{'s' if count != 1 else ''} available.")
 
-    return _guarded(f"glucocore:{email}", run, timeout)
+    result = _guarded(f"glucocore:{email}", run, timeout)
+    # _bounded abandons a worker that overran, so a late success must not
+    # leak out as a session nobody is waiting for any more.
+    return (result, session) if result.ok else (result, {})
+
+
+def glucocore_login(email: str, password: str,
+                    timeout: float = DEFAULT_TIMEOUT) -> Result:
+    return glucocore_session(email, password, timeout)[0]
 
 
 def nightscout_site(url: str, key: str,

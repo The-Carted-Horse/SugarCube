@@ -1,7 +1,6 @@
 """Onboarding step sequence for GlucoCore pairing."""
 
 import unittest
-from unittest.mock import MagicMock
 
 from glucocube import onboarding
 

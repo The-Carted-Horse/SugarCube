@@ -54,6 +54,9 @@ class GlucoCoreConfig:
     device_id: str = ""
     device_token: str = ""
     hardware_id: str = ""
+    # What this display is called in GlucoCore. Kept locally so the
+    # settings page can say which device this is without a round trip.
+    name: str = ""
 
 
 @dataclass
@@ -302,6 +305,7 @@ def load(path: str | Path) -> Config:
             device_id=str(gc_raw.get("device_id") or ""),
             device_token=str(gc_raw.get("device_token") or ""),
             hardware_id=str(gc_raw.get("hardware_id") or ""),
+            name=str(gc_raw.get("name") or ""),
         )
     return Config(
         users=users,

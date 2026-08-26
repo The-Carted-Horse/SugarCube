@@ -83,6 +83,14 @@ finishes by printing the URL and API secret for each person's uploader.
   [Tidepool](https://www.tidepool.org) account (one-time), then enter the
   Tidepool login in the web settings under their data source.
 - **Nightscout**: enter the site URL and its API secret or access token.
+- **GlucoCore**: open **Settings → GlucoCore**, sign in, and choose whose
+  glucose this display shows. Pairing can also be done during guided setup;
+  either way the account password is used once and only a read-only device
+  token is kept. Pairing adds those people to the display — anyone already
+  fed by Trio, twiist or Nightscout keeps the source they have — and who
+  appears, along with their ranges, then follows what GlucoCore says.
+  Unpairing on the same page turns them back into uploader-fed people, each
+  with their own port and API secret.
 
 ## The web app
 
@@ -124,6 +132,7 @@ guessing.
 |---|---|
 | `/settings/screen` | Live view of the physical screen, and Day/Night |
 | `/settings/people` | One row per person, then a page each |
+| `/settings/glucocore` | Pair this display with a GlucoCore account, or unpair it |
 | `/settings/ranges` | In-range and urgent thresholds, staleness |
 | `/settings/network` | Wi-Fi: what it is on, and what else is nearby |
 | `/settings/clock` | Time zone (with what your phone thinks it is) |

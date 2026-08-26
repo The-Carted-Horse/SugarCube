@@ -33,15 +33,29 @@ def apply_remote_config(
     names = patient_names or {}
     glucocore_block = dict(raw.get("glucocore") or {})
 
-    users = []
+    # People fed by an uploader, Tidepool or a Nightscout site are none of
+    # GlucoCore's business: a config push says who to pull from GlucoCore,
+    # not who is allowed on the display. Wiping them here is what made
+    # pairing an all-or-nothing choice.
+    existing = list(raw.get("users") or [])
+    users = [u for u in existing
+             if (u.get("source") or {}).get("type") != "glucocore"]
+    by_patient = {(u.get("source") or {}).get("patient_id"): u
+                  for u in existing
+                  if (u.get("source") or {}).get("type") == "glucocore"}
+
     import secrets
     for patient_id in patient_ids:
         name = names.get(patient_id) or patient_id
         thresholds = (per_patient.get(patient_id) or {}).get("thresholds") or {}
+        # Ports and push secrets stay put across pushes. They are stable
+        # identities on the network, not values to reroll every time
+        # GlucoCore changes a threshold.
+        prior = by_patient.get(patient_id) or {}
         users.append({
             "name": name,
-            "port": None,
-            "api_secret": secrets.token_hex(12),
+            "port": prior.get("port"),
+            "api_secret": prior.get("api_secret") or secrets.token_hex(12),
             "source": {
                 "type": "glucocore",
                 "patient_id": patient_id,
@@ -50,7 +64,7 @@ def apply_remote_config(
             **({"thresholds": thresholds} if thresholds else {}),
         })
 
-    if not users:
+    if not patient_ids:
         raise ValueError("remote config has no patients")
 
     config_mod.assign_ports(users, reserved={raw.get("admin", {}).get("port", 80)})

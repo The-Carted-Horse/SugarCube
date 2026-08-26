@@ -312,8 +312,7 @@ setInterval(async () => {
 
 
 def render(handler, draft: dict, step: str, *, banner: str = "") -> str:
-    kind, _, raw_index = step.partition(":")
-    index = int(raw_index) if raw_index else 0
+    kind = step.partition(":")[0]
     if kind == "welcome":
         return _render_welcome(handler, draft, step, banner)
     if kind == "wifi":
@@ -955,6 +954,25 @@ def _start_join(handler, draft, form: dict) -> None:
     handler._send(handler._joining_page(ssid), "text/html; charset=utf-8")
 
 
+def keep_local_users(users: list[dict]) -> list[dict]:
+    """Everyone a GlucoCore pairing does not replace.
+
+    People fed by an uploader, Tidepool or a Nightscout site are none of
+    GlucoCore's business and stay exactly as they are — pairing adds to a
+    display rather than clearing it. The two placeholders a fresh image
+    ships with are not people at all: if nobody has touched them they go,
+    rather than leaving two empty panels beside the real ones.
+    """
+    kept = []
+    for user in users:
+        if (user.get("source") or {}).get("type") == "glucocore":
+            continue
+        if user.get("name") in STARTER_NAMES and not user.get("source"):
+            continue
+        kept.append(user)
+    return kept
+
+
 def users_from_draft(draft: dict, reserved) -> list[dict]:
     users = []
     for person in draft.get("people") or []:
@@ -1030,7 +1048,11 @@ def _commit(handler, draft: dict) -> None:
 
     import secrets
     names = draft.get("patient_names") or {}
-    users = []
+    try:
+        raw = json.loads(open(handler.server.config_path).read())
+    except (OSError, ValueError):
+        raw = {}
+    users = keep_local_users(raw.get("users") or [])
     for patient_id in patient_ids:
         users.append({
             "name": names.get(patient_id, patient_id),
@@ -1043,10 +1065,6 @@ def _commit(handler, draft: dict) -> None:
             },
         })
 
-    try:
-        raw = json.loads(open(handler.server.config_path).read())
-    except (OSError, ValueError):
-        raw = {}
     config_mod.assign_ports(users, reserved={handler.server.config.admin_port})
     raw["users"] = users
     raw.setdefault("display", {}).update(display)
@@ -1054,6 +1072,7 @@ def _commit(handler, draft: dict) -> None:
         "device_id": device_id,
         "device_token": device_token,
         "hardware_id": hw_id,
+        "name": device_name,
     }
     password = (draft.get("admin_password") or "").strip()
     password_off = bool(draft.get("admin_password_off")) and not password
