@@ -116,16 +116,17 @@ nav a, nav button { font-family:var(--mono); font-size:10.5px;
   background:none; border:0; padding:0; min-height:34px; cursor:pointer;
   text-decoration:none; display:inline-flex; align-items:center; }
 nav .grow { flex:1 1 auto; }
-nav .mark { font-family:var(--mono); font-size:10.5px; letter-spacing:.2em;
+nav .mark { display:inline-flex; align-items:center; min-height:34px;
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.2em;
   text-transform:uppercase; color:var(--faint); }
 
 /* ---- forms ---- */
 fieldset { border:0; margin:0; padding:0; min-width:0; }
 legend { padding:0; }
-fieldset.group { margin:0 0 4px; }
+.rule + .opts { margin-top:0; }
 .row { margin:0 0 22px; }
 .row:last-child { margin-bottom:0; }
-.row > label, label.lbl { display:block; width:auto; margin:0 0 8px;
+.row > label, .lbl { display:block; width:auto; margin:0 0 8px;
   font-family:var(--mono); font-size:10.5px; letter-spacing:.22em;
   text-transform:uppercase; color:var(--faint); }
 .row > .note { margin-top:10px; }
@@ -137,6 +138,17 @@ input[type=number], input[type=tel], select, textarea {
   font-size:16px; min-height:48px; padding:12px; color:var(--fg);
   background:var(--card); border:1px solid var(--line); border-radius:2px; }
 select { font-size:16px; }
+/* The one control that posts bytes. Browsers will not let the button
+   inside be styled, so the field around it is what carries the system. */
+input[type=file] { display:block; width:100%; font-family:var(--mono);
+  font-size:16px; min-height:48px; padding:11px 12px; color:var(--dim);
+  background:var(--card); border:1px solid var(--line); border-radius:2px; }
+input[type=file]::file-selector-button { font-family:var(--mono);
+  font-size:10px; letter-spacing:.18em; text-transform:uppercase;
+  margin:-2px 12px -2px 0; padding:0 12px; min-height:30px;
+  background:transparent; border:1px solid var(--line); border-radius:2px;
+  color:var(--dim); cursor:pointer; }
+
 /* A number you read as a value, not as data: the ranges page. */
 input.num { font-family:var(--sans); font-weight:700; font-size:20px;
   min-height:52px; padding:10px 12px; }
@@ -206,6 +218,9 @@ button[disabled] { background:transparent; border:1px solid var(--line);
 /* ---- tappable option cards (data source, Wi-Fi networks, channels) ---- */
 .opts { display:grid; gap:8px; margin:0 0 4px; }
 .optw { border:1px solid var(--line); border-radius:2px; background:var(--card); }
+.optw.dashed { border-style:dashed; }
+.optw.plain .tick { display:none; }
+.optw.plain .name { font-weight:500; font-size:16px; }
 .optw.sel, .optw:has(input:checked) { border-color:var(--accent);
   box-shadow:inset 2px 0 0 var(--accent); background:var(--band); }
 .opt { position:relative; display:flex; align-items:center; gap:12px;
@@ -242,8 +257,11 @@ button[disabled] { background:transparent; border:1px solid var(--line);
   font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; }
 
 /* ---- check row ---- */
-.check { display:flex; align-items:center; gap:12px; min-height:44px;
-         cursor:pointer; margin:4px 0; }
+/* Named with its element because `.row > label` outranks a bare class, and
+   a checkbox that lands inside a row is still a checkbox. */
+label.check { display:flex; align-items:center; gap:12px; min-height:44px;
+  cursor:pointer; margin:4px 0; font-family:var(--sans); font-size:16px;
+  letter-spacing:normal; text-transform:none; color:var(--fg); }
 .check input { width:22px; height:22px; min-height:0; flex:0 0 auto; margin:0;
   padding:0; }
 .check span { color:var(--fg); font-size:14px; }
@@ -252,7 +270,7 @@ button[disabled] { background:transparent; border:1px solid var(--line);
 .banner.strip { gap:10px; padding:12px 14px; margin:14px 0 26px; }
 /* A one-line state readout at the top of a page (above), versus a notice
    interrupting a list (below). Same component, two jobs, two rhythms. */
-.banner { display:flex; gap:12px; align-items:center; margin:22px 0 0;
+.banner { display:flex; gap:12px; align-items:center; margin:22px 0 18px;
   padding:14px; font-size:14px; line-height:1.45; background:var(--band);
   border-left:2px solid var(--line); border-radius:2px; color:var(--fg); }
 .banner > .grow { flex:1 1 auto; min-width:0; }
@@ -269,8 +287,9 @@ a.banner.ok .chev, a.banner.info .chev { color:var(--accent); }
 /* A one-line state readout: dot, sentence, somewhere to look. */
 .status { font-family:var(--mono); font-size:11.5px; color:var(--dim); }
 .status b { color:var(--fg); font-weight:400; }
-.status .link { font-size:10px; letter-spacing:.18em; text-transform:uppercase;
-  text-decoration:none; white-space:nowrap; }
+/* The phrase that says what went wrong is the one part of the sentence
+   that is not neutral. */
+.status .bad { color:var(--danger); }
 pre.detail { background:var(--card); border:1px solid var(--line);
   border-radius:2px; padding:12px; font-family:var(--mono); font-size:11px;
   color:var(--dim); overflow-x:auto; white-space:pre-wrap;
@@ -282,7 +301,7 @@ pre.detail { background:var(--card); border:1px solid var(--line);
 .dot.ok { background:var(--ok); } .dot.warn { background:var(--warn); }
 .dot.err { background:var(--danger); } .dot.urgent { background:var(--urgent); }
 /* Reading colours: the same five bands the screen paints. */
-.v-ok { color:var(--ok); } .v-high { color:var(--warn); }
+.v-ok { color:var(--accent); } .v-high { color:var(--warn); }
 .v-low { color:var(--danger); } .v-urgent { color:var(--urgent); }
 .v-stale { color:var(--dim); }
 
@@ -306,6 +325,24 @@ details > summary .state { flex:0 0 auto; letter-spacing:0;
   text-transform:none; font-size:11px; color:var(--faint); }
 details > summary .state.set { color:var(--warn); }
 details > .inner { padding:4px 0 8px; }
+
+/* ---- facts: a short read-only list, e.g. "this display", "address" ---- */
+.facts { display:grid; grid-template-columns:auto 1fr; gap:10px 16px;
+  margin:0 0 20px; font-size:14px; }
+.facts dt { font-family:var(--mono); font-size:10px; letter-spacing:.2em;
+  text-transform:uppercase; color:var(--faint); padding-top:3px; }
+.facts dd { margin:0; overflow-wrap:anywhere; }
+
+/* A code somebody points a phone at: centred, never wider than the screen,
+   and dark on white in both themes because that is what scanners read. */
+.pairqr { text-align:center; }
+.pairqr .note, .pairqr .row { text-align:left; }
+svg.qr { width:min(240px, 70vw); height:auto; display:block; margin:14px auto;
+  border:8px solid #fff; border-radius:2px; background:#fff; }
+
+/* The stroke icons the hub used to lead its rows with. The rows lead with
+   their value now, but the helper is still exported and still tested. */
+.ico { flex:0 0 auto; width:22px; height:22px; color:var(--dim); }
 
 /* ---- wizard progress, and the restart's three beats ---- */
 .steps { display:flex; gap:4px; margin:16px 0 14px; }
@@ -435,6 +472,7 @@ a.hero .cap .go { color:var(--dim); }
 .versions .to { font-weight:500; font-size:20px; color:var(--faint);
   padding-bottom:3px; }
 .versions .new .cap, .versions .new .n { color:var(--accent); }
+.versions + .meta { margin-top:12px; }
 
 /* ---- how the screen will colour: the ranges, as the screen reads them ---- */
 .rangebar { display:flex; height:12px; border-radius:2px; overflow:hidden; }
@@ -474,7 +512,9 @@ a.hero .cap .go { color:var(--dim); }
 /* ---- segmented control: two states, the live one already pressed ---- */
 .seg { display:flex; gap:8px; }
 .seg form { flex:1 1 0; display:flex; margin:0; }
-.seg button, .seg .on { flex:1 1 auto; font-size:13px; letter-spacing:.12em; }
+.seg button, .seg .on { font-size:13px; letter-spacing:.12em; }
+.seg button { flex:1 1 auto; }
+.seg .on { flex:1 1 0; }
 .seg .on { display:inline-flex; align-items:center; justify-content:center;
   min-height:52px; padding:0 18px; border-radius:2px; font-family:var(--sans);
   font-weight:700; text-transform:uppercase; background:var(--band);
@@ -487,7 +527,9 @@ a.hero .cap .go { color:var(--dim); }
 .livecap { display:flex; align-items:center; gap:8px; margin:8px 0 26px;
   font-family:var(--mono); font-size:10px; letter-spacing:.2em;
   text-transform:uppercase; color:var(--faint); }
-.banner .link { flex:0 0 auto; color:var(--dim); text-decoration:none; }
+.banner .link { flex:0 0 auto; font-family:var(--mono); font-size:10px;
+  letter-spacing:.18em; text-transform:uppercase; text-decoration:none;
+  white-space:nowrap; color:var(--dim); }
 .banner.ok .link, .banner.info .link { color:var(--accent); }
 .banner.warn .link { color:var(--warn); }
 .banner.err .link { color:var(--danger); }
@@ -690,10 +732,14 @@ SCRIPT = """<script>
   // The ranges page, coloured the way the screen colours. The axis is
   // fixed at 40-300 mg/dL so the bands move as you type rather than the
   // scale sliding under them.
-  var AXIS_LO = 40, AXIS_HI = 300;
   function initRanges(){
     var box = d.getElementById('rangepreview');
     if (!box) return;
+    // The axis is whatever the server drew it on: 40-300 mg/dL, or the
+    // same span converted when the display reads mmol/L.
+    var AXIS_LO = parseFloat(box.dataset.lo) || 40;
+    var AXIS_HI = parseFloat(box.dataset.hi) || 300;
+    var DECIMALS = parseInt(box.dataset.decimals, 10) || 0;
     var bands = box.querySelectorAll('.rangebar span');
     var ticks = box.querySelectorAll('.rangeticks span');
     var keys = box.querySelectorAll('.rangekeys span');
@@ -707,8 +753,8 @@ SCRIPT = """<script>
         (v - AXIS_LO) / (AXIS_HI - AXIS_LO) * 100));
     }
     function draw(){
-      var v = [at('urgent_low', 55), at('low', 70),
-               at('high', 180), at('urgent_high', 250)];
+      var v = [at('urgent_low', AXIS_LO), at('low', AXIS_LO),
+               at('high', AXIS_HI), at('urgent_high', AXIS_HI)];
       var stop = [pct(v[0]), pct(v[1]), pct(v[2]), pct(v[3])];
       // A half-typed number must not turn the bar inside out.
       for (var i = 1; i < 4; i++) if (stop[i] < stop[i - 1]) stop[i] = stop[i - 1];
@@ -717,7 +763,7 @@ SCRIPT = """<script>
         if (bands[i]) bands[i].style.flex = '0 0 ' + w[i] + '%';
         if (ticks[i]) {
           ticks[i].style.flex = '0 0 ' + w[i] + '%';
-          ticks[i].textContent = String(Math.round(v[i]));
+          ticks[i].textContent = v[i].toFixed(DECIMALS);
         }
       }
       if (keys.length >= 3){
@@ -771,12 +817,60 @@ BRAND_NAV = ('<nav><span class="mark">GlucoCube</span>'
              '<span class="grow"></span></nav>')
 
 
-def nav_html(back: str = "", back_label: str = "Settings") -> str:
-    """The page's chrome. A sub-page leads with the way back out of it."""
+# Stroke icons for the settings hub. Inline because every page has to
+# work with no internet at all, and currentColor because both themes
+# have to look deliberate.
+ICONS = {
+    "screen": '<rect x="2.6" y="4" width="18.8" height="13" rx="2"/>'
+              '<path d="M9 20.5h6M12 17v3.5"/>',
+    "people": '<circle cx="9" cy="8" r="3.2"/>'
+              '<path d="M3.4 19.2c0-3.1 2.5-5.2 5.6-5.2s5.6 2.1 5.6 5.2"/>'
+              '<path d="M16.2 6.3a3.2 3.2 0 0 1 0 6"/>'
+              '<path d="M17.4 14.4c2.1.7 3.2 2.4 3.2 4.6"/>',
+    "ranges": '<path d="M3.5 8h9M17 8h3.5M3.5 16h4M12 16h8.5"/>'
+              '<circle cx="14.7" cy="8" r="2.2"/><circle cx="9.7" cy="16" r="2.2"/>',
+    "wifi": '<path d="M2.9 9.1a13.6 13.6 0 0 1 18.2 0"/>'
+            '<path d="M6.1 12.5a9 9 0 0 1 11.8 0"/>'
+            '<path d="M9.3 15.9a4.4 4.4 0 0 1 5.4 0"/>'
+            '<circle cx="12" cy="19.2" r="1.1" fill="currentColor" stroke="none"/>',
+    "clock": '<circle cx="12" cy="12" r="8.6"/><path d="M12 6.8v5.5l3.6 2.1"/>',
+    "update": '<path d="M12 3.6v11M7.6 10.3 12 14.7l4.4-4.4"/>'
+              '<path d="M4.6 18.6h14.8"/>',
+    "lock": '<rect x="4.6" y="10.4" width="14.8" height="9.6" rx="2"/>'
+            '<path d="M8.1 10.4V7.9a3.9 3.9 0 0 1 7.8 0v2.5"/>',
+    "wizard": '<path d="M12 3.5 13.7 8l4.6 1.7-4.6 1.7L12 16l-1.7-4.6L5.7 9.7'
+              ' 10.3 8Z"/><path d="M18.5 15.5 19.3 18l2.5.8-2.5.9-.8 2.4'
+              '-.9-2.4-2.4-.9 2.4-.8Z"/>',
+    "log": '<path d="M5.5 4.5h13v15h-13z"/><path d="M8.5 9h7M8.5 12.5h7M8.5 16h4"/>',
+    "picture": '<rect x="3" y="4.5" width="18" height="15" rx="2"/>'
+               '<circle cx="8.5" cy="10" r="1.8"/>'
+               '<path d="M3.4 17.2 9 12l3.6 3.2L16 12.4l4.6 4.4"/>',
+    "cloud": '<path d="M7.3 18.5a4.3 4.3 0 0 1-.4-8.6 5.6 5.6 0 0 1 10.7-1.2'
+             ' 3.9 3.9 0 0 1-.7 7.8Z"/>'
+             '<path d="M12 10.6v6.2M9.5 14.3 12 16.8l2.5-2.5"/>',
+}
+
+
+def icon(name: str) -> str:
+    return (f'<svg class="ico" viewBox="0 0 24 24" fill="none"'
+            ' stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+            f' stroke-linejoin="round" aria-hidden="true">{ICONS.get(name, "")}'
+            "</svg>")
+
+
+def nav_html(back: str = "", back_label: str = "Settings", *,
+             home: bool = False) -> str:
+    """The page's chrome. A sub-page leads with the way back out of it.
+
+    One way out, and it is the way in: a settings page that also offered
+    the dashboard gave two answers to "where does this go?". The sync log
+    is the exception, because it is reached from both.
+    """
     if not back:
         return NAV
     return (f'<nav><a href="{esc(back)}">&lsaquo; {esc(back_label)}</a>'
-            '<a href="/">Dashboard</a><span class="grow"></span>'
+            + ('<a href="/">Dashboard</a>' if home else "")
+            + '<span class="grow"></span>'
             '<button type="button" id="themebtn" onclick="toggleTheme()"'
             ' title="Switch this page between day and night"'
             ' aria-label="Switch this page between day and night"'
@@ -810,7 +904,8 @@ def menu(items) -> str:
 
 
 def menu_item(href: str, label: str, value: str = "", *, value_html: str = "",
-              trail: str = "", lead: str = "") -> str:
+              trail: str = "", lead: str = "", badge: str = "",
+              badge_kind: str = "") -> str:
     """One row of a menu: a whole-row tap target, read value first.
 
     The label is the small line and the value is the big one. The hub is
@@ -819,6 +914,9 @@ def menu_item(href: str, label: str, value: str = "", *, value_html: str = "",
     them, and only then a way in.
     """
     body = value_html or f'<span class="val">{esc(value)}</span>'
+    if badge:
+        trail = (f'<span class="pill {esc(badge_kind)}">{esc(badge)}</span>'
+                 + trail)
     return (
         f'<a class="item" href="{esc(href)}">{lead}'
         f'<span class="body"><span class="lbl">{esc(label)}</span>{body}</span>'
@@ -891,13 +989,19 @@ def person_card(href: str, name: str, *, source: str = "", value: str = "",
 
 
 # The ranges preview is drawn on a fixed axis so the bands move as the
-# numbers change, instead of the scale sliding underneath them.
+# numbers change, instead of the scale sliding underneath them. In mg/dL
+# that is 40-300; the caller converts it when the display reads mmol/L.
 RANGE_AXIS = (40.0, 300.0)
 
 
-def range_preview(low, high, urgent_low, urgent_high) -> str:
-    """The five bands the screen paints, at the numbers on this page."""
-    lo, hi = RANGE_AXIS
+def range_preview(low, high, urgent_low, urgent_high, *, axis=RANGE_AXIS,
+                  decimals: int = 0) -> str:
+    """The five bands the screen paints, at the numbers on this page.
+
+    Every value is already in the unit the page is written in — the axis
+    is converted with them, so the bar means the same thing either way.
+    """
+    lo, hi = axis
     def at(value):
         try:
             return max(0.0, min(100.0, (float(value) - lo) / (hi - lo) * 100))
@@ -914,8 +1018,15 @@ def range_preview(low, high, urgent_low, urgent_high) -> str:
     bands = "".join(
         f'<span class="b-{name}" style="flex:0 0 {width:.4f}%"></span>'
         for name, width in zip(names, widths))
+
+    def tick(value):
+        try:
+            return f"{float(value):.{decimals}f}"
+        except (TypeError, ValueError):
+            return esc(value)
+
     ticks = "".join(
-        f'<span style="flex:0 0 {width:.4f}%">{esc(value)}</span>'
+        f'<span style="flex:0 0 {width:.4f}%">{tick(value)}</span>'
         for value, width in zip(values, widths))
     keys = (
         f'<span class="k-low" style="flex:0 0 {widths[0] + widths[1]:.4f}%">'
@@ -925,7 +1036,8 @@ def range_preview(low, high, urgent_low, urgent_high) -> str:
         '<span class="k-urgent" style="flex:1 1 auto">Urgent</span>'
     )
     return (
-        '<div id="rangepreview">'
+        f'<div id="rangepreview" data-lo="{lo:g}" data-hi="{hi:g}"'
+        f' data-decimals="{decimals}">'
         + rule("How the screen will colour")
         + f'<div class="rangebar">{bands}'
         '<span class="b-urgenthigh" style="flex:1 1 auto"></span></div>'
@@ -992,6 +1104,76 @@ def steps_bar(total: int, done: int) -> str:
             + "</div>")
 
 
+def qr_svg(data: str, *, size_px: int = 240, alt: str = "") -> str:
+    """A QR code as inline SVG, or "" when it cannot be drawn.
+
+    SVG rather than a PNG endpoint: it is one string in the page that
+    scales to whatever the phone gives it, with nothing to fetch and
+    nothing to cache wrongly. Always dark on white whatever the theme is
+    — scanners need the contrast, and a "dark mode" QR is one people hold
+    their phone at for a while and then give up on.
+
+    An empty answer is not an error: `qrcode` is a dependency the display
+    needs and the web app does not, and every page that shows a code also
+    shows the address it stands for.
+    """
+    try:
+        import qrcode
+    except ImportError:
+        return ""
+    code = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M,
+                         border=2)
+    code.add_data(data)
+    code.make(fit=True)
+    matrix = code.get_matrix()
+    span = len(matrix)
+    # One path of rectangles, rather than a rect element per module: a
+    # version-6 code is over a thousand of them.
+    parts = []
+    for y, row in enumerate(matrix):
+        run = 0
+        for x, dark in enumerate(row + [False]):
+            if dark:
+                run += 1
+                continue
+            if run:
+                parts.append(f"M{x - run} {y}h{run}v1h-{run}z")
+                run = 0
+    return (
+        f'<svg class="qr" viewBox="0 0 {span} {span}" width="{size_px}"'
+        f' height="{size_px}" role="img"'
+        f' aria-label="{esc(alt or "QR code")}"'
+        ' xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">'
+        f'<rect width="{span}" height="{span}" fill="#ffffff"/>'
+        f'<path fill="#000000" d="{"".join(parts)}"/></svg>'
+    )
+
+
+def failure(message: str, detail: str = "") -> str:
+    """A check that failed, with the technical half behind a disclosure.
+
+    verify.Result carries both halves for a reason — the message says what
+    to do, the detail says what actually happened — and a page that shows
+    only the first half turns "DNS does not know that host" into a
+    guessing game.
+    """
+    body = banner("err", esc(message))
+    if detail:
+        # Through disclosure() rather than hand-written, so the summary gets
+        # the chevron and the type every other disclosure on the site has.
+        body += disclosure("Technical detail",
+                           f'<pre class="detail">{esc(detail)}</pre>',
+                           slim=True)
+    return body
+
+
+def facts(pairs) -> str:
+    """Read-only label/value lines. Values may contain markup."""
+    body = "".join(f"<dt>{esc(label)}</dt><dd>{value}</dd>"
+                   for label, value in pairs)
+    return f'<dl class="facts">{body}</dl>'
+
+
 # ------------------------------------------------------------- helpers ----
 
 def esc(value) -> str:
@@ -1000,7 +1182,7 @@ def esc(value) -> str:
 
 def page(title: str, body: str, *, nav: bool = False, head: str = "",
          script: str = "", refresh: str = "", back: str = "",
-         back_label: str = "Settings") -> str:
+         back_label: str = "Settings", home: bool = False) -> str:
     """A complete document. Every response goes through here.
 
     Previously the error and interstitial pages were emitted as bare
@@ -1018,7 +1200,7 @@ def page(title: str, body: str, *, nav: bool = False, head: str = "",
         '<noscript><style>[data-group][hidden]{display:block !important}'
         '.opt .tick{visibility:visible;color:var(--faint)}</style></noscript>'
         f"{head}</head><body><div class=\"wrap\">"
-        f"{nav_html(back, back_label) if nav else ''}"
+        f"{nav_html(back, back_label, home=home) if nav else ''}"
         f"{body}</div>{SCRIPT}{script}</body></html>"
     )
 
@@ -1116,6 +1298,14 @@ def select(name: str, options, selected: str = "", *, input_id: str = "",
             f"{body}</select>")
 
 
+def file_input(name: str, *, accept: str = "image/png,image/jpeg",
+               input_id: str = "", extra: str = "") -> str:
+    """A file picker. The only control on this site that posts bytes."""
+    input_id = input_id or f"f_{name}"
+    return (f'<input type="file" id="{esc(input_id)}" name="{esc(name)}"'
+            f' accept="{esc(accept)}" {extra}>')
+
+
 def checkbox(name: str, label: str, checked: bool = False, *,
              value: str = "1", extra: str = "") -> str:
     return (
@@ -1127,8 +1317,8 @@ def checkbox(name: str, label: str, checked: bool = False, *,
 
 def option_card(name: str, value: str, title: str, sub: str = "", *,
                 checked: bool = False, controls: str = "", lead: str = "",
-                trail: str = "", body_html: str = "",
-                wrap_extra: str = "", input_extra: str = "") -> str:
+                trail: str = "", body_html: str = "", wrap_extra: str = "",
+                input_extra: str = "", css: str = "") -> str:
     """A tappable radio card, optionally carrying its own settings.
 
     `body_html` is what this choice needs to know — credentials, a poll
@@ -1141,7 +1331,8 @@ def option_card(name: str, value: str, title: str, sub: str = "", *,
              f' data-when="{esc(value)}"{"" if checked else " hidden"}>'
              f"{body_html}</div>") if body_html else ""
     return (
-        f'<div class="optw{" sel" if checked else ""}" {wrap_extra}>'
+        f'<div class="optw{" sel" if checked else ""}'
+        f'{" " + esc(css) if css else ""}" {wrap_extra}>'
         f'<label class="opt">'
         f'<input type="radio" name="{esc(name)}" value="{esc(value)}"'
         f'{" checked" if checked else ""}{ctl} {input_extra}>'
@@ -1171,8 +1362,9 @@ def choice_cards(name: str, options, selected: str = "", *,
         for value, title, sub in options
     )
     if legend:
-        return (f'<fieldset class="group"><legend class="lbl">{esc(legend)}'
-                f'</legend><div class="opts">{cards}</div></fieldset>')
+        return (rule(legend)
+                + f'<div class="opts" role="radiogroup"'
+                f' aria-label="{esc(legend)}">{cards}</div>')
     return f'<div class="opts">{cards}</div>'
 
 
@@ -1229,18 +1421,18 @@ def network_picker(networks, *, selected: str = "", other_ssid: str = "",
     for net in networks:
         lock = ('<span class="lock" aria-label="secured">&#128274;</span>'
                 if net.get("secured") else
-                '<span class="lock">Open</span>')
+                '<span class="lock">open</span>')
         cards.append(option_card(
             name, net["ssid"], net["ssid"],
             checked=(net["ssid"] == selected and not other_selected),
-            controls="wifiother",
+            controls="wifiother", css="plain",
             input_extra=f'data-secured="{1 if net.get("secured") else 0}"',
             trail=lock + signal_bars(int(net.get("signal") or 0)),
         ))
     cards.append(option_card(
         name, "__other__", "Other network…",
         "hidden, or not in the list", checked=bool(other_selected),
-        controls="wifiother",
+        controls="wifiother", css="dashed plain",
     ))
     manual = group(
         "wifiother", "__other__",

@@ -1,5 +1,6 @@
 python3-pygame
 python3-qrcode
+python3-websocket
 network-manager
 wpasupplicant
 dnsmasq-base

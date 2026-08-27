@@ -18,7 +18,7 @@ import time
 import urllib.error
 from dataclasses import dataclass
 
-from . import nspull, tidepool
+from . import glucocore, nspull, tidepool
 
 log = logging.getLogger("glucocube.verify")
 
@@ -92,15 +92,39 @@ def _guarded(identity: str, fn, timeout: float) -> Result:
         _slots.release()
 
 
-def _network_message(exc: Exception, secret: str, what: str) -> Result:
+def _network_message(exc: Exception, secret: str, what: str, *,
+                     address: str = "") -> Result:
+    """Why a check failed, in words the person reading them can act on.
+
+    `address` is the address the app dialled when the person did not type
+    it — GlucoCore's, which is built into the app. Telling someone to
+    check the spelling of an address they were never shown sends them
+    hunting for a typo they cannot have made; naming it, and saying it is
+    not theirs to correct, is the difference between a dead end and a
+    fault report somebody can act on.
+    """
     detail = _scrub(f"{type(exc).__name__}: {exc}", secret)
     if isinstance(exc, urllib.error.HTTPError):
+        if 300 <= exc.code < 400:
+            # The client follows a permanent redirect that stays on the
+            # service. One that reaches here went somewhere else, or never
+            # settled — neither is something a person can fix by retyping.
+            where = exc.headers.get("Location") if exc.headers else ""
+            return Result(False, f"{what} is redirecting this device"
+                                 + (f" to {where}" if where else "")
+                                 + ", and it will not follow that. The"
+                                   " address it is set to use may be wrong.",
+                          detail)
         if exc.code in (401, 403):
             # Saying nothing was written is half the point of a test button:
             # otherwise a rejection reads as "you have just broken it".
             return Result(False, f"{what} refused that login ({exc.code}). "
                                  "Nothing has been saved.", detail)
         if exc.code == 404:
+            if address:
+                return Result(False, f"{address} answered, but not where "
+                                     f"{what} was expected — the service may "
+                                     "have moved.", detail)
             return Result(False, "That address answered, but it is not a "
                                  "Nightscout site.", detail)
         return Result(False, f"{what} answered with an error ({exc.code}).",
@@ -109,6 +133,11 @@ def _network_message(exc: Exception, secret: str, what: str) -> Result:
         return Result(False, "The site's HTTPS certificate could not be "
                              "verified.", detail)
     if isinstance(exc, (urllib.error.URLError, socket.gaierror, OSError)):
+        if address:
+            return Result(False, f"Could not reach {what} at {address}. "
+                                 "Check this device is online — the address "
+                                 "is built in, so there is nothing to correct "
+                                 "here.", detail)
         return Result(False, "Could not reach that address — check the "
                              "spelling, and that this device is online.",
                       detail)
@@ -136,6 +165,126 @@ def tidepool_login(email: str, password: str,
         return Result(True, "Signed in to Tidepool, and readings are there.")
 
     return _guarded(f"tidepool:{email}", run, timeout)
+
+
+def glucocore_session(email: str, password: str,
+                      timeout: float = DEFAULT_TIMEOUT) -> tuple[Result, dict]:
+    """Sign in, and hand back the session token and the patients on it.
+
+    Pairing this way needs the token it just proved works. Signing in
+    twice — once to check, once to keep — would trip the throttle above
+    and, worse, could succeed the first time and fail the second, so the
+    check and the thing being checked are one call.
+    """
+    email = (email or "").strip()
+    if not email or not password:
+        return Result(False, "Enter your GlucoCore email and password."), {}
+    session: dict = {}
+
+    def run() -> Result:
+        try:
+            token, userid = glucocore.login(email, password,
+                                            timeout=timeout * 0.8)
+            patients = glucocore.list_patients(token, userid,
+                                               timeout=timeout * 0.5)
+        except Exception as exc:  # noqa: BLE001 - reported, never raised
+            result = _network_message(exc, password, "GlucoCore",
+                                      address=glucocore.GLUCOCORE_BASE)
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 401:
+                return Result(False, "That email or password did not work.",
+                              result.detail)
+            return result
+        session.update(token=token, userid=userid, patients=list(patients))
+        count = len(patients)
+        if count == 0:
+            return Result(True, "Signed in, but no patients are visible yet.")
+        return Result(True, f"Signed in — {count} "
+                            f"patient{'s' if count != 1 else ''} available.")
+
+    result = _guarded(f"glucocore:{email}", run, timeout)
+    # _bounded abandons a worker that overran, so a late success must not
+    # leak out as a session nobody is waiting for any more.
+    return (result, session) if result.ok else (result, {})
+
+
+def glucocore_register(token: str, name: str, hardware_id: str,
+                       patient_ids: list, display: dict | None = None,
+                       timeout: float = DEFAULT_TIMEOUT) -> tuple[Result, dict]:
+    """Create this display in GlucoCore, and hand back what it said.
+
+    Shaped like `glucocore_claim` on purpose: both ways of pairing end
+    with a device, its config and a token, so the page that writes them
+    down does not need to know which way it was.
+    """
+    if not patient_ids:
+        return Result(False, "Choose at least one person to show."), {}
+    registered: dict = {}
+    config = {"patientIds": list(patient_ids), "display": dict(display or {}),
+              "perPatient": {}}
+
+    def run() -> Result:
+        try:
+            answer = glucocore.register_device(
+                token, name, hardware_id, list(patient_ids), config=config,
+                timeout=timeout * 0.9)
+        except Exception as exc:  # noqa: BLE001
+            return _network_message(exc, token, "GlucoCore",
+                                    address=glucocore.GLUCOCORE_BASE)
+        if not answer.get("deviceToken"):
+            return Result(False, "GlucoCore accepted this display but sent "
+                                 "no token for it.")
+        registered.update(answer)
+        return Result(True, "Paired.")
+
+    result = _guarded(f"glucocore-register:{hardware_id}", run, timeout)
+    return (result, registered) if result.ok else (result, {})
+
+
+CODE_LENGTH = 6
+
+
+def glucocore_claim(code: str, hardware_id: str, name: str = "",
+                    timeout: float = DEFAULT_TIMEOUT) -> tuple[Result, dict]:
+    """Redeem a pairing code, and hand back what the service gave us.
+
+    GlucoCore answers a bad code, an expired one, one already claimed and
+    one refused for going too fast all identically — deliberately, so an
+    endpoint anybody can reach cannot be used to tell them apart. This
+    repeats that rather than guessing at which happened: what the reader
+    needs is the one instruction that covers every case, which is to mint
+    a fresh code.
+    """
+    code = "".join(ch for ch in (code or "") if ch.isdigit())
+    if len(code) != CODE_LENGTH:
+        return Result(False, f"A pairing code is {CODE_LENGTH} digits."), {}
+    if not hardware_id:
+        return Result(False, "This device has no hardware id to pair with."), {}
+    claimed: dict = {}
+
+    def run() -> Result:
+        try:
+            answer = glucocore.claim(code, hardware_id, name,
+                                     timeout=timeout * 0.9)
+        except Exception as exc:  # noqa: BLE001 - reported, never raised
+            result = _network_message(exc, code, "GlucoCore",
+                                      address=glucocore.GLUCOCORE_BASE)
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 400:
+                return Result(False, "That code was not accepted. A code "
+                                     "lasts ten minutes and works once — "
+                                     "make a new one in GlucoCore and enter "
+                                     "it here.", result.detail)
+            return result
+        if not answer.get("deviceToken"):
+            return Result(False, "GlucoCore accepted the code but sent no "
+                                 "token for this display.")
+        claimed.update(answer)
+        return Result(True, "Paired.")
+
+    # Throttled on the code: a display retrying a code it has already spent
+    # must not spend the caller's rate limit on the service, which answers
+    # a refusal there exactly as it answers a wrong code.
+    result = _guarded(f"glucocore-claim:{code}", run, timeout)
+    return (result, claimed) if result.ok else (result, {})
 
 
 def nightscout_site(url: str, key: str,

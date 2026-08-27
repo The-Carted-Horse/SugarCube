@@ -82,6 +82,63 @@ def wait_for_connected_display(timeout: float = 45.0) -> bool:
     return False
 
 
+# Long enough to walk into the other room and look at the wall.
+IDENTIFY_SECONDS = 30
+
+
+def command_actions(config, store, pollers) -> dict:
+    """What GlucoCore's buttons do to this display.
+
+    Built here because this is where the running pieces are — the pollers
+    to poke, the store to clear, the process to restart. Each returns the
+    line that ends up on the devices screen beside the command, so "done"
+    is never the whole answer.
+    """
+    from .webadmin import restart_soon
+
+    def identify() -> str:
+        store.replace_params(
+            config_mod.IDENTIFY_KEY,
+            {"until": int(time.time() * 1000) + IDENTIFY_SECONDS * 1000})
+        return f"flashing for {IDENTIFY_SECONDS} seconds"
+
+    def restart() -> str:
+        # Acknowledged first, then gone: the delay is what lets the
+        # acknowledgement leave before the process does.
+        restart_soon(2.0)
+        return "restarting"
+
+    def refresh() -> str:
+        if not pollers:
+            # Everyone here is fed by an uploader — there is nothing to
+            # fetch, and saying so beats a tick that means nothing.
+            return "nothing to fetch: every person here is fed by an uploader"
+        for poller in pollers:
+            poller.poke()
+        return (f"polling {len(pollers)} source"
+                f"{'s' if len(pollers) != 1 else ''} now")
+
+    def clear_cache() -> str:
+        removed = store.clear_readings([user.name for user in config.users])
+        for poller in pollers:
+            poller.poke()
+        return f"dropped {removed} stored rows; fetching again"
+
+    def check_update() -> str:
+        from .updater import check_and_maybe_force
+        state = check_and_maybe_force(store, config.update_channel)
+        if state.get("forcing"):
+            return f"installing {state.get('latest', '')}"
+        if state.get("available"):
+            return f"{state.get('latest', '')} is available"
+        channel = config_mod.CHANNEL_LABELS[
+            config_mod.normalize_channel(config.update_channel)]
+        return f"up to date on the {channel.lower()} channel"
+
+    return {"identify": identify, "restart": restart, "refresh": refresh,
+            "clear_cache": clear_cache, "check_update": check_update}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="glucocube")
     parser.add_argument(
@@ -118,7 +175,50 @@ def main() -> int:
         seed_demo_data(store, config.users)
 
     servers = start_servers(config.users, store)
-    pollers = start_pollers(config.users, store)
+    gc_token = config.glucocore.device_token if config.glucocore else ""
+    pollers = start_pollers(config.users, store, glucocore_token=gc_token)
+
+    # The weather in the corner of the ambient screen, and the art behind
+    # it. Both are background work by construction: nothing about a
+    # picture or a temperature may hold up a glucose reading, so the
+    # fetches happen off the draw loop and a failure leaves the last one
+    # on screen.
+    from . import wallpaper as wallpaper_mod
+    from . import weather as weather_mod
+    weather_poller = weather_mod.start_poller(config, store)
+    if weather_poller:
+        pollers.append(weather_poller)
+    if gc_token:
+        wallpaper_mod.refresh_async(store, config)
+
+    push_listener = None
+    if config.glucocore and config.glucocore.device_token:
+        from .push import start_push_listener
+        from .webadmin import restart_soon
+
+        def _on_remote_config(_new_config):
+            restart_soon()
+
+        push_listener = start_push_listener(
+            config_path,
+            {
+                "device_id": config.glucocore.device_id,
+                "device_token": config.glucocore.device_token,
+                "hardware_id": config.glucocore.hardware_id,
+            },
+            store,
+            _on_remote_config,
+            actions=command_actions(config, store, pollers),
+        )
+
+    # A display nobody has paired yet asks to be paired, and shows the
+    # request on its own screen as a QR code. It keeps asking until
+    # somebody scans it — or until one of the other two ways gets there
+    # first, at which point the restart ends this thread with the process.
+    from .pairing import start_waiter
+    from .webadmin import restart_soon as _restart
+    start_waiter(config, config_path, store, _restart)
+
     from .webadmin import start_admin
     start_admin(config, config_path, store)
 
@@ -178,6 +278,8 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if push_listener:
+            push_listener.stop()
         stop_servers(servers)
         for poller in pollers:
             poller.stop()

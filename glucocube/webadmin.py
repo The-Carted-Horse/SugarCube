@@ -10,6 +10,7 @@ Protected with HTTP Basic auth when config.admin.password is set.
 """
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -19,10 +20,16 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
 import secrets as secrets_mod
+import socket
 
 from . import config as config_mod
-from . import captive, network, onboarding, predict, synclog, ui, updater
-from . import verify
+from . import multipart as multipart_mod
+from . import wallpaper as wallpaper_mod
+from . import weather as weather_mod
+from . import captive, network, onboarding, predict, sources, synclog, ui
+from . import updater
+from . import glucocore, pairing, sync, verify
+from . import units as units_mod
 from .server import DualStackServer
 from .config import SCREEN_PNG, Config, merged_thresholds
 from .store import Store
@@ -37,7 +44,11 @@ SCREEN_SCRIPT = """<script>
   var last = Date.now();
   function shots(){ return document.querySelectorAll('img.live'); }
   shots().forEach(function(img){
-    img.addEventListener('load', function(){ last = Date.now(); });
+    img.addEventListener('load', function(){
+      last = Date.now();
+      // A refresh that failed hid it; one that worked brings it back.
+      img.hidden = false;
+    });
   });
   setInterval(function(){
     shots().forEach(function(img){ img.src = '/screen.png?t=' + Date.now(); });
@@ -46,6 +57,10 @@ SCREEN_SCRIPT = """<script>
     var age = Math.round((Date.now() - last) / 1000);
     document.querySelectorAll('.shotage').forEach(function(el){
       el.textContent = age < 2 ? 'just now' : 'updated ' + age + 's ago';
+      // Three missed refreshes is not "live" any more, and the dot should
+      // stop claiming it is.
+      var dot = el.parentNode.querySelector('.dot');
+      if (dot) dot.className = age > 15 ? 'dot warn' : 'dot ok';
     });
   }, 1000);
 })();
@@ -105,6 +120,33 @@ document.addEventListener('click', async (event) => {
 });
 </script>"""
 
+PAIRING_SCRIPT = """<script>
+// While a QR code is on the page, somebody may be approving it on their
+// phone this second. The display pairs itself when that happens and
+// restarts; this notices and follows, so the page does not sit there
+// saying "waiting" beside a display that has already moved on.
+(function(){
+  var waiting = document.getElementById('pairwait');
+  if (!waiting) return;
+  var tick = async function(){
+    try {
+      var response = await fetch('/api/pairing.json', {cache: 'no-store'});
+      var state = await response.json();
+      if (state.paired) { location.replace('/settings/glucocore?msg=paired'); return; }
+      if (state.error) {
+        waiting.className = 'banner warn';
+        waiting.textContent = state.error;
+      }
+    } catch (err) {
+      // The restart the pairing causes looks exactly like this. Keep
+      // asking: the next answer either comes back paired or comes back.
+    }
+    setTimeout(tick, 3000);
+  };
+  setTimeout(tick, 3000);
+})();
+</script>"""
+
 WIFI_SCRIPT = """<script>
 // A rescan runs in the background; the page asks whether it has finished
 // instead of the server holding the request open while it waits.
@@ -153,7 +195,12 @@ CLOCK_SCRIPT = """<script>
           detected.hidden = false;
           detected.querySelector('b').textContent = zone.replace(/_/g, ' ');
           detected.querySelector('button').onclick = function(){
-            list.value = zone; detected.hidden = true; preview();
+            list.value = zone;
+            detected.hidden = true;
+            // Assigning .value fires nothing. The save bar counts change
+            // events, and this is a change; preview() runs off the same
+            // document listener.
+            list.dispatchEvent(new Event('change', {bubbles: true}));
           };
           break;
         }
@@ -365,6 +412,22 @@ setInterval(tick, 15000);
 const esc = s => String(s).replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+// How a reading is written here. Everything the page is given is mg/dL,
+// the way everything inside the device is; these are the last step before
+// it reaches a screen, and the only place that knows which unit it is in.
+let UNITS = 'mg/dL';
+const isMmol = () => UNITS === 'mmol/L';
+function shown(v){ return v == null ? null : (isMmol() ? v / 18 : v); }
+function fmtGlucose(v, blank){
+  const x = shown(v);
+  if (x == null) return blank === undefined ? '---' : blank;
+  return isMmol() ? x.toFixed(1) : String(Math.round(x));
+}
+function fmtDelta(v){
+  const x = shown(v);
+  if (x == null) return '';
+  return (x >= 0 ? '+' : '') + (isMmol() ? x.toFixed(1) : String(Math.round(x)));
+}
 function colorFor(v, th, stale){
   if (v == null || stale) return 'var(--faint)';
   if (v <= th.urgent_low || v >= th.urgent_high) return 'var(--urgent)';
@@ -395,8 +458,8 @@ function chart(u, th, now, W, H){
   let s = `<svg viewBox="0 0 ${W} ${H}" font-family="JetBrains Mono,monospace">`;
   // target range band + bounds
   s += `<rect x="0" y="${Y(th.high)}" width="${W}" height="${Y(th.low)-Y(th.high)}" fill="var(--band)"/>`;
-  s += `<text x="${W-5}" y="${Y(th.high)+13}" font-size="11" fill="var(--faint)" text-anchor="end">${th.high}</text>`;
-  s += `<text x="${W-5}" y="${Y(th.low)-4}" font-size="11" fill="var(--faint)" text-anchor="end">${th.low}</text>`;
+  s += `<text x="${W-5}" y="${Y(th.high)+13}" font-size="11" fill="var(--faint)" text-anchor="end">${fmtGlucose(th.high)}</text>`;
+  s += `<text x="${W-5}" y="${Y(th.low)-4}" font-size="11" fill="var(--faint)" text-anchor="end">${fmtGlucose(th.low)}</text>`;
   // dashed now divider
   s += `<line x1="${X(now)}" x2="${X(now)}" y1="2" y2="${PH-2}" stroke="var(--line)" stroke-dasharray="4 5"/>`;
   // forecast confidence cone, clamped inside the plot area
@@ -473,7 +536,7 @@ function card(u, th, now, idx){
   const eta = new Date(now + 120*60000).toLocaleTimeString(undefined,
     {hour:'2-digit', minute:'2-digit'});
   const fc = f2h != null
-    ? `<span class="val" style="color:${colorFor(f2h, th, false)}">${tilde}${Math.round(f2h)}</span>
+    ? `<span class="val" style="color:${colorFor(f2h, th, false)}">${tilde}${fmtGlucose(f2h)}</span>
        <span class="eta">${eta}</span>` : '';
   const stat = (lbl, val, unit, sub) =>
     `<div><div class="lbl">${lbl}</div><div class="val">${val}<small>${unit}</small></div>` +
@@ -482,11 +545,11 @@ function card(u, th, now, idx){
     <div class="head"><span class="who">${esc(u.name)}</span>
       <span class="badge"><span class="dot" style="background:${dotCol}"></span>${u.source_label || 'TRIO'} \\u00b7 ${ageC(now, u.sgv_date)}</span></div>
     <div class="bigrow">
-      <div class="big" style="color:${col}">${u.sgv != null ? Math.round(u.sgv) : '---'}</div>
+      <div class="big" style="color:${col}">${fmtGlucose(u.sgv)}</div>
       <div class="side">
         <span class="arrow" style="color:${col}">${!stale && ARROWS[u.direction] || ''}</span>
-        <span class="delta">${u.delta != null && !stale ? (u.delta >= 0 ? '+' : '') + Math.round(u.delta) : ''}</span>
-        <span class="unit">MG/DL</span>
+        <span class="delta">${!stale ? fmtDelta(u.delta) : ''}</span>
+        <span class="unit">${isMmol() ? 'MMOL/L' : 'MG/DL'}</span>
       </div>
     </div>
     <div class="fcrow"><span class="lbl">FORECAST 2H</span><span class="rule"></span>${fc}</div>
@@ -509,6 +572,9 @@ async function refresh(){
     if (!r.ok) throw new Error(r.status);
     const d = await r.json();
     lastData = d;
+    // Set before render(): every number on the page goes through the
+    // formatters above, and they read this.
+    UNITS = d.units || 'mg/dL';
     receivedAt = Date.now();
     render();
     const up = document.getElementById('upgrade');
@@ -528,6 +594,31 @@ refresh();
 setInterval(refresh, 30000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 </script></body></html>"""
+
+
+def _unique_name(name: str, taken) -> str:
+    """A display name nothing else is using.
+
+    Everything in the database is keyed by the name, so two people
+    sharing one would read each other's readings.
+    """
+    name = (name or "").strip() or "Unnamed"
+    if name.casefold() not in taken:
+        return name
+    for suffix in range(2, 100):
+        candidate = f"{name} {suffix}"
+        if candidate.casefold() not in taken:
+            return candidate
+    return f"{name} {secrets_mod.token_hex(2)}"
+
+
+def _as_list(value) -> list[str]:
+    """Checkbox fields arrive as a string, a list, or not at all."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    return [str(item) for item in value if item]
 
 
 def _g(value, default="") -> str:
@@ -637,6 +728,10 @@ class AdminHandler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+        # Committed before the caller returns. Every save ends by scheduling
+        # the process to exit; a response still sitting in a buffer when
+        # that timer fires is a page nobody ever sees.
+        self.wfile.flush()
 
     def _authorized(self) -> bool:
         if not self.server.password:
@@ -702,8 +797,20 @@ class AdminHandler(BaseHTTPRequestHandler):
                                   ).encode(), "application/json")
         elif path == "/log":
             page = ui.page("GlucoCube sync log", LOG_BODY, nav=True,
-                           back="/settings", script=LOG_SCRIPT)
+                           back="/settings", home=True, script=LOG_SCRIPT)
             self._send(page.encode(), "text/html; charset=utf-8")
+        elif path == "/api/pairing.json":
+            gc = self._pairing_config()
+            state = pairing.public_state(self.server.store)
+            self._send(json.dumps({
+                "paired": bool(gc),
+                # Never the secret: this is a page's view of the request,
+                # and the secret is what turns the request into a token.
+                "request_id": state.get("request_id", ""),
+                "approve_url": state.get("approve_url", ""),
+                "expires_at": state.get("expires_at", 0),
+                "error": state.get("error", ""),
+            }).encode(), "application/json")
         elif path == "/api/wifi.json":
             self._send(json.dumps({
                 "scanning": network.scan_in_progress(),
@@ -775,7 +882,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             users.append({
                 "name": user.name,
                 "source_label": {"tidepool": "TWIIST",
-                                 "nightscout": "NS"}.get(source_type, "TRIO"),
+                                 "nightscout": "NS",
+                                 "glucocore": "GLUCOCORE"}.get(source_type,
+                                                               "TRIO"),
                 "thresholds": {
                     **merged_thresholds(dc, user),
                     "stale_minutes": dc.stale_minutes,
@@ -800,7 +909,11 @@ class AdminHandler(BaseHTTPRequestHandler):
         update_state = self.server.store.get_params(updater.PARAMS_KEY)
         return {
             "now": now_ms,
-            "units": dc.units,
+            # Every glucose number in this payload is mg/dL, whatever this
+            # says — the same contract the rest of the device runs on, and
+            # what anything reading this endpoint has always been given.
+            # It says how they are to be *written*.
+            "units": units_mod.normalize(dc.units),
             "update": {
                 "current": updater.current_version(),
                 "latest": update_state.get("latest"),
@@ -822,13 +935,19 @@ class AdminHandler(BaseHTTPRequestHandler):
          "Pulled from an existing cloud Nightscout"),
     )
     SOURCE_NAMES = {"push": "Trio", "tidepool": "twiist",
-                    "nightscout": "Nightscout"}
+                    "nightscout": "Nightscout", "glucocore": "GlucoCore"}
     # The glyphs the physical screen draws and the dashboard prints, so a
     # reading means the same thing wherever it is read.
     ARROWS = {"DoubleUp": "\u2191\u2191", "SingleUp": "\u2191",
               "FortyFiveUp": "\u2197", "Flat": "\u2192",
               "FortyFiveDown": "\u2198", "SingleDown": "\u2193",
               "DoubleDown": "\u2193\u2193"}
+    ACCESS_CARDS = (
+        ("on", "Ask for a password",
+         "Log in as admin — needed if anyone else can reach this network"),
+        ("off", "No password",
+         "Anyone on this network opens the dashboard and settings"),
+    )
     CHANNEL_CARDS = (
         ("stable", "Standard",
          "Full releases only — what almost everyone wants"),
@@ -847,6 +966,10 @@ class AdminHandler(BaseHTTPRequestHandler):
         "nothing": ("warn", "Nothing has been published on that channel yet, "
                             "so nothing was installed."),
         "switched": ("ok", "Switched."),
+        "paired": ("ok", "Paired with GlucoCore."),
+        "signedout": ("info", "Sign-in discarded."),
+        "unpaired": ("ok", "Unpaired. This display no longer talks to "
+                           "GlucoCore."),
     }
 
     # ---- settings: shared pieces ----
@@ -917,7 +1040,12 @@ class AdminHandler(BaseHTTPRequestHandler):
         for entry in synclog.recent():
             if entry.get("user") != name:
                 continue
-            return "" if entry.get("ok") else (entry.get("message") or "")
+            if entry.get("ok"):
+                return ""
+            # The log line carries the retry interval too; this line has
+            # its own second half to add, so it takes only the phrase.
+            return (entry.get("message") or "").split(
+                sources.RETRY_SUFFIX)[0]
         return ""
 
     def _person_state(self, user: dict, now_ms: int) -> dict:
@@ -931,37 +1059,48 @@ class AdminHandler(BaseHTTPRequestHandler):
         source = user.get("source") or {}
         label = self.SOURCE_NAMES.get(source.get("type") or "push", "")
         state = {"label": label, "value": "", "arrow": "", "age": "",
+                 "unit": units_mod.normalize(self.server.config.display.units),
                  "tone": "v-stale", "trend": "", "headline": "", "short": "",
-                 "pill": "", "kind": "err", "say": "not arriving"}
+                 "pill": "", "kind": "err", "say": "not arriving", "text": ""}
+        if source.get("type") == "glucocore" and not self._pairing_config():
+            return {**state, "short": "not paired", "pill": "not paired",
+                    "kind": "err", "say": "not paired",
+                    "text": "GlucoCore — this display is not paired",
+                    "headline": "This display is not paired with GlucoCore"}
         if source.get("type") and not self._source_ready(source):
             return {**state, "short": "needs setup", "pill": "needs setup",
                     "kind": "err", "say": "needs setup",
+                    "text": f"{label} — credentials missing",
                     "headline": "No credentials yet, so nothing is arriving"}
         snap = self.server.store.snapshot(name)
         failure = self._last_failure(name)
         if not snap.sgv_date or snap.sgv is None:
             return {**state, "short": "no data", "pill": "", "kind": "warn",
                     "say": "nothing has arrived yet",
+                    "text": f"{label} — nothing has arrived yet",
                     "headline": ui.esc(failure) or "Nothing has arrived yet"}
         minutes = max(0, int((now_ms - snap.sgv_date) / 60000))
         when = ("just now" if minutes < 1
                 else f"{minutes}m ago" if minutes < 120
                 else f"{minutes // 60}h ago")
         stale = minutes > self.server.config.display.stale_minutes
+        shown_in = self.server.config.display.units
+        unit = units_mod.normalize(shown_in)
         bands = self._thresholds_for(user)
         arrow = self.ARROWS.get(snap.direction or "", "")
-        delta = ""
-        if snap.delta is not None:
-            step = round(snap.delta)
-            delta = (f"+{step:.0f}" if step > 0
-                     else f"\u2212{abs(step):.0f}" if step < 0 else "0")
-        reading = f"{snap.sgv:.0f}"
-        headline = (f"{ui.esc(failure)} \u00b7 last reading {when}" if failure
-                    else f"Arriving \u00b7 <b>{reading} mg/dL</b>, {when}")
+        # The minus is the typographic one, to match the arrow beside it.
+        delta = (units_mod.fmt_delta(snap.delta, shown_in).replace("-", "\u2212")
+                 if snap.delta is not None else "")
+        reading = units_mod.fmt(snap.sgv, shown_in)
+        headline = (
+            f'<span class="bad">{ui.esc(failure)}</span> \u00b7 last reading '
+            f"{when}" if failure
+            else f"Arriving \u00b7 <b>{reading} {unit}</b>, {when}")
         return {
-            "label": label, "value": reading, "arrow": arrow,
+            "label": label, "value": reading, "arrow": arrow, "unit": unit,
             "trend": " ".join(part for part in (arrow, delta) if part),
             "age": when, "tone": self._tone(snap.sgv, stale, bands),
+            "text": f"{label} — {reading} {unit}, {when}",
             "short": when, "pill": "stale" if stale else "",
             "kind": "err" if failure else "warn" if stale else "ok",
             # Colour is not the only thing carrying this: the dot says it
@@ -1020,7 +1159,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                     "err", f"<b>{ui.esc(user.get('name') or 'Someone')}</b> has "
                     "no credentials yet, so nothing is arriving",
                     href=f"/settings/person?i={index}"))
-        if not config.admin_password:
+        if not (config.admin_password or config.admin_password_off):
             notices.append(ui.banner(
                 "warn", "Anyone on this network can change these settings "
                 "\u2014 set a password", href="/settings/access"))
@@ -1032,7 +1171,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             label = f"{name} \u00b7 {state['label']}" if state["label"] else name
             if state["value"]:
                 value_html = ui.reading(state["value"], arrow=state["arrow"],
-                                        age=state["age"], tone=state["tone"])
+                                        age=state["age"], tone=state["tone"],
+                                        unit=state["unit"])
             else:
                 value_html = ('<span class="val v-stale">'
                               f'{ui.esc(state["short"] or "no data")}</span>')
@@ -1060,11 +1200,15 @@ class AdminHandler(BaseHTTPRequestHandler):
             # the hero has nothing to show, so the row carries the door.
             screen_rows.append(ui.menu_item("/settings/screen", "The screen",
                                             colours))
-        low, high = _g(display.get("low"), 70), _g(display.get("high"), 180)
-        urgent_low = _g(display.get("urgent_low"), 55)
-        urgent_high = _g(display.get("urgent_high"), 250)
+        shown_in = display.get("units")
+        unit = units_mod.normalize(shown_in)
+        low = units_mod.fmt_field(display.get("low", 70), shown_in)
+        high = units_mod.fmt_field(display.get("high", 180), shown_in)
+        urgent_low = units_mod.fmt_field(display.get("urgent_low", 55), shown_in)
+        urgent_high = units_mod.fmt_field(display.get("urgent_high", 250),
+                                          shown_in)
         screen_rows.append(ui.menu_item(
-            "/settings/ranges", "Ranges",
+            "/settings/ranges", f"Ranges \u00b7 {unit}",
             value_html=f'<span class="val">{ui.esc(low)}\u2013{ui.esc(high)} '
                        f'<small>\u00b7 urgent {ui.esc(urgent_low)} / '
                        f'{ui.esc(urgent_high)}</small></span>'))
@@ -1076,6 +1220,11 @@ class AdminHandler(BaseHTTPRequestHandler):
                           "</small>" if zone else
                           ' <small>\u00b7 no zone set</small>')
                        + "</span>"))
+        place = (raw.get("weather") or {}).get("place")
+        screen_rows.append(ui.menu_item(
+            "/settings/weather", "Weather",
+            value_html=f'<span class="val">{ui.esc(place)}</span>' if place
+            else '<span class="val v-stale">Off</span>'))
 
         # ---- this device ----
         device_rows = []
@@ -1097,6 +1246,24 @@ class AdminHandler(BaseHTTPRequestHandler):
                               "nearby")
             device_rows.append(ui.menu_item("/settings/network", "Wi-Fi",
                                             wifi_value, trail=trail))
+        paired = self._pairing_config()
+        on_gc = sum(1 for user in users
+                    if (user.get("source") or {}).get("type") == "glucocore")
+        if paired:
+            who = ("" if not on_gc else " <small>\u00b7 1 person</small>"
+                   if on_gc == 1 else f" <small>\u00b7 {on_gc} people</small>")
+            gc_html = (f'<span class="val">{ui.esc(paired.name or "Paired")}'
+                       f"{who}</span>")
+        else:
+            gc_html = '<span class="val v-stale">Not paired</span>'
+        # A badge only when something is actually broken: people pulled from
+        # GlucoCore on a display that has no token to pull with. "Not paired"
+        # on a device happily fed by Trio is not a problem, and a pill that
+        # never means anything is one people stop seeing.
+        device_rows.append(ui.menu_item(
+            "/settings/glucocore", "GlucoCore", value_html=gc_html,
+            badge="Not paired" if on_gc and not paired else "",
+            badge_kind="err"))
         channel = config_mod.normalize_channel(config.update_channel)
         channel_label = config_mod.CHANNEL_LABELS[channel]
         running = updater.current_version()
@@ -1112,14 +1279,17 @@ class AdminHandler(BaseHTTPRequestHandler):
         device_rows.append(ui.menu_item(
             "/settings/updates", f"Updates \u00b7 {channel_label} channel",
             updates_value,
-            trail=f'<span class="pill warn">{ui.esc(badge)}</span>'
-                  if badge else ""))
-        device_rows.append(ui.menu_item(
-            "/settings/access", "Access",
-            value_html='<span class="val">Password set '
-                       "<small>\u00b7 admin</small></span>"
-                       if config.admin_password else
-                       '<span class="val v-low">No password set</span>'))
+            badge=badge, badge_kind="warn"))
+        if config.admin_password:
+            access_html = ('<span class="val">Password set '
+                           "<small>\u00b7 admin</small></span>")
+        elif config.admin_password_off:
+            access_html = ('<span class="val">No password '
+                           "<small>\u00b7 on purpose</small></span>")
+        else:
+            access_html = '<span class="val v-low">No password set</span>'
+        device_rows.append(ui.menu_item("/settings/access", "Access",
+                                        value_html=access_html))
 
         address = config_mod.admin_url(self._lan_ip(), config.admin_port)
         return f"""{ui.eyebrow(f"GlucoCube {running}")}
@@ -1143,6 +1313,14 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def _page_screen(self) -> str:
         theme = self._theme()
+        display = self._raw_config().get("display", {})
+        layout = config_mod.normalize_layout(display.get("layout"))
+        direction = config_mod.normalize_split_direction(
+            display.get("split_direction"))
+        cap = display.get("split_max")
+        people = len(self._raw_config().get("users") or [])
+        caps = [("", "Everyone")] + [(str(n), f"{n} person" if n == 1
+                                      else f"{n} people") for n in range(1, 7)]
 
         def switch(to: str, label: str) -> str:
             return (f'<form method="POST" action="/display/theme">'
@@ -1150,6 +1328,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                     '<input type="hidden" name="back" value="/settings/screen">'
                     f'<button type="submit">{label}</button></form>')
 
+        # Two states side by side with the live one already pressed, rather
+        # than a button naming the state you are not in.
         colours = ui.segmented([
             (theme == "light", "Day &#9788;", switch("light", "Day &#9788;")),
             (theme == "dark", "Night &#9790;", switch("dark", "Night &#9790;")),
@@ -1165,7 +1345,88 @@ seconds.</p>
 {colours}
 <p class="note">Applies immediately &mdash; no restart. The sun or moon on
 the device does the same thing, and the QR beside it opens these settings
-on a phone with no password to type.</p>"""
+on a phone with no password to type.</p>
+<form method="POST" action="/settings/screen" data-dirty>
+  {ui.choice_cards("layout", self.LAYOUT_CARDS, layout, controls="lay",
+                   legend="How the people share the screen")}
+  {ui.group("lay", "split",
+            ui.row("Panels run",
+                   ui.select("split_direction", self.SPLIT_DIRECTIONS,
+                             direction, input_id="split_direction"),
+                   for_id="split_direction",
+                   hint="Side by side on a landscape screen, unless you say "
+                        "otherwise.")
+            + ui.row("At most on screen",
+                     ui.select("split_max", caps,
+                               "" if not cap else str(cap),
+                               input_id="split_max"),
+                     for_id="split_max",
+                     hint=f"{people} on this display. More than two on a 7-inch "
+                          "panel makes each number small; a smaller number "
+                          "here shows them a page at a time."),
+            current=layout)}
+  {ui.group("lay", "rotate",
+            ui.row("Seconds each person",
+                   ui.text_input("rotate_seconds",
+                                 display.get("rotate_seconds", 12),
+                                 kind="number", input_id="rotate_seconds"),
+                   for_id="rotate_seconds",
+                   hint="An urgent reading holds the screen until it clears, "
+                        "whoever&rsquo;s turn it was."),
+            current=layout)}
+{ui.rule("Background")}
+  {ui.row("Behind everyone",
+          ui.select("wallpaper", self._wallpaper_options(),
+                    display.get("wallpaper", ""), input_id="wallpaper"),
+          for_id="wallpaper",
+          hint="What sits behind a person who has none of their own. Add "
+               "pictures on each person&rsquo;s page.")}
+  {ui.row("Dim the art by",
+          ui.text_input("wallpaper_dim", display.get("wallpaper_dim", 60),
+                        kind="number", input_id="wallpaper_dim"),
+          for_id="wallpaper_dim",
+          hint="Per cent. The reading has to stay readable over whatever is "
+               "behind it &mdash; less dimming shows more of the picture.")}
+  {ui.row("Dim further overnight by",
+          ui.text_input("night_dim_boost",
+                        display.get("night_dim_boost", 24), kind="number",
+                        input_id="night_dim_boost"),
+          for_id="night_dim_boost",
+          hint="Added to the figure above between the hours set on the "
+               "ranges page.")}
+  {ui.save_bar()}
+</form>"""
+
+    # The two ways a display can arrange the people on it. Cards rather
+    # than a select because this is the choice that changes what the
+    # screen *is*, and it deserves to be the thing you see.
+    LAYOUT_CARDS = (
+        ("split", "Everyone at once",
+         "A panel each, side by side — what this display has always done."),
+        ("rotate", "One at a time",
+         "Full-screen, over a background, moving on every few seconds."),
+    )
+    SPLIT_DIRECTIONS = (
+        ("auto", "However the screen is turned"),
+        ("columns", "Side by side"),
+        ("rows", "Stacked"),
+    )
+
+    def _wallpaper_options(self):
+        """Nothing, the art on the device, and anything uploaded here."""
+        options = [("", "Nothing")]
+        options += [(f"bundled:{name}", name.title())
+                    for name in sorted(wallpaper_mod.BUNDLED)]
+        for entry in self._uploaded_wallpapers():
+            options.append((entry, "Uploaded picture"))
+        return options
+
+    def _uploaded_wallpapers(self):
+        directory = wallpaper_mod.cache_dir(self.server.config.database)
+        if not directory.is_dir():
+            return []
+        return sorted(e.name for e in directory.iterdir()
+                      if e.is_file() and wallpaper_mod.is_id(e.name))
 
     def _page_people(self) -> str:
         users = self._raw_config().get("users") or []
@@ -1178,6 +1439,7 @@ on a phone with no password to type.</p>"""
                 user.get("name") or f"Person {index + 1}",
                 source=state["label"], value=state["value"],
                 trend=ui.esc(state["trend"]), age=state["age"],
+                unit=state["unit"],
                 tone=state["tone"], dot_kind=state["kind"],
                 dot_label=state["say"], note=state["short"] or "no data"))
         add = ('<a class="item quiet dashed" href="/settings/person?i=new">'
@@ -1215,6 +1477,11 @@ on a phone with no password to type.</p>"""
             return (form or {}).get(key, saved)
 
         stype = pick("source", source.get("type") or "push")
+        # Who a paired display shows is decided in GlucoCore, and the next
+        # config push would undo anything chosen here. The cards are
+        # replaced by a note that says where to go instead — the rest of
+        # the page (their name, their ranges) still works.
+        managed = source.get("type") == "glucocore"
         port = pick("port", user.get("port") or self._next_port(users))
         secret = (pick("api_secret", user.get("api_secret"))
                   or config_mod.readable_secret(16))
@@ -1329,33 +1596,41 @@ on a phone with no password to type.</p>"""
         # typed is how you lose it.
         typed = any((form or {}).get(f"th_{key}") for key in
                     ("low", "high", "urgent_low", "urgent_high"))
+        shown_in = units_mod.normalize(
+            self._raw_config().get("display", {}).get("units"))
+        step = units_mod.step(shown_in)
         shared = self._range_defaults()
         bands = self._thresholds_for(user)
         overridden = bool(th)
+
+        def shown(mgdl):
+            return units_mod.fmt_field(mgdl, shown_in)
+
+        def override(key, label):
+            """One threshold box: blank stays blank, a number is converted."""
+            saved = th.get(key)
+            return ui.field(label, ui.text_input(
+                f"th_{key}",
+                pick(f"th_{key}",
+                     "" if saved in (None, "") else shown(saved)),
+                kind="number", placeholder="default", input_id=f"th_{key}",
+                extra=f'step="{step}"'))
+
+        # The summary answers the question the disclosure is hiding, so
+        # there is usually no reason to open it at all.
         summary_state = (
-            f"{_g(bands['low'])}\u2013{_g(bands['high'])}" if overridden
-            else f"using shared {_g(shared['low'])}\u2013{_g(shared['high'])}")
+            f"{shown(bands['low'])}\u2013{shown(bands['high'])}" if overridden
+            else f"using shared {shown(shared['low'])}"
+                 f"\u2013{shown(shared['high'])}")
         ranges = ui.disclosure(
             f"Ranges just for {name or 'this person'}",
             '<div class="pair">'
-            + ui.field("Low", ui.text_input(
-                "th_low", pick("th_low", _g(th.get("low"))), kind="number",
-                placeholder="default", input_id="th_low"))
-            + ui.field("High", ui.text_input(
-                "th_high", pick("th_high", _g(th.get("high"))), kind="number",
-                placeholder="default", input_id="th_high"))
+            + override("low", "Low") + override("high", "High")
             + '</div><div class="gap"></div><div class="pair">'
-            + ui.field("Urgent under", ui.text_input(
-                "th_urgent_low", pick("th_urgent_low",
-                                      _g(th.get("urgent_low"))),
-                kind="number", placeholder="default", input_id="th_urgent_low"))
-            + ui.field("Urgent over", ui.text_input(
-                "th_urgent_high", pick("th_urgent_high",
-                                       _g(th.get("urgent_high"))),
-                kind="number", placeholder="default",
-                input_id="th_urgent_high"))
-            + '</div><p class="note">Blank uses the ranges everyone'
-              " shares.</p>",
+            + override("urgent_low", "Urgent under")
+            + override("urgent_high", "Urgent over")
+            + '</div><p class="note">Blank uses the ranges everyone shares. '
+              f"In {ui.esc(shown_in)}.</p>",
             state=summary_state, state_set=overridden,
             open_=typed, top=True)
 
@@ -1374,6 +1649,63 @@ goes away.</p>
         lede = ('<p class="lede">They get their own panel on the screen, '
                 "their own port and their own API secret.</p>" if adding
                 else "")
+        if managed:
+            # Who a paired display shows is decided in GlucoCore, and the
+            # next config push would undo anything chosen here. The cards
+            # give way to a note that says where to go instead.
+            sources_html = (
+                ui.rule("Where the data comes from")
+                + ui.facts([("Source", "GlucoCore"),
+                            ("Patient ID",
+                             f'<code>{ui.esc(source.get("patient_id", ""))}'
+                             "</code>")])
+                + '<p class="note">This display pulls their readings from '
+                  "GlucoCore. Change who appears on it in GlucoCore, or "
+                  '<a href="/settings/glucocore">unpair this display</a> to '
+                  "go back to setting sources here.</p>")
+        else:
+            sources_html = ui.choice_cards(
+                "source", self.SOURCE_CARDS, stype, controls=control,
+                legend="Where the data comes from",
+                bodies={"push": push, "tidepool": tidepool,
+                        "nightscout": nightscout})
+        # Their own background, and how long they hold the screen when the
+        # display shows one person at a time. Both are theirs rather than
+        # the display's, so both live here.
+        art = ui.row(
+            "Behind them",
+            ui.select("wallpaper",
+                      [("", "Whatever the display is using"),
+                       ("none", "Nothing, even if the display has art")]
+                      + self._wallpaper_options()[1:],
+                      pick("wallpaper", user.get("wallpaper", "")),
+                      input_id="wallpaper"),
+            for_id="wallpaper")
+        art += ui.row(
+            "Seconds on screen",
+            ui.text_input("rotate_seconds",
+                          pick("rotate_seconds",
+                               user.get("rotate_seconds") or ""),
+                          kind="number", placeholder="default",
+                          input_id="rotate_seconds"),
+            for_id="rotate_seconds",
+            hint="Blank uses the display&rsquo;s own. Only used when the "
+                 "screen shows one person at a time.")
+        upload = ""
+        if not adding:
+            # Its own form: a file cannot ride along with the rest, and
+            # this one is the only thing on the site that posts bytes.
+            upload = f"""
+<form method="POST" action="/settings/person/wallpaper?i={ui.esc(index)}"
+      enctype="multipart/form-data">
+  {ui.row("Add a picture", ui.file_input("image"),
+          hint="JPEG or PNG, up to 2 MB. Nothing is resized &mdash; the "
+               "screen is 800&times;480, and anything much bigger is bytes "
+               "for no visible gain.")}
+  <div class="actions">
+    <button type="submit" class="secondary">Upload &amp; apply</button>
+  </div>
+</form>"""
         return f"""<h1>{ui.esc(heading)}</h1>
 {lede}
 {status}
@@ -1382,41 +1714,330 @@ goes away.</p>
       data-index="{ui.esc(index)}" data-dirty>
   {ui.row("Name", ui.text_input("name", name, input_id="name"),
           for_id="name")}
-  {ui.choice_cards("source", self.SOURCE_CARDS, stype, controls=control,
-                   legend="Where the data comes from",
-                   bodies={"push": push, "tidepool": tidepool,
-                           "nightscout": nightscout})}
+  {sources_html}
   {ranges}
+  {ui.disclosure("Background", art, top=True)}
   {ui.save_bar("Add &amp; restart display" if adding
                else "Save &amp; restart display")}
-</form>{remove}"""
+</form>{upload}{remove}"""
+
+    # ---- settings: GlucoCore ----
+
+    def _pairing_config(self):
+        """The pairing this device already has, or None."""
+        gc = self.server.config.glucocore
+        return gc if gc and gc.device_token else None
+
+    @staticmethod
+    def _patient_label(config: dict, patient_id: str) -> str:
+        """What GlucoCore says this person is called on this display."""
+        per = (config.get("perPatient") or {}).get(patient_id) or {}
+        return str(per.get("label") or "").strip() or patient_id
+
+    @staticmethod
+    def _patient_id(patient: dict) -> str:
+        return str(patient.get("userId") or patient.get("userid") or "")
+
+    @staticmethod
+    def _patient_name(patient: dict) -> str:
+        return str(patient.get("name") or patient.get("email")
+                   or AdminHandler._patient_id(patient))
+
+    # A sign-in waiting for somebody to choose who to show. It holds a
+    # session token, so it is short-lived and is thrown away the moment the
+    # display is registered — what the device keeps is its own token.
+    SIGNIN_KEY = "__signin"
+    SIGNIN_TTL_MS = 15 * 60 * 1000
+
+    def _signin_draft(self) -> dict:
+        draft = self.server.store.get_params(self.SIGNIN_KEY)
+        if not draft.get("token"):
+            return {}
+        age = int(time.time() * 1000) - int(draft.get("started_at") or 0)
+        if age > self.SIGNIN_TTL_MS:
+            self._clear_signin_draft()
+            return {}
+        return draft
+
+    def _clear_signin_draft(self) -> None:
+        # replace, not set: set_params drops falsy values, so an emptied
+        # draft would leave the old token behind.
+        self.server.store.replace_params(self.SIGNIN_KEY, {})
+
+    def _page_glucocore(self, *, form=None, banner: str = "") -> str:
+        gc = self._pairing_config()
+        if gc:
+            return self._page_glucocore_paired(gc, banner)
+        draft = self._signin_draft()
+        if draft:
+            return self._page_glucocore_people(draft, form=form, banner=banner)
+        return self._page_glucocore_claim(form=form, banner=banner)
+
+    PAIR_CARDS = (
+        ("qr", "Scan it with your phone",
+         "Approve this display in GlucoCore — nothing to type"),
+        ("signin", "Sign in here",
+         "Your GlucoCore email and password, used once"),
+        ("code", "Type a pairing code",
+         "Six digits, from Devices in GlucoCore"),
+    )
+
+    def _page_glucocore_claim(self, *, form=None, banner: str = "") -> str:
+        form = form or {}
+        chosen = form.get("how", "qr")
+        keeps = [user.get("name") or "unnamed" for user in
+                 onboarding.keep_local_users(self._raw_config().get("users")
+                                             or [])]
+        keep_note = ""
+        if keeps:
+            keep_note = (
+                '<p class="note">' + ui.esc(", ".join(keeps))
+                + (" keeps" if len(keeps) == 1 else " keep")
+                + " the source they have now — pairing adds to this display"
+                  " rather than replacing what is on it.</p>")
+        host = glucocore.GLUCOCORE_BASE.split("//")[-1]
+        return f"""<h1>GlucoCore</h1>
+<p class="lede">Pair this display with a GlucoCore account and it pulls each
+person's readings from there. Three ways in — they end in the same place.</p>
+{banner}
+{ui.choice_cards("how", self.PAIR_CARDS, chosen, controls="how")}
+{ui.group("how", "qr", self._pair_by_qr(), current=chosen)}
+{ui.group("how", "signin", self._pair_by_signin(form), current=chosen)}
+{ui.group("how", "code", self._pair_by_code(form), current=chosen)}
+{keep_note}
+<p class="note">No account yet? Create one at <b>{ui.esc(host)}</b> on your
+phone, then come back.</p>"""
+
+    def _pair_by_qr(self) -> str:
+        """The request the waiter is holding open, as something to scan."""
+        state = pairing.public_state(self.server.store)
+        url = state.get("approve_url") or ""
+        if not url:
+            trouble = state.get("error") or ""
+            return (
+                '<div class="pairqr">'
+                + ui.banner("warn", "This display has not been able to ask "
+                                    "GlucoCore for a code yet."
+                            + (f" Last error: {ui.esc(trouble)}"
+                               if trouble else ""))
+                + '<p class="note">It keeps trying. Sign in or type a code'
+                  " above if you would rather not wait.</p></div>")
+        code = ui.qr_svg(url, alt="Approve this display in GlucoCore")
+        shown = url.split("//")[-1]
+        return f"""<div class="pairqr">
+  {code or ''}
+  <p class="note">Scan it with a phone that is signed in to GlucoCore, choose
+  who this display shows, and approve. It pairs itself — there is nothing to
+  type back in here.</p>
+  {ui.row("Or open this address", ui.copy_input("approve", shown,
+                                                input_id="approve"),
+          inline=False)}
+  <div class="banner info" id="pairwait">Waiting to be approved&hellip;</div>
+</div>"""
+
+    def _pair_by_signin(self, form: dict) -> str:
+        return f"""<form method="POST" action="/settings/glucocore/signin">
+  {ui.row("Email", ui.text_input("email", form.get("email", ""), kind="email",
+                                 input_id="gc_email",
+                                 extra='autocapitalize="none" autocorrect="off"'
+                                       ' spellcheck="false"'
+                                       ' autocomplete="username"'),
+          inline=False, for_id="gc_email")}
+  {ui.row("Password", ui.password_input("password", "",
+                                        input_id="gc_password"),
+          inline=False, for_id="gc_password",
+          hint="Used once, to create this display in GlucoCore. Only a"
+               " read-only device token is kept afterwards.")}
+  <div class="actions">
+    <button type="submit">Sign in</button>
+    <span class="note">Then choose who this display shows.</span>
+  </div>
+</form>"""
+
+    def _pair_by_code(self, form: dict) -> str:
+        return f"""<form method="POST" action="/settings/glucocore/pair">
+  {ui.row("Pairing code",
+          ui.text_input("code", form.get("code", ""),
+                        placeholder="123456", input_id="pair_code",
+                        extra='inputmode="numeric" autocomplete="one-time-code"'
+                              ' pattern="[0-9 ]*" maxlength="9"'
+                              ' autocapitalize="off" spellcheck="false"'),
+          inline=False, for_id="pair_code",
+          hint="In GlucoCore, open Devices and create a pairing code. It"
+               " lasts ten minutes and works once.")}
+  {ui.row("Name this display",
+          ui.text_input("device_name", form.get("device_name", ""),
+                        placeholder="Kitchen display",
+                        input_id="device_name"),
+          inline=False, for_id="device_name",
+          hint="Optional — blank keeps the name you gave it in GlucoCore.")}
+  <div class="actions">
+    <button type="submit">Pair this display</button>
+    <span class="note">Restarts the display, about five seconds.</span>
+  </div>
+</form>"""
+
+    def _page_glucocore_people(self, draft: dict, *, form=None,
+                               banner: str = "") -> str:
+        """After signing in: who this display shows."""
+        form = form or {}
+        patients = draft.get("patients") or []
+        chosen = set(_as_list(form.get("patient_ids"))
+                     or [self._patient_id(p) for p in patients])
+        boxes = "".join(
+            ui.checkbox("patient_ids", self._patient_name(patient),
+                        self._patient_id(patient) in chosen,
+                        value=self._patient_id(patient))
+            for patient in patients if self._patient_id(patient)
+        )
+        if not boxes:
+            boxes = ('<p class="note">This account cannot see anyone yet. Add '
+                     "a patient in GlucoCore, then sign in again.</p>")
+        return f"""<h1>Who to show</h1>
+<p class="lede">Signed in as <b>{ui.esc(draft.get('email', ''))}</b>. Choose
+whose glucose this display pulls from GlucoCore.</p>
+{banner}
+<form method="POST" action="/settings/glucocore/register">
+  {ui.row("Name this display",
+          ui.text_input("device_name",
+                        form.get("device_name", "") or draft.get("suggested", ""),
+                        placeholder="Kitchen display", input_id="device_name"),
+          inline=False, for_id="device_name")}
+  <label class="lbl">Who to show</label>
+  {boxes}
+  <div class="actions stick">
+    <button type="submit">Pair this display</button>
+    <span class="note">Restarts the display, about five seconds.</span>
+  </div>
+</form>
+<form method="POST" action="/settings/glucocore/cancel">
+  <button type="submit" class="quiet">Not now — discard this sign-in</button>
+</form>"""
+
+    def _page_glucocore_paired(self, gc, banner: str = "") -> str:
+        raw = self._raw_config()
+        now_ms = int(time.time() * 1000)
+        rows = []
+        for user in raw.get("users") or []:
+            source = user.get("source") or {}
+            if source.get("type") != "glucocore":
+                continue
+            state = self._person_state(user, now_ms)
+            rows.append((user.get("name") or "unnamed", ui.esc(state["text"])))
+        if not rows:
+            rows = [("Nobody yet", "Choose who this display shows in "
+                                   "GlucoCore.")]
+        return f"""<h1>GlucoCore</h1>
+<p class="lede">This display is paired. Who appears on it, and their ranges,
+follow what GlucoCore says — changes there arrive here on their own.</p>
+{banner}
+{ui.facts([("This display", ui.esc(gc.name or "unnamed")),
+           ("Device ID", f'<code>{ui.esc(gc.device_id or "—")}</code>'),
+           ("Hardware ID", f'<code>{ui.esc(gc.hardware_id or "—")}</code>')])}
+<h2>Pulled from GlucoCore</h2>
+{ui.facts(rows)}
+<p class="note">The <a href="/log">sync log</a> shows what has arrived, and
+when.</p>
+<form method="POST" action="/settings/glucocore/unpair"
+      onsubmit="return confirm('Unpair this display from GlucoCore?')">
+  <div class="actions">
+    <button type="submit" class="danger">Unpair this display</button>
+    <span class="note">Everyone pulled from GlucoCore switches to their own
+      uploader port and API secret, so the display keeps working while you
+      point something at it. Readings already stored stay. Remove it in
+      GlucoCore too, to take its token out of the account.</span>
+  </div>
+</form>"""
+
+    UNIT_CARDS = (
+        ("mg/dL", "mg/dL", "What the United States reads"),
+        ("mmol/L", "mmol/L", "What most of the rest of the world reads"),
+    )
+
+    def _page_weather(self) -> str:
+        raw = self._raw_config().get("weather") or {}
+        enabled = bool(raw.get("enabled"))
+        place = raw.get("place") or ""
+        located = raw.get("latitude") is not None
+        state = ""
+        if enabled and located:
+            reading = weather_mod.current(self.server.store)
+            state = ui.banner("ok", f"Showing the weather for "
+                                    f"{ui.esc(place or 'the saved location')}."
+                              + ("" if reading else
+                                 " Nothing fetched yet — the first reading "
+                                 "arrives within a quarter of an hour."))
+        elif enabled:
+            state = ui.banner("warn", "Turned on, but this device does not "
+                                      "know where it is yet.")
+        return f"""<h1>Weather</h1>
+<p class="lede">The temperature in the corner of the ambient screen. Off
+until you say where the device is — a guess from the time zone would
+confidently show the wrong town.</p>
+{state}
+<form method="POST" action="/settings/weather" data-dirty>
+  {ui.row("Show the weather",
+          ui.checkbox("enabled", "On", enabled), inline=False)}
+  {ui.row("Town",
+          ui.text_input("place", place, input_id="place",
+                        placeholder="Sheffield"),
+          for_id="place", inline=False,
+          hint="Looked up once when you save, then never again. Clear it to "
+               "forget where this device is.")}
+  {ui.row("Temperature in",
+          ui.select("units", (("fahrenheit", "Fahrenheit"),
+                              ("celsius", "Celsius")),
+                    raw.get("units", "fahrenheit"), input_id="units"),
+          for_id="units")}
+  {ui.save_bar()}
+</form>"""
 
     def _page_ranges(self) -> str:
         display = self._raw_config().get("display", {})
-        low = _g(display.get("low"), 70)
-        high = _g(display.get("high"), 180)
-        urgent_low = _g(display.get("urgent_low"), 55)
-        urgent_high = _g(display.get("urgent_high"), 250)
+        shown_in = units_mod.normalize(display.get("units"))
+        step = units_mod.step(shown_in)
+        decimals = 1 if units_mod.is_mmol(shown_in) else 0
 
-        def number(name: str, value) -> str:
-            return ui.text_input(name, value, kind="number", input_id=name,
-                                 css="num")
+        def value_of(key, default):
+            stored = display.get(key)
+            return units_mod.fmt_field(
+                default if stored in (None, "") else stored, shown_in)
 
+        def number(key, default) -> str:
+            """A threshold, written in the unit this display reads in."""
+            return ui.text_input(key, value_of(key, default), kind="number",
+                                 input_id=key, css="num",
+                                 extra=f'step="{step}"')
+
+        low, high = value_of("low", 70), value_of("high", 180)
+        urgent_low = value_of("urgent_low", 55)
+        urgent_high = value_of("urgent_high", 250)
+        # The bar spans the same range of glucose whichever unit it is
+        # read in, so the axis is converted along with the numbers on it.
+        axis = (units_mod.to_display(ui.RANGE_AXIS[0], shown_in),
+                units_mod.to_display(ui.RANGE_AXIS[1], shown_in))
         return f"""<h1>Ranges</h1>
 <p class="lede">What counts as in range, and where the numbers turn red.
 Everyone shares these unless their own page overrides them.</p>
 {self._flash()}
-{ui.range_preview(low, high, urgent_low, urgent_high)}
+{ui.range_preview(low, high, urgent_low, urgent_high, axis=axis,
+                  decimals=decimals)}
 <form method="POST" action="/settings/ranges" data-dirty>
-{ui.rule("In range · mg/dL")}
+  {ui.choice_cards("units", self.UNIT_CARDS, shown_in, legend="Read in")}
+  <input type="hidden" name="typed_units" value="{ui.esc(shown_in)}">
+  <p class="note spaced">Switching this converts what is below rather than
+  reinterpreting it &mdash; the boxes were filled in {ui.esc(shown_in)}, and
+  saving keeps the thresholds where they are. They come back in the unit you
+  chose.</p>
+{ui.rule("In range · " + shown_in)}
 <div class="pair">
-  {ui.field("Low", number("low", low))}
-  {ui.field("High", number("high", high))}
+  {ui.field("Low", number("low", 70))}
+  {ui.field("High", number("high", 180))}
 </div>
 {ui.rule("Urgent · panel turns red")}
 <div class="pair">
-  {ui.field("Under", number("urgent_low", urgent_low))}
-  {ui.field("Over", number("urgent_high", urgent_high))}
+  {ui.field("Under", number("urgent_low", 55))}
+  {ui.field("Over", number("urgent_high", 250))}
 </div>
 {ui.rule("Stale after")}
 <div class="inline-field">
@@ -1490,6 +2111,10 @@ reads UTC.</p>
                        f"{ui.esc(wifi['hotspot_error'])}"))
 
         networks = network.cached_networks()
+        # A name typed into "Other network" has to survive a failed join, or
+        # the only way to retry a hidden network is to type it again.
+        attempted = wifi.get("ssid", "")
+        in_list = any(net.get("ssid") == attempted for net in networks)
         address = config_mod.admin_url(self._lan_ip(),
                                        self.server.config.admin_port)
         # What you are on now, before what you could move to.
@@ -1535,7 +2160,9 @@ reads UTC.</p>
 {connected}
 {nearby}
 <form method="POST" action="/wifi">
-  {ui.network_picker(networks, selected=wifi.get("ssid", ""))}
+  {ui.network_picker(networks, selected=attempted,
+                     other_ssid="" if in_list else attempted,
+                     hidden=bool(wifi.get("hidden")))}
   <p class="note spaced">{hint}</p>
   <div data-wifi-password>{ui.row("Password",
       ui.password_input("wifi_password", "", input_id="wifi_password"),
@@ -1648,9 +2275,14 @@ next check, on whichever channel published it.</p>"""
     def _page_access(self) -> str:
         config = self.server.config
         password = config.admin_password
+        mode = "on" if password else "off"
         link = config_mod.admin_url(
             self._lan_ip(), config.admin_port,
             f"/settings?key={password}" if password else "/settings")
+        lede = ("This page and the dashboard need a password."
+                if password else
+                "This page and the dashboard are open to anyone on this "
+                "network.")
         current = ui.panel(
             "Sign in as admin",
             ui.copy_value(password, input_id="current")
@@ -1664,18 +2296,33 @@ next check, on whichever channel published it.</p>"""
               "same link the QR code on the device carries. Anyone with it "
               "can change these settings.</span></p>",
             quiet=True, cap_trail=ui.copy_button("autolink"))
+        field = ui.row(
+            "New password" if password else "Password",
+            ui.password_input("admin_password", "",
+                              input_id="admin_password"),
+            for_id="admin_password",
+            hint="At least six characters. You will stay logged in on this "
+                 "phone." + (" Leave it blank to keep the one in use."
+                             if password else ""))
+        # Said here rather than only in the card, because turning the
+        # password off is the one choice on this page that cannot be
+        # undone from somewhere else if the network turns out to be
+        # shared.
+        open_note = (
+            '<p class="note">Fine on a home network you trust &mdash; the '
+            "device is only reachable from it, and there is nothing to look "
+            "up on a phone to get in. Not fine on a network guests, flatmates "
+            "or an office share.</p>")
         return f"""<h1>Access</h1>
-<p class="lede">{"This page and the dashboard need a password."
-                 if password else
-                 "This page has no password: anyone on the network can "
-                 "change these settings."}</p>
+<p class="lede">{lede}</p>
 {self._flash()}
 {current}
 {autolink}
 <form method="POST" action="/settings/access" data-dirty>
-  {ui.row("New password", ui.password_input("admin_password", "",
-          input_id="admin_password"), for_id="admin_password",
-          hint="At least six characters. You stay logged in on this phone.")}
+  {ui.choice_cards("mode", self.ACCESS_CARDS, mode, controls="access",
+                   legend="Getting in")}
+  {ui.group("access", "on", field, current=mode)}
+  {ui.group("access", "off", open_note, current=mode)}
   {ui.save_bar()}
 </form>"""
 
@@ -1687,6 +2334,11 @@ next check, on whichever channel published it.</p>"""
             return bool(source.get("email") and source.get("password"))
         if kind == "nightscout":
             return bool(source.get("url"))
+        if kind == "glucocore":
+            # start_pollers also needs the device token, which lives on
+            # the config rather than on the person — _person_state passes
+            # that in by checking the pairing before it asks.
+            return bool(source.get("patient_id"))
         return True
 
     @staticmethod
@@ -1783,6 +2435,11 @@ next check, on whichever channel published it.</p>"""
             title, script = "Person", PERSON_SCRIPT
             body, back = self._page_person(index), "/settings/people"
             back_label = "People"
+        elif path == "/settings/glucocore":
+            title, body = "GlucoCore", self._page_glucocore()
+            script = PAIRING_SCRIPT
+        elif path == "/settings/weather":
+            title, body = "Weather", self._page_weather()
         elif path == "/settings/ranges":
             title, body = "Ranges", self._page_ranges()
         elif path == "/settings/network":
@@ -1818,6 +2475,12 @@ next check, on whichever channel published it.</p>"""
                 and not onboarding.open_without_login(post_path)):
             self._deny()
             return
+        # Ahead of the read below, because that one decodes the body as
+        # text and a JPEG is not text. This is the only route that takes
+        # bytes, and it reads its own body with its own cap.
+        if post_path == "/settings/person/wallpaper":
+            self._post_wallpaper()
+            return
         length = int(self.headers.get("Content-Length") or 0)
         raw_body = self.rfile.read(length) if length else b""
         if post_path == "/api/source/test":
@@ -1826,7 +2489,7 @@ next check, on whichever channel published it.</p>"""
         # keep_blank_values matters: blank means "unchanged" for every
         # credential field, and a dropped key cannot say that.
         form = {
-            k: v[0]
+            k: (v[0] if len(v) == 1 else v)
             for k, v in parse_qs(raw_body.decode(),
                                  keep_blank_values=True).items()
         }
@@ -1855,15 +2518,24 @@ next check, on whichever channel published it.</p>"""
         if post_path == "/settings/updates/channel":
             self._post_channel(form)
             return
+        if post_path in ("/settings/glucocore/pair",
+                         "/settings/glucocore/signin",
+                         "/settings/glucocore/register",
+                         "/settings/glucocore/cancel",
+                         "/settings/glucocore/unpair"):
+            self._post_glucocore(post_path, form)
+            return
         if post_path == "/wifi":
-            # A typed name always wins: it is only filled in when the
-            # person chose "Other network".
-            ssid = (form.get("wifi_other_ssid", "").strip()
-                    or form.get("wifi_ssid", "").strip())
-            if ssid == "__other__":
-                ssid = ""
+            # The typed name answers only when "Other network" is what was
+            # chosen. With scripts off that box is always on the page, so a
+            # name left in it used to override the network actually tapped.
+            picked = form.get("wifi_ssid", "").strip()
+            if picked and picked != "__other__":
+                ssid, hidden = picked, False
+            else:
+                ssid = form.get("wifi_other_ssid", "").strip()
+                hidden = bool(form.get("wifi_hidden"))
             password = form.get("wifi_password", "")
-            hidden = bool(form.get("wifi_hidden"))
             if not ssid:
                 self._send(ui.page(
                     "No network chosen",
@@ -1942,6 +2614,8 @@ next check, on whichever channel published it.</p>"""
     # a restart — ports, pollers and the display all read the file once,
     # at startup — so the page that follows waits for the new process.
     SECTION_SAVES = {
+        "/settings/screen": "_save_screen",
+        "/settings/weather": "_save_weather",
         "/settings/ranges": "_save_ranges",
         "/settings/clock": "_save_clock",
         "/settings/access": "_save_access",
@@ -2040,6 +2714,147 @@ next check, on whichever channel published it.</p>"""
         self._send(b"", "text/html", 303,
                    {"Location": f"/settings/updates?msg={msg}"})
 
+    # ---- settings: pairing with GlucoCore ----
+
+    def _post_glucocore(self, path: str, form: dict) -> None:
+        if path == "/settings/glucocore/unpair":
+            self._unpair_glucocore()
+            return
+        if path == "/settings/glucocore/cancel":
+            self._clear_signin_draft()
+            self._send(b"", "text/html", 303,
+                       {"Location": "/settings/glucocore?msg=signedout"})
+            return
+        if self._pairing_config():
+            # Already paired. Unpairing is the way to move a display to
+            # another account, and doing it deliberately beats a second
+            # pairing landing on top of the first.
+            self._send(b"", "text/html", 303,
+                       {"Location": "/settings/glucocore"})
+            return
+        if path == "/settings/glucocore/signin":
+            self._glucocore_signin(form)
+        elif path == "/settings/glucocore/register":
+            self._glucocore_register(form)
+        else:
+            self._glucocore_pair(form)
+
+    def _glucocore_page(self, form, banner: str, code: int = 400) -> None:
+        self._send(ui.page("GlucoCube — GlucoCore",
+                           self._page_glucocore(form=form, banner=banner),
+                           nav=True, back="/settings",
+                           script=PAIRING_SCRIPT).encode(),
+                   "text/html; charset=utf-8", code)
+
+    def _paired(self, device: dict, device_token: str, form: dict) -> None:
+        """The one ending all three ways of pairing share."""
+        try:
+            sync.write_pairing(self.server.config_path, device, device_token,
+                               network.hardware_id(),
+                               admin_port=self.server.config.admin_port,
+                               store=self.server.store)
+        except Exception as exc:  # noqa: BLE001
+            self._glucocore_page(form, ui.banner("err", ui.esc(str(exc))))
+            return
+        self._clear_signin_draft()
+        pairing.clear(self.server.store)
+        self._send(self._applying_page("/settings/glucocore?msg=paired",
+                                       "Paired"),
+                   "text/html; charset=utf-8")
+        restart_soon()
+
+    def _glucocore_pair(self, form: dict) -> None:
+        """A six-digit code, typed here."""
+        device_name = form.get("device_name", "").strip()
+        result, claimed = verify.glucocore_claim(form.get("code", ""),
+                                                 network.hardware_id(),
+                                                 device_name)
+        if not result.ok:
+            self._glucocore_page({**form, "how": "code"},
+                                 ui.failure(result.message, result.detail))
+            return
+        self._paired(claimed.get("device") or {}, claimed["deviceToken"],
+                     {**form, "how": "code"})
+
+    def _glucocore_signin(self, form: dict) -> None:
+        """An account signed in to, here, to create the display."""
+        email = form.get("email", "").strip()
+        result, session = verify.glucocore_session(email,
+                                                   form.get("password", ""))
+        if not result.ok or not session.get("token"):
+            self._glucocore_page({**form, "how": "signin"},
+                                 ui.failure(result.message, result.detail))
+            return
+        self.server.store.replace_params(self.SIGNIN_KEY, {
+            "token": session["token"],
+            "email": email,
+            "patients": session.get("patients") or [],
+            "suggested": socket.gethostname().split(".")[0],
+            "started_at": int(time.time() * 1000),
+        })
+        self._send(b"", "text/html", 303, {"Location": "/settings/glucocore"})
+
+    def _glucocore_register(self, form: dict) -> None:
+        draft = self._signin_draft()
+        if not draft:
+            self._glucocore_page({}, ui.banner(
+                "err", "That sign-in has expired — sign in again."))
+            return
+        known = {self._patient_id(patient)
+                 for patient in draft.get("patients") or []}
+        known.discard("")
+        # Only ids this account was actually shown: a hand-edited form must
+        # not pair a display to somebody else's data.
+        patient_ids = [pid for pid in _as_list(form.get("patient_ids"))
+                       if pid in known]
+        if not patient_ids:
+            self._glucocore_page(form, ui.banner(
+                "err", "Choose at least one person to show."))
+            return
+        name = (form.get("device_name", "").strip()
+                or draft.get("suggested") or "SugarCube")
+        result, registered = verify.glucocore_register(
+            draft["token"], name, network.hardware_id(), patient_ids,
+            display=self._raw_config().get("display") or {})
+        if not result.ok:
+            self._glucocore_page(form, ui.failure(result.message,
+                                                  result.detail), 502)
+            return
+        self._paired(registered.get("device") or {},
+                     registered["deviceToken"], form)
+
+    def _unpair_glucocore(self) -> None:
+        raw = self._raw_config()
+        users = raw.get("users") or []
+        for user in users:
+            if (user.get("source") or {}).get("type") != "glucocore":
+                continue
+            # Left with no source at all they become push people: their own
+            # port and API secret, ready for an uploader. Anything else
+            # would take their panel off the screen along with the pairing.
+            user.pop("source", None)
+            user["port"] = None
+            user["api_secret"] = (user.get("api_secret")
+                                  or config_mod.readable_secret(16))
+        raw.pop("glucocore", None)
+        config_mod.assign_ports(users,
+                                reserved={self.server.config.admin_port})
+        raw["users"] = users
+        try:
+            config_mod.write_atomic(raw, self.server.config_path)
+        except Exception as exc:  # noqa: BLE001
+            self._send(self._error_page(str(exc), "/settings/glucocore"),
+                       "text/html; charset=utf-8", 400)
+            return
+        # The config version the push listener was tracking belongs to a
+        # pairing that no longer exists.
+        self.server.store.replace_params(sync.LAST_VERSION_KEY, {})
+        log.info("Unpaired from GlucoCore; restarting")
+        self._send(self._applying_page("/settings/glucocore?msg=unpaired",
+                                       "Unpaired"),
+                   "text/html; charset=utf-8")
+        restart_soon()
+
     @staticmethod
     def _joining_page(ssid: str) -> bytes:
         return ui.page("Joining " + ssid, f"""{ui.BRAND_NAV}
@@ -2106,21 +2921,45 @@ shows it too.</p>""").encode()
                            or secrets_mod.token_hex(12)),
         }
         thresholds = {}
+        shown_in = units_mod.normalize(
+            raw.get("display", {}).get("units"))
         for key, label in (("low", "Low"), ("high", "High"),
                            ("urgent_low", "Urgent low"),
                            ("urgent_high", "Urgent high")):
             value = _number(form, f"th_{key}", label)
             if value is not None:
-                thresholds[key] = value
+                thresholds[key] = units_mod.from_display(value, shown_in)
         if thresholds:
             _check_ranges({**self._range_defaults(), **thresholds})
             user["thresholds"] = thresholds
+        art = (form.get("wallpaper") or "").strip()
+        if art and not self._known_wallpaper(art):
+            raise ValueError("That background is not on this device.")
+        if art:
+            user["wallpaper"] = art
+        elif prior.get("wallpaper") and "wallpaper" not in form:
+            # The form did not render the field — keep what is there rather
+            # than reading its absence as a choice.
+            user["wallpaper"] = prior["wallpaper"]
+        seconds = _number(form, "rotate_seconds", "Seconds on screen")
+        if seconds is not None:
+            if not 3 <= seconds <= 300:
+                raise ValueError("Seconds on screen has to be between 3 "
+                                 "and 300.")
+            user["rotate_seconds"] = seconds
         kind = form.get("source", "push")
         # Each pull source carries its own interval inside its own card, so
         # both fields reach the server and only the chosen one is read.
-        poll_field = "ns_poll" if kind == "nightscout" else "poll"
+        poll_field = ("ns_poll" if kind == "nightscout" and "ns_poll" in form
+                      else "poll")
         poll = max(15, int(_number(form, poll_field, "Check every") or 60))
-        if kind == "tidepool":
+        if prior_source.get("type") == "glucocore" and "source" not in form:
+            # The page showed this person's source as read-only, so the
+            # form says nothing about it. Without this, saving a rename or
+            # a threshold would quietly unlink them from GlucoCore and
+            # leave a panel with nothing feeding it.
+            user["source"] = prior_source
+        elif kind == "tidepool":
             # Blank means "keep what is saved": stored secrets are never
             # rendered back into the page, so an untouched field must not
             # wipe them.
@@ -2176,20 +3015,173 @@ shows it too.</p>""").encode()
                 "urgent_low": float(display.get("urgent_low", 55)),
                 "urgent_high": float(display.get("urgent_high", 250))}
 
+    # The most this device will hold in memory for a picture, and the
+    # most a 7-inch panel can use. GlucoCore caps uploads at the same
+    # figure; a display should not be the looser of the two.
+    MAX_WALLPAPER_BYTES = 2 * 1024 * 1024
+
+    def _save_screen(self, form: dict) -> None:
+        raw = self._raw_config()
+        display = raw.setdefault("display", {})
+        display["layout"] = config_mod.normalize_layout(form.get("layout"))
+        display["split_direction"] = config_mod.normalize_split_direction(
+            form.get("split_direction"))
+        # Blank means everyone, which is the absence of a cap rather than a
+        # number — so the key goes away instead of holding the last value.
+        cap = (form.get("split_max") or "").strip()
+        if cap.isdigit() and 1 <= int(cap) <= 6:
+            display["split_max"] = int(cap)
+        else:
+            display.pop("split_max", None)
+
+        seconds = _number(form, "rotate_seconds", "Seconds each person")
+        if seconds is not None:
+            if not 3 <= seconds <= 300:
+                raise ValueError("Seconds each person has to be between 3 "
+                                 "and 300.")
+            display["rotate_seconds"] = seconds
+        for key, label in (("wallpaper_dim", "Dim the art by"),
+                           ("night_dim_boost", "Dim further overnight by")):
+            value = _number(form, key, label)
+            if value is not None:
+                if not 0 <= value <= 100:
+                    raise ValueError(f"{label} has to be between 0 and 100.")
+                display[key] = value
+
+        art = (form.get("wallpaper") or "").strip()
+        if art and not self._known_wallpaper(art):
+            raise ValueError("That background is not on this device.")
+        display["wallpaper"] = art
+        config_mod.write_atomic(raw, self.server.config_path)
+
+    def _known_wallpaper(self, value: str) -> bool:
+        """A background this device can actually draw.
+
+        Checked rather than trusted, because a form field is not a fact:
+        an unknown value is a black screen with nothing to say why.
+        """
+        if value == "none":
+            return True
+        if wallpaper_mod.BUNDLED_RE.match(value):
+            return wallpaper_mod.BUNDLED_RE.match(value).group(1) in \
+                wallpaper_mod.BUNDLED
+        if wallpaper_mod.is_id(value):
+            return wallpaper_mod.cached_path(
+                self.server.config.database, value).exists()
+        return False
+
+    def _save_weather(self, form: dict) -> None:
+        raw = self._raw_config()
+        block = raw.setdefault("weather", {})
+        block["enabled"] = bool(form.get("enabled"))
+        block["units"] = config_mod.normalize_temperature_units(
+            form.get("units"))
+        asked = (form.get("place") or "").strip()
+        if not asked:
+            # Cleared on purpose: forget where this device is rather than
+            # keeping coordinates nobody can see on a page that says none.
+            block.pop("latitude", None)
+            block.pop("longitude", None)
+            block["place"] = ""
+        elif asked != (block.get("place") or ""):
+            # Resolved once, here, rather than on every poll: the poller
+            # should need nothing but two numbers.
+            try:
+                found = weather_mod.geocode(asked)
+            except Exception as exc:  # noqa: BLE001 - shown, never a crash
+                raise ValueError(
+                    f"Could not look that up: {exc}") from exc
+            if not found:
+                raise ValueError(f"Nowhere called {asked} was found.")
+            block.update(found)
+        config_mod.write_atomic(raw, self.server.config_path)
+
+    def _post_wallpaper(self) -> None:
+        """Take a picture for one person, or for the display.
+
+        Stored under a name that is the digest of its own bytes, which
+        makes it the same shape as an id from GlucoCore — so everything
+        downstream, the cache and the draw loop included, needs to know
+        nothing about where a background came from. It also means the same
+        picture uploaded twice is one file.
+        """
+        index = self._person_index()
+        back = ("/settings/people" if index is None
+                else f"/settings/person?i={index}")
+        try:
+            boundary = multipart_mod.boundary_of(
+                self.headers.get("Content-Type", ""))
+            if not boundary:
+                raise ValueError("That form did not send a file.")
+            body = multipart_mod.read_body(self, self.MAX_WALLPAPER_BYTES)
+            fields = multipart_mod.parse(body, boundary)
+            part = fields.get("image")
+            if not isinstance(part, tuple) or not part[1]:
+                raise ValueError("No picture was chosen.")
+            data = part[1]
+            if len(data) > self.MAX_WALLPAPER_BYTES:
+                raise multipart_mod.TooLarge(
+                    "that file is larger than 2 MB")
+            if not multipart_mod.looks_like_image(data):
+                raise ValueError("That file is not a JPEG or a PNG.")
+        except multipart_mod.TooLarge as exc:
+            self._send(self._error_page(str(exc), back),
+                       "text/html; charset=utf-8", 413)
+            return
+        except Exception as exc:  # noqa: BLE001 - shown, never a crash
+            self._send(self._error_page(str(exc), back),
+                       "text/html; charset=utf-8", 400)
+            return
+
+        name = hashlib.sha256(data).hexdigest()[:32]
+        wallpaper_mod.cached_path(self.server.config.database, name).parent \
+            .mkdir(parents=True, exist_ok=True)
+        wallpaper_mod._write_atomic(
+            wallpaper_mod.cached_path(self.server.config.database, name), data)
+
+        raw = self._raw_config()
+        if index is None or index == "new":
+            raw.setdefault("display", {})["wallpaper"] = name
+        else:
+            users = raw.get("users") or []
+            if index < len(users):
+                users[index]["wallpaper"] = name
+        try:
+            config_mod.write_atomic(raw, self.server.config_path)
+        except Exception as exc:  # noqa: BLE001
+            self._send(self._error_page(str(exc), back),
+                       "text/html; charset=utf-8", 400)
+            return
+        log.info("Wallpaper uploaded (%d bytes); restarting", len(data))
+        self._send(self._applying_page(f"{back}?msg=saved"),
+                   "text/html; charset=utf-8")
+        restart_soon()
+
     def _save_ranges(self, form: dict) -> None:
         raw = self._raw_config()
         display = raw.setdefault("display", {})
-        values = {}
+        # Two units in play, and telling them apart is the whole of it. The
+        # boxes hold numbers in the unit the page was *rendered* in, which
+        # a switch on this very form does not retroactively change; the
+        # radio says what to read in from now on. Reading the boxes in the
+        # newly chosen unit would silently move somebody's urgent low.
+        typed_in = units_mod.normalize(form.get("typed_units")
+                                       or display.get("units"))
+        chosen = units_mod.normalize(form.get("units") or typed_in)
+        values = {"units": chosen}
         for key, label in (("low", "The low"), ("high", "The high"),
                            ("urgent_low", "The urgent low"),
-                           ("urgent_high", "The urgent high"),
-                           ("stale_minutes", "Stale after")):
+                           ("urgent_high", "The urgent high")):
             value = _number(form, key, label)
             if value is not None:
-                values[key] = value
+                values[key] = units_mod.from_display(value, typed_in)
+        stale = _number(form, "stale_minutes", "Stale after")
+        if stale is not None:
+            values["stale_minutes"] = stale
         if values.get("stale_minutes", 1) <= 0:
             raise ValueError("Stale after has to be at least one minute.")
-        _check_ranges({**self._range_defaults(), **values})
+        _check_ranges({**self._range_defaults(),
+                       **{k: v for k, v in values.items() if k != "units"}})
         display.update(values)
         config_mod.write_atomic(raw, self.server.config_path)
 
@@ -2205,14 +3197,25 @@ shows it too.</p>""").encode()
         config_mod.write_atomic(raw, self.server.config_path)
 
     def _save_access(self, form: dict) -> None:
-        password = form.get("admin_password", "").strip()
-        if not password:
-            raise ValueError("Type a new password, or go back to keep the "
-                             "one in use.")
-        if len(password) < 6:
-            raise ValueError("The password must be at least six characters.")
         raw = self._raw_config()
-        raw.setdefault("admin", {})["password"] = password
+        admin = raw.setdefault("admin", {})
+        if form.get("mode", "on").strip() == "off":
+            # password_off is what tells the settings hub this is a choice
+            # and not a device somebody forgot to finish setting up, so it
+            # stops warning about it.
+            admin["password"] = ""
+            admin["password_off"] = True
+            config_mod.write_atomic(raw, self.server.config_path)
+            return
+        password = form.get("admin_password", "").strip()
+        current = self.server.config.admin_password
+        if not password and not current:
+            raise ValueError("Type a password, or choose No password.")
+        if password and len(password) < 6:
+            raise ValueError("The password must be at least six characters.")
+        password = password or current
+        admin["password"] = password
+        admin.pop("password_off", None)
         config_mod.write_atomic(raw, self.server.config_path)
         # Otherwise this browser's cookie stops matching the moment the new
         # process starts, and the page it was just on is gone.

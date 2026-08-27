@@ -40,6 +40,14 @@ log "Installing dependencies (python3, pygame, qrcode)"
 $SUDO apt-get update
 $SUDO apt-get install -y python3 python3-pygame python3-qrcode
 
+# websocket-client carries GlucoCore's realtime channel, which is how a
+# config change reaches a display in seconds rather than at the next
+# minute's poll. The app falls back to long-polling without it, so a
+# distribution that has not got the package must not fail the install.
+if ! $SUDO apt-get install -y python3-websocket; then
+    log "python3-websocket unavailable; GlucoCore config will long-poll"
+fi
+
 if ! python3 -c "import pygame" 2>/dev/null; then
     log "apt pygame unavailable; falling back to pip"
     $SUDO apt-get install -y python3-pip
@@ -59,7 +67,10 @@ repo = Path(sys.argv[1])
 config = json.loads((repo / "config.example.json").read_text())
 for user in config["users"]:
     user["api_secret"] = secrets.token_hex(12)
-# The web admin is exposed on port 80 — never leave it without a password.
+# The web admin is exposed on port 80, so a fresh install gets one.
+# It can be turned off later under Access, for a network its owner
+# trusts — that is a decision to make from the settings page, not a
+# default to ship.
 alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
 config["admin"] = {
     "port": 80,
