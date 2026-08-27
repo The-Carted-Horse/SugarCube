@@ -186,6 +186,22 @@ def test_a_bundled_name_this_device_does_not_have_is_a_flat_panel(surfaces):
     assert surfaces.get("bundled:nonesuch", (320, 200)) is None
 
 
+@pytest.mark.parametrize("name", sorted(wallpaper.PHOTOS))
+def test_every_bundled_photo_draws_something(surfaces, name):
+    """The shipped photographs answer the same contract as the drawn art."""
+    surface = surfaces.get(f"bundled:{name}", (320, 200))
+    assert surface is not None and surface.get_size() == (320, 200)
+
+
+def test_the_photos_are_offered_by_name():
+    """Every photo is in the picker's list, under a readable label."""
+    names = wallpaper.bundled_names()
+    for name in wallpaper.PHOTOS:
+        assert name in names
+    assert wallpaper.bundled_label("mountain-night") == "Mountain night"
+    assert wallpaper.bundled_label("reeds") == "Reeds"
+
+
 @pytest.mark.parametrize("value", ["", "none", "x" * 32])
 def test_nothing_to_draw_draws_nothing(surfaces, value):
     assert surfaces.get(value, (320, 200)) is None

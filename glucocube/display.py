@@ -1250,11 +1250,18 @@ class Display:
                          icon_c[1] + math.sin(angle) * icon_r)
                 pygame.draw.line(surface, color, inner, outer, 2)
         else:
-            # Moon: tapping goes back to dark mode.
-            pygame.draw.circle(surface, color, icon_c, icon_r * 0.8)
-            pygame.draw.circle(surface, self.pal.bg,
-                               (icon_c[0] + icon_r * 0.45,
-                                icon_c[1] - icon_r * 0.3), icon_r * 0.7)
+            # Moon: tapping goes back to dark mode. Carved on its own
+            # surface — pygame.draw writes alpha rather than blending, so
+            # the second circle punches a genuinely transparent bite and
+            # whatever sits behind the footer shows through it.
+            side = int(icon_r * 2) + 2
+            moon = pygame.Surface((side, side), pygame.SRCALPHA)
+            c = side // 2
+            pygame.draw.circle(moon, color, (c, c), icon_r * 0.8)
+            pygame.draw.circle(moon, (0, 0, 0, 0),
+                               (c + icon_r * 0.45, c - icon_r * 0.3),
+                               icon_r * 0.7)
+            surface.blit(moon, (icon_c[0] - c, icon_c[1] - c))
 
     # A miniature code, cell by cell: three finder squares and enough
     # data specks to read as a QR at fourteen pixels. Drawn rather than

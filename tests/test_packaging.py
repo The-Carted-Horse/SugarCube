@@ -205,6 +205,23 @@ def test_each_font_family_carries_its_licence():
     assert notices == {"OFL-JetBrainsMono.txt", "OFL-SpaceGrotesk.txt"}
 
 
+# --------------------------------------------------------- the wallpapers ----
+
+def test_the_bundled_photos_are_there():
+    """wallpaper.PHOTOS loads them by filename; a rename is a flat panel."""
+    from glucocube import wallpaper
+    photos = {path.name for path in (PACKAGE / "wallpapers").glob("*.jpg")}
+    assert set(wallpaper.PHOTOS.values()) <= photos
+
+
+def test_the_photos_carry_their_licences():
+    """Each photo keeps its own license; the notice travels with them."""
+    from glucocube import wallpaper
+    notice = (PACKAGE / "wallpapers" / "COPYING").read_text()
+    for filename in wallpaper.PHOTOS.values():
+        assert filename in notice
+
+
 # ---------------------------------------------------------- the workflows ----
 
 def workflows() -> list[Path]:

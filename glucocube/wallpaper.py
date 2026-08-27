@@ -9,9 +9,10 @@ that knows the difference:
                      GlucoCore appears on displays they do not own, and the
                      person who owns the wall needs a way to say "not
                      behind them, on mine" that is not the same as "unset".
-* ``"bundled:<n>"``— art this device draws itself. Costs the network
-                     nothing and works on a display that has never reached
-                     GlucoCore.
+* ``"bundled:<n>"``— art this device carries itself: a few drawn ramps,
+                     and a handful of bundled photographs. Costs the
+                     network nothing and works on a display that has
+                     never reached GlucoCore.
 * 32 hex           — bytes to fetch, cached on disk, keyed by that id.
 
 Two caches, and both matter. The bytes are cached on disk so a restart does
@@ -45,17 +46,40 @@ BUNDLED_RE = re.compile(r"^bundled:([a-z0-9][a-z0-9-]{0,31})$")
 
 ETAG_KEY = "__wallpapers"
 
-# Drawn, not shipped. display.py's own rule for the logo — "drawn rather
-# than blitted, so it stays crisp on any panel and adds no asset to carry
-# around" — applies here more than anywhere: four photographs would be
-# megabytes on every SD card, and these are backgrounds that spend their
-# life under a 60% scrim. Each is a vertical ramp plus one soft shape.
+# The drawn set: each is a vertical ramp plus one soft shape, generated
+# at whatever size the panel is — crisp anywhere, and no asset to carry.
 BUNDLED = {
     "reeds":  ((14, 26, 22), (32, 58, 44), (60, 92, 66)),
     "dusk":   ((28, 20, 38), (58, 34, 56), (104, 56, 62)),
     "tide":   ((10, 22, 38), (18, 46, 72), (36, 84, 110)),
     "slate":  ((16, 18, 21), (34, 38, 44), (58, 64, 72)),
 }
+
+# The shipped set: real photographs in ``wallpapers/`` beside this file,
+# about a megabyte for all six. They spend their life under the same
+# scrim as everything else, but a place beats a ramp at looking like one
+# — and they work on a display that has never reached GlucoCore. Each
+# stays under its own license; see wallpapers/COPYING.
+PHOTO_DIR = os.path.join(os.path.dirname(__file__), "wallpapers")
+PHOTOS = {
+    "ferns": "ferns.jpg",
+    "mountain-night": "mountain-night.jpg",
+    "aurora": "aurora.jpg",
+    "pier": "pier.jpg",
+    "surf": "surf.jpg",
+    "dunes": "dunes.jpg",
+}
+# Labels the settings selects show; anything absent reads as name.title().
+PHOTO_LABELS = {"mountain-night": "Mountain night", "pier": "Pier at dusk"}
+
+
+def bundled_names() -> list[str]:
+    """Every name ``bundled:<name>`` accepts — drawn first, then photos."""
+    return sorted(BUNDLED) + sorted(PHOTOS)
+
+
+def bundled_label(name: str) -> str:
+    return PHOTO_LABELS.get(name, name.title())
 
 
 def is_id(value: str) -> bool:
@@ -179,9 +203,13 @@ def refresh_async(store, config) -> threading.Thread:
 # --------------------------------------------------------------- drawing ----
 
 def _draw_bundled(name: str, size: tuple[int, int]):
-    """One of the bundled backgrounds, drawn at the size asked for."""
+    """One of the bundled backgrounds — a shipped photo, or a drawn ramp."""
     import pygame
 
+    filename = PHOTOS.get(name)
+    if filename:
+        image = pygame.image.load(os.path.join(PHOTO_DIR, filename))
+        return _scale_to_cover(image, size)
     ramp = BUNDLED.get(name)
     if ramp is None:
         return None

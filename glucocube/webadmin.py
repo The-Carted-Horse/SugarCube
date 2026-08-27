@@ -1415,8 +1415,8 @@ on a phone with no password to type.</p>
     def _wallpaper_options(self):
         """Nothing, the art on the device, and anything uploaded here."""
         options = [("", "Nothing")]
-        options += [(f"bundled:{name}", name.title())
-                    for name in sorted(wallpaper_mod.BUNDLED)]
+        options += [(f"bundled:{name}", wallpaper_mod.bundled_label(name))
+                    for name in wallpaper_mod.bundled_names()]
         for entry in self._uploaded_wallpapers():
             options.append((entry, "Uploaded picture"))
         return options
@@ -3062,9 +3062,9 @@ shows it too.</p>""").encode()
         """
         if value == "none":
             return True
-        if wallpaper_mod.BUNDLED_RE.match(value):
-            return wallpaper_mod.BUNDLED_RE.match(value).group(1) in \
-                wallpaper_mod.BUNDLED
+        bundled = wallpaper_mod.BUNDLED_RE.match(value)
+        if bundled:
+            return bundled.group(1) in wallpaper_mod.bundled_names()
         if wallpaper_mod.is_id(value):
             return wallpaper_mod.cached_path(
                 self.server.config.database, value).exists()

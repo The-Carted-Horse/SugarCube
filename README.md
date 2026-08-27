@@ -219,7 +219,10 @@ default; **Settings → The screen** switches between them, and a tap on the
 ambient screen brings the usual footer back for a few seconds so the
 sun/moon and the settings QR are still one press away.
 
-Backgrounds come from three places: four the device draws itself, anything
+Backgrounds come from three places: ten the device carries itself — four it
+draws, and six bundled photographs (ferns, Half Dome at night, an aurora, a
+pier at dusk, surf, dunes; each under its own license, see
+[`glucocube/wallpapers/COPYING`](glucocube/wallpapers/COPYING)) — anything
 uploaded on a person's settings page, and anything chosen in GlucoCore. A
 person can have their own, the display can have one for everyone else, and
 a person can be set to *nothing* — which is not the same as unset, and is
@@ -401,13 +404,17 @@ personal and hobby use, study and research, and use by charities, schools,
 public health bodies and government, whatever their funding. Commercial use
 needs written permission: open an issue to ask.
 
-Three things in this repository are **not** under those terms:
+Four things in this repository are **not** under those terms:
 
 - The **enclosure** is Sarah Sabanis's design, under
   [CC BY-NC-SA 4.0](enclosure/LICENSE).
 - The **bundled fonts** in `glucocube/fonts/` stay solely under the SIL Open
   Font License 1.1. Your rights in them, commercial use included, are
   untouched by the license above — the OFL requires exactly that.
+- The **bundled wallpapers** in `glucocube/wallpapers/` are photographs from
+  the [elementary OS wallpaper collection](https://github.com/elementary/wallpapers),
+  each solely under its own license (CC0, Unsplash, Pexels, or CC BY-SA 4.0) —
+  see [`glucocube/wallpapers/COPYING`](glucocube/wallpapers/COPYING).
 - The **SD card image** is Raspberry Pi OS, and every package in it keeps its
   own license. GlucoCube's terms reach only the GlucoCube layer.
 
