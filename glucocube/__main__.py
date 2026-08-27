@@ -178,6 +178,19 @@ def main() -> int:
     gc_token = config.glucocore.device_token if config.glucocore else ""
     pollers = start_pollers(config.users, store, glucocore_token=gc_token)
 
+    # The weather in the corner of the ambient screen, and the art behind
+    # it. Both are background work by construction: nothing about a
+    # picture or a temperature may hold up a glucose reading, so the
+    # fetches happen off the draw loop and a failure leaves the last one
+    # on screen.
+    from . import wallpaper as wallpaper_mod
+    from . import weather as weather_mod
+    weather_poller = weather_mod.start_poller(config, store)
+    if weather_poller:
+        pollers.append(weather_poller)
+    if gc_token:
+        wallpaper_mod.refresh_async(store, config)
+
     push_listener = None
     if config.glucocore and config.glucocore.device_token:
         from .push import start_push_listener

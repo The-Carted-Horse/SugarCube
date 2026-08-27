@@ -10,6 +10,7 @@ Protected with HTTP Basic auth when config.admin.password is set.
 """
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -22,6 +23,9 @@ import secrets as secrets_mod
 import socket
 
 from . import config as config_mod
+from . import multipart as multipart_mod
+from . import wallpaper as wallpaper_mod
+from . import weather as weather_mod
 from . import captive, network, onboarding, predict, synclog, ui, updater
 from . import glucocore, pairing, sync, verify
 from . import units as units_mod
@@ -1070,6 +1074,11 @@ class AdminHandler(BaseHTTPRequestHandler):
                 f"{zone.replace('_', ' ')} · {time.strftime('%H:%M')}" if zone
                 else f"No zone set — the clock reads {time.strftime('%H:%M')}",
                 lead=ui.icon("clock")),
+            ui.menu_item(
+                "/settings/weather", "Weather",
+                (self._raw_config().get("weather") or {}).get("place")
+                or "Off — the ambient screen shows no weather",
+                lead=ui.icon("picture")),
             ui.menu_item("/settings/updates", "Updates", updates_sub,
                          lead=ui.icon("update"),
                          badge="new" if update.get("available") else "",
@@ -1105,6 +1114,14 @@ class AdminHandler(BaseHTTPRequestHandler):
         theme = self._theme()
         other, label = (("light", "Switch to Day") if theme == "dark"
                         else ("dark", "Switch to Night"))
+        display = self._raw_config().get("display", {})
+        layout = config_mod.normalize_layout(display.get("layout"))
+        direction = config_mod.normalize_split_direction(
+            display.get("split_direction"))
+        cap = display.get("split_max")
+        people = len(self._raw_config().get("users") or [])
+        caps = [("", "Everyone")] + [(str(n), f"{n} person" if n == 1
+                                      else f"{n} people") for n in range(1, 7)]
         return f"""<h1>The screen</h1>
 <p class="lede">Exactly what the device is showing, refreshed every few
 seconds.</p>
@@ -1119,7 +1136,91 @@ seconds.</p>
       The sun or moon on the device does the same thing, and the QR beside
       it opens these settings on a phone — no password to type.</span>
   </div>
+</form>
+<form method="POST" action="/settings/screen">
+  <label class="lbl">How the people share the screen</label>
+  {ui.choice_cards("layout", self.LAYOUT_CARDS, layout, controls="lay")}
+  {ui.group("lay", "split",
+            ui.row("Panels run",
+                   ui.select("split_direction", self.SPLIT_DIRECTIONS,
+                             direction, input_id="split_direction"),
+                   for_id="split_direction",
+                   hint="Side by side on a landscape screen, unless you say "
+                        "otherwise.")
+            + ui.row("At most on screen",
+                     ui.select("split_max", caps,
+                               "" if not cap else str(cap),
+                               input_id="split_max"),
+                     for_id="split_max",
+                     hint=f"{people} on this display. More than two on a 7-inch "
+                          "panel makes each number small; a smaller number "
+                          "here shows them a page at a time."),
+            current=layout)}
+  {ui.group("lay", "rotate",
+            ui.row("Seconds each person",
+                   ui.text_input("rotate_seconds",
+                                 display.get("rotate_seconds", 12),
+                                 kind="number", input_id="rotate_seconds"),
+                   for_id="rotate_seconds",
+                   hint="An urgent reading holds the screen until it clears, "
+                        "whoever's turn it was."),
+            current=layout)}
+  <label class="lbl">Background</label>
+  {ui.row("Behind everyone",
+          ui.select("wallpaper", self._wallpaper_options(),
+                    display.get("wallpaper", ""), input_id="wallpaper"),
+          for_id="wallpaper",
+          hint="What sits behind a person who has none of their own. Add "
+               "pictures on each person's page.")}
+  {ui.row("Dim the art by",
+          ui.text_input("wallpaper_dim", display.get("wallpaper_dim", 60),
+                        kind="number", input_id="wallpaper_dim"),
+          for_id="wallpaper_dim",
+          hint="Per cent. The reading has to stay readable over whatever is "
+               "behind it — less dimming shows more of the picture.")}
+  {ui.row("Dim further overnight by",
+          ui.text_input("night_dim_boost",
+                        display.get("night_dim_boost", 24), kind="number",
+                        input_id="night_dim_boost"),
+          for_id="night_dim_boost",
+          hint="Added to the figure above between the hours set on the "
+               "ranges page.")}
+  <div class="actions stick">
+    <button type="submit">Save &amp; apply</button>
+    <span class="note">Restarts the display, about five seconds.</span>
+  </div>
 </form>"""
+
+    # The two ways a display can arrange the people on it. Cards rather
+    # than a select because this is the choice that changes what the
+    # screen *is*, and it deserves to be the thing you see.
+    LAYOUT_CARDS = (
+        ("split", "Everyone at once",
+         "A panel each, side by side — what this display has always done."),
+        ("rotate", "One at a time",
+         "Full-screen, over a background, moving on every few seconds."),
+    )
+    SPLIT_DIRECTIONS = (
+        ("auto", "However the screen is turned"),
+        ("columns", "Side by side"),
+        ("rows", "Stacked"),
+    )
+
+    def _wallpaper_options(self):
+        """Nothing, the art on the device, and anything uploaded here."""
+        options = [("", "Nothing")]
+        options += [(f"bundled:{name}", name.title())
+                    for name in sorted(wallpaper_mod.BUNDLED)]
+        for entry in self._uploaded_wallpapers():
+            options.append((entry, "Uploaded picture"))
+        return options
+
+    def _uploaded_wallpapers(self):
+        directory = wallpaper_mod.cache_dir(self.server.config.database)
+        if not directory.is_dir():
+            return []
+        return sorted(e.name for e in directory.iterdir()
+                      if e.is_file() and wallpaper_mod.is_id(e.name))
 
     def _page_people(self) -> str:
         users = self._raw_config().get("users") or []
@@ -1302,6 +1403,44 @@ seconds.</p>
                 + ui.group(control, "nightscout", nightscout, current=stype)
                 + ui.group(control, ["tidepool", "nightscout"], pull_extra,
                            current=stype))
+        # Their own background, and how long they hold the screen when the
+        # display shows one person at a time. Both are theirs rather than
+        # the display's, so both live here.
+        art = ui.row(
+            "Behind them",
+            ui.select("wallpaper",
+                      [("", "Whatever the display is using"),
+                       ("none", "Nothing, even if the display has art")]
+                      + self._wallpaper_options()[1:],
+                      pick("wallpaper", user.get("wallpaper", "")),
+                      input_id="wallpaper"),
+            for_id="wallpaper", inline=False)
+        art += ui.row(
+            "Seconds on screen",
+            ui.text_input("rotate_seconds",
+                          pick("rotate_seconds",
+                               user.get("rotate_seconds") or ""),
+                          kind="number", placeholder="default",
+                          input_id="rotate_seconds"),
+            for_id="rotate_seconds",
+            hint="Blank uses the display's own. Only used when the screen "
+                 "shows one person at a time.")
+        upload = ""
+        if not adding:
+            # Its own form: a file cannot ride along with the rest, and
+            # this one is the only thing on the site that posts bytes.
+            upload = f"""
+<form method="POST" action="/settings/person/wallpaper?i={ui.esc(index)}"
+      enctype="multipart/form-data">
+  {ui.row("Add a picture", ui.file_input("image"), inline=False,
+          hint="JPEG or PNG, up to 2 MB. Nothing is resized — the screen is "
+               "800&times;480, and anything much bigger is bytes for no "
+               "visible gain.")}
+  <div class="actions">
+    <button type="submit" class="secondary">Upload &amp; apply</button>
+  </div>
+</form>"""
+
         name = pick("name", user.get("name", ""))
         heading = user.get("name") or "Add a person"
         return f"""<h1>{ui.esc(heading)}</h1>
@@ -1316,11 +1455,12 @@ seconds.</p>
   <label class="lbl">Where the data comes from</label>
   {sources_html}
   {ranges}
+  <details class="ranges"><summary>Background</summary>{art}</details>
   <div class="actions stick">
     <button type="submit">{"Add" if adding else "Save"} &amp; apply</button>
     <span class="note">Restarts the display, about five seconds.</span>
   </div>
-</form>{remove}"""
+</form>{upload}{remove}"""
 
     # ---- settings: GlucoCore ----
 
@@ -1554,6 +1694,47 @@ when.</p>
         ("mg/dL", "mg/dL", "What the United States reads"),
         ("mmol/L", "mmol/L", "What most of the rest of the world reads"),
     )
+
+    def _page_weather(self) -> str:
+        raw = self._raw_config().get("weather") or {}
+        enabled = bool(raw.get("enabled"))
+        place = raw.get("place") or ""
+        located = raw.get("latitude") is not None
+        state = ""
+        if enabled and located:
+            reading = weather_mod.current(self.server.store)
+            state = ui.banner("ok", f"Showing the weather for "
+                                    f"{ui.esc(place or 'the saved location')}."
+                              + ("" if reading else
+                                 " Nothing fetched yet — the first reading "
+                                 "arrives within a quarter of an hour."))
+        elif enabled:
+            state = ui.banner("warn", "Turned on, but this device does not "
+                                      "know where it is yet.")
+        return f"""<h1>Weather</h1>
+<p class="lede">The temperature in the corner of the ambient screen. Off
+until you say where the device is — a guess from the time zone would
+confidently show the wrong town.</p>
+{state}
+<form method="POST" action="/settings/weather">
+  {ui.row("Show the weather",
+          ui.checkbox("enabled", "On", enabled), inline=False)}
+  {ui.row("Town",
+          ui.text_input("place", place, input_id="place",
+                        placeholder="Sheffield"),
+          for_id="place", inline=False,
+          hint="Looked up once when you save, then never again. Clear it to "
+               "forget where this device is.")}
+  {ui.row("Temperature in",
+          ui.select("units", (("fahrenheit", "Fahrenheit"),
+                              ("celsius", "Celsius")),
+                    raw.get("units", "fahrenheit"), input_id="units"),
+          for_id="units")}
+  <div class="actions stick">
+    <button type="submit">Save &amp; apply</button>
+    <span class="note">Restarts the display, about five seconds.</span>
+  </div>
+</form>"""
 
     def _page_ranges(self) -> str:
         display = self._raw_config().get("display", {})
@@ -1879,6 +2060,8 @@ check, on whichever channel published it.</p>"""
         elif path == "/settings/glucocore":
             title, body = "GlucoCore", self._page_glucocore()
             script = PAIRING_SCRIPT
+        elif path == "/settings/weather":
+            title, body = "Weather", self._page_weather()
         elif path == "/settings/ranges":
             title, body = "Ranges", self._page_ranges()
         elif path == "/settings/network":
@@ -1913,6 +2096,12 @@ check, on whichever channel published it.</p>"""
         if (not self._authorized()
                 and not onboarding.open_without_login(post_path)):
             self._deny()
+            return
+        # Ahead of the read below, because that one decodes the body as
+        # text and a JPEG is not text. This is the only route that takes
+        # bytes, and it reads its own body with its own cap.
+        if post_path == "/settings/person/wallpaper":
+            self._post_wallpaper()
             return
         length = int(self.headers.get("Content-Length") or 0)
         raw_body = self.rfile.read(length) if length else b""
@@ -2045,6 +2234,8 @@ check, on whichever channel published it.</p>"""
     # a restart — ports, pollers and the display all read the file once,
     # at startup — so the page that follows waits for the new process.
     SECTION_SAVES = {
+        "/settings/screen": "_save_screen",
+        "/settings/weather": "_save_weather",
         "/settings/ranges": "_save_ranges",
         "/settings/clock": "_save_clock",
         "/settings/access": "_save_access",
@@ -2360,6 +2551,21 @@ shows it too.</p>""").encode()
         if thresholds:
             _check_ranges({**self._range_defaults(), **thresholds})
             user["thresholds"] = thresholds
+        art = (form.get("wallpaper") or "").strip()
+        if art and not self._known_wallpaper(art):
+            raise ValueError("That background is not on this device.")
+        if art:
+            user["wallpaper"] = art
+        elif prior.get("wallpaper") and "wallpaper" not in form:
+            # The form did not render the field — keep what is there rather
+            # than reading its absence as a choice.
+            user["wallpaper"] = prior["wallpaper"]
+        seconds = _number(form, "rotate_seconds", "Seconds on screen")
+        if seconds is not None:
+            if not 3 <= seconds <= 300:
+                raise ValueError("Seconds on screen has to be between 3 "
+                                 "and 300.")
+            user["rotate_seconds"] = seconds
         kind = form.get("source", "push")
         poll = max(15, int(_number(form, "poll", "Check every") or 60))
         if prior_source.get("type") == "glucocore" and "source" not in form:
@@ -2423,6 +2629,148 @@ shows it too.</p>""").encode()
                 "high": float(display.get("high", 180)),
                 "urgent_low": float(display.get("urgent_low", 55)),
                 "urgent_high": float(display.get("urgent_high", 250))}
+
+    # The most this device will hold in memory for a picture, and the
+    # most a 7-inch panel can use. GlucoCore caps uploads at the same
+    # figure; a display should not be the looser of the two.
+    MAX_WALLPAPER_BYTES = 2 * 1024 * 1024
+
+    def _save_screen(self, form: dict) -> None:
+        raw = self._raw_config()
+        display = raw.setdefault("display", {})
+        display["layout"] = config_mod.normalize_layout(form.get("layout"))
+        display["split_direction"] = config_mod.normalize_split_direction(
+            form.get("split_direction"))
+        # Blank means everyone, which is the absence of a cap rather than a
+        # number — so the key goes away instead of holding the last value.
+        cap = (form.get("split_max") or "").strip()
+        if cap.isdigit() and 1 <= int(cap) <= 6:
+            display["split_max"] = int(cap)
+        else:
+            display.pop("split_max", None)
+
+        seconds = _number(form, "rotate_seconds", "Seconds each person")
+        if seconds is not None:
+            if not 3 <= seconds <= 300:
+                raise ValueError("Seconds each person has to be between 3 "
+                                 "and 300.")
+            display["rotate_seconds"] = seconds
+        for key, label in (("wallpaper_dim", "Dim the art by"),
+                           ("night_dim_boost", "Dim further overnight by")):
+            value = _number(form, key, label)
+            if value is not None:
+                if not 0 <= value <= 100:
+                    raise ValueError(f"{label} has to be between 0 and 100.")
+                display[key] = value
+
+        art = (form.get("wallpaper") or "").strip()
+        if art and not self._known_wallpaper(art):
+            raise ValueError("That background is not on this device.")
+        display["wallpaper"] = art
+        config_mod.write_atomic(raw, self.server.config_path)
+
+    def _known_wallpaper(self, value: str) -> bool:
+        """A background this device can actually draw.
+
+        Checked rather than trusted, because a form field is not a fact:
+        an unknown value is a black screen with nothing to say why.
+        """
+        if value == "none":
+            return True
+        if wallpaper_mod.BUNDLED_RE.match(value):
+            return wallpaper_mod.BUNDLED_RE.match(value).group(1) in \
+                wallpaper_mod.BUNDLED
+        if wallpaper_mod.is_id(value):
+            return wallpaper_mod.cached_path(
+                self.server.config.database, value).exists()
+        return False
+
+    def _save_weather(self, form: dict) -> None:
+        raw = self._raw_config()
+        block = raw.setdefault("weather", {})
+        block["enabled"] = bool(form.get("enabled"))
+        block["units"] = config_mod.normalize_temperature_units(
+            form.get("units"))
+        asked = (form.get("place") or "").strip()
+        if not asked:
+            # Cleared on purpose: forget where this device is rather than
+            # keeping coordinates nobody can see on a page that says none.
+            block.pop("latitude", None)
+            block.pop("longitude", None)
+            block["place"] = ""
+        elif asked != (block.get("place") or ""):
+            # Resolved once, here, rather than on every poll: the poller
+            # should need nothing but two numbers.
+            try:
+                found = weather_mod.geocode(asked)
+            except Exception as exc:  # noqa: BLE001 - shown, never a crash
+                raise ValueError(
+                    f"Could not look that up: {exc}") from exc
+            if not found:
+                raise ValueError(f"Nowhere called {asked} was found.")
+            block.update(found)
+        config_mod.write_atomic(raw, self.server.config_path)
+
+    def _post_wallpaper(self) -> None:
+        """Take a picture for one person, or for the display.
+
+        Stored under a name that is the digest of its own bytes, which
+        makes it the same shape as an id from GlucoCore — so everything
+        downstream, the cache and the draw loop included, needs to know
+        nothing about where a background came from. It also means the same
+        picture uploaded twice is one file.
+        """
+        index = self._person_index()
+        back = ("/settings/people" if index is None
+                else f"/settings/person?i={index}")
+        try:
+            boundary = multipart_mod.boundary_of(
+                self.headers.get("Content-Type", ""))
+            if not boundary:
+                raise ValueError("That form did not send a file.")
+            body = multipart_mod.read_body(self, self.MAX_WALLPAPER_BYTES)
+            fields = multipart_mod.parse(body, boundary)
+            part = fields.get("image")
+            if not isinstance(part, tuple) or not part[1]:
+                raise ValueError("No picture was chosen.")
+            data = part[1]
+            if len(data) > self.MAX_WALLPAPER_BYTES:
+                raise multipart_mod.TooLarge(
+                    "that file is larger than 2 MB")
+            if not multipart_mod.looks_like_image(data):
+                raise ValueError("That file is not a JPEG or a PNG.")
+        except multipart_mod.TooLarge as exc:
+            self._send(self._error_page(str(exc), back),
+                       "text/html; charset=utf-8", 413)
+            return
+        except Exception as exc:  # noqa: BLE001 - shown, never a crash
+            self._send(self._error_page(str(exc), back),
+                       "text/html; charset=utf-8", 400)
+            return
+
+        name = hashlib.sha256(data).hexdigest()[:32]
+        wallpaper_mod.cached_path(self.server.config.database, name).parent \
+            .mkdir(parents=True, exist_ok=True)
+        wallpaper_mod._write_atomic(
+            wallpaper_mod.cached_path(self.server.config.database, name), data)
+
+        raw = self._raw_config()
+        if index is None or index == "new":
+            raw.setdefault("display", {})["wallpaper"] = name
+        else:
+            users = raw.get("users") or []
+            if index < len(users):
+                users[index]["wallpaper"] = name
+        try:
+            config_mod.write_atomic(raw, self.server.config_path)
+        except Exception as exc:  # noqa: BLE001
+            self._send(self._error_page(str(exc), back),
+                       "text/html; charset=utf-8", 400)
+            return
+        log.info("Wallpaper uploaded (%d bytes); restarting", len(data))
+        self._send(self._applying_page(f"{back}?msg=saved"),
+                   "text/html; charset=utf-8")
+        restart_soon()
 
     def _save_ranges(self, form: dict) -> None:
         raw = self._raw_config()

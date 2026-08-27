@@ -501,10 +501,12 @@ def test_a_push_says_out_loud_what_this_display_ignores(tmp_path, caplog):
     listed = [line.split(": ")[-1] for line in caplog.text.splitlines()
               if "does not apply" in line]
     ignored = set(listed[0].split(", "))
-    assert ignored == {"alert_urgent_low", "rotate_seconds"}
-    # `low` is applied, and `brightness` is applied by the display rather
-    # than through config.json — neither is somebody's setting going
-    # nowhere, so neither belongs in that line.
+    assert ignored == {"alert_urgent_low"}
+    # `low` is applied, `brightness` is applied by the display rather than
+    # through config.json, and `rotate_seconds` is applied now that the
+    # screen has a mode that rotates — none of them is somebody's setting
+    # going nowhere, so none belongs in that line. This display still does
+    # not sound alarms, so `alert_urgent_low` does.
 
 
 def test_the_brightness_a_push_carries_reaches_the_display(tmp_path):

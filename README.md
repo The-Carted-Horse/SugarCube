@@ -175,19 +175,56 @@ what went wrong.
 
 ### What a paired display takes from GlucoCore
 
-Who it shows, what they are called, the in-range and urgent bands, the
-time zone, the staleness cutoff — and the backlight: a daytime brightness
-and a dimmer night-time one, with the hours between which the night figure
-applies (equal hours mean never). Dimming needs a panel with a backlight
-under `/sys/class/backlight`, which the official 7" display has and an
-HDMI monitor does not; without one the setting is simply ignored.
+Who it shows and in what order, what they are called, the in-range and
+urgent bands, the time zone, the clock format, the staleness cutoff — and
+the backlight: a daytime brightness and a dimmer night-time one, with the
+hours between which the night figure applies (equal hours mean never).
+Dimming needs a panel with a backlight under `/sys/class/backlight`, which
+the official 7" display has and an HDMI monitor does not; without one the
+setting is simply ignored.
 
-GlucoCore can also send settings this display does nothing with — a
-rotation interval, which means nothing to a screen that shows everyone at
-once, and the alert toggles, because this is not an alarm device (see
+It also takes how the people share the screen, and the art behind them —
+see [Ambient mode](#ambient-mode). A background chosen in GlucoCore is
+fetched once and kept, so a display redraws from its own copy and only
+re-downloads when the picture actually changes.
+
+GlucoCore can still send settings this display does nothing with — the
+alert toggles, because this is not an alarm device (see
 [Safety note](#safety-note)). Each config push logs what it did not apply,
 so "I changed it and nothing happened" has an answer in
 [`/log`](#the-web-app).
+
+### Ambient mode
+
+A second way to draw the screen, for a display that lives on a nightstand
+or a desk rather than a kitchen wall: **one person at a time, full-bleed,
+over a background**, with the time and the weather in the corner and
+everything else anchored out of the middle so the picture stays visible.
+The two-panel dashboard is unchanged and is still what a display shows by
+default; **Settings → The screen** switches between them, and a tap on the
+ambient screen brings the usual footer back for a few seconds so the
+sun/moon and the settings QR are still one press away.
+
+Backgrounds come from three places: four the device draws itself, anything
+uploaded on a person's settings page, and anything chosen in GlucoCore. A
+person can have their own, the display can have one for everyone else, and
+a person can be set to *nothing* — which is not the same as unset, and is
+how you keep a picture off one person on your own wall when they have
+chosen one for themselves.
+
+The art is dimmed, by a figure you set, and dimmed further overnight. That
+is not a style choice: the reading has to stay readable over whatever is
+behind it. For the same reason the border carries the glucose state
+whatever the picture is doing, a stale reading still goes grey and drops
+its arrow, and **an urgent reading holds the screen** rather than taking
+its turn — see the [Safety note](#safety-note).
+
+The weather is off until you say where the device is, under
+**Settings → Weather**. It asks [Open-Meteo](https://open-meteo.com/),
+which needs no account and no key, every fifteen minutes; a town name is
+looked up once, when you save it. Guessing a location from the time zone
+would need a coordinate table on the device and would confidently show the
+wrong town's sky, so it does not.
 
 ### From GlucoCore's devices screen
 

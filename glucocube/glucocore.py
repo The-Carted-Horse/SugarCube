@@ -232,6 +232,36 @@ def heartbeat(device_token: str, state: dict, timeout: float = 30) -> None:
              body=state, timeout=timeout)
 
 
+def fetch_wallpaper(device_token: str, wallpaper_id: str, etag: str = "",
+                    timeout: float = 60) -> tuple[bytes | None, str]:
+    """The bytes behind one background, or None if the cached copy still fits.
+
+    Not through _request: that decodes JSON, and this is a JPEG. The same
+    shape fetch_patient_data uses, for the same reason.
+
+    A background never changes under its id — a different picture is a
+    different id — so the ETag is exact rather than advisory, and sending
+    it back is what stops a display re-pulling two megabytes every time a
+    threshold moves. Answers (None, etag) on a 304, which is the whole
+    point of asking.
+    """
+    headers = {SESSION_HEADER: device_token, "Accept": "image/*"}
+    if etag:
+        headers["If-None-Match"] = etag
+    req = urllib.request.Request(
+        f"{GLUCOCORE_BASE}/v1/sugar_cubes/me/wallpapers/{wallpaper_id}",
+        headers=headers,
+    )
+    try:
+        with _open(req, timeout) as resp:
+            return resp.read(), resp.headers.get("ETag") or etag
+    except urllib.error.HTTPError as exc:
+        if exc.code == 304:
+            exc.close()
+            return None, etag
+        raise
+
+
 def fetch_patient_data(device_token: str, patient_id: str,
                        start_date: str, timeout: float = 60) -> list[dict]:
     path = (

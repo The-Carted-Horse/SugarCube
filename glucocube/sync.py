@@ -13,15 +13,26 @@ LAST_VERSION_KEY = "__glucocore_config_version"
 
 
 # What the device takes out of a remote display block. Everything else
-# GlucoCore can say is not applied at all — a rotation interval means
-# nothing to a screen that shows everyone at once, and this deliberately
-# does not sound alarms — and `unapplied_display_keys` is what says so out
-# loud, rather than leaving somebody to wonder why a setting they changed
-# did nothing. Every name here must be a DisplayConfig field: config.load
+# GlucoCore can say is not applied at all — this deliberately does not
+# sound alarms — and `unapplied_display_keys` is what says so out loud,
+# rather than leaving somebody to wonder why a setting they changed did
+# nothing. Every name here must be a DisplayConfig field: config.load
 # builds it with **display, so an unknown key stops the device booting.
 DISPLAY_KEYS = ("timezone", "units", "low", "high", "urgent_low",
                 "urgent_high", "stale_minutes", "brightness",
-                "night_brightness", "night_from_hour", "night_to_hour")
+                "night_brightness", "night_from_hour", "night_to_hour",
+                "time_format", "layout", "split_direction", "split_max",
+                "rotate_seconds", "wallpaper", "wallpaper_dim",
+                "night_dim_boost")
+
+# Two of those mean something by their absence, and the rest do not.
+#
+# "no art" and "everyone on screen" are values, and GlucoCore says them by
+# leaving the key out rather than by sending a sentinel — its config layer
+# deletes a key rather than storing an empty one. Every other key keeps the
+# leave-it-alone rule below, because a push that omits a brightness is a
+# push that is not talking about brightness.
+CLEARED_BY_ABSENCE = {"wallpaper": "", "split_max": None}
 
 
 def display_from_remote(display: dict, remote: dict) -> dict:
@@ -36,6 +47,8 @@ def display_from_remote(display: dict, remote: dict) -> dict:
     for key in DISPLAY_KEYS:
         if key in remote_display and remote_display[key] not in (None, ""):
             merged[key] = remote_display[key]
+        elif key in CLEARED_BY_ABSENCE:
+            merged[key] = CLEARED_BY_ABSENCE[key]
     return merged
 
 
@@ -43,6 +56,25 @@ def patient_label(remote: dict, patient_id: str) -> str:
     """What GlucoCore calls this person on this display."""
     per = (remote.get("perPatient") or {}).get(patient_id) or {}
     return str(per.get("label") or "").strip() or patient_id
+
+
+def patient_extras(remote: dict, patient_id: str) -> dict:
+    """This person's own background and time on screen, if they have any.
+
+    Only what UserConfig has a field for. A key GlucoCore sends that this
+    firmware does not know is dropped here rather than written into
+    config.json, for the same reason DISPLAY_KEYS is a whitelist: the user
+    dicts are built with **u at load, and an unknown key stops the boot.
+    """
+    per = (remote.get("perPatient") or {}).get(patient_id) or {}
+    extras = {}
+    wallpaper = str(per.get("wallpaper") or "").strip()
+    if wallpaper:
+        extras["wallpaper"] = wallpaper
+    seconds = per.get("rotate_seconds")
+    if isinstance(seconds, (int, float)) and seconds > 0:
+        extras["rotate_seconds"] = float(seconds)
+    return extras
 
 
 def write_pairing(config_path, device: dict, device_token: str,
@@ -175,6 +207,7 @@ def apply_remote_config(
                 "poll_seconds": 60,
             },
             **({"thresholds": thresholds} if thresholds else {}),
+            **patient_extras(remote, patient_id),
         })
 
     if not patient_ids:

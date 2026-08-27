@@ -374,6 +374,9 @@ ICONS = {
               ' 10.3 8Z"/><path d="M18.5 15.5 19.3 18l2.5.8-2.5.9-.8 2.4'
               '-.9-2.4-2.4-.9 2.4-.8Z"/>',
     "log": '<path d="M5.5 4.5h13v15h-13z"/><path d="M8.5 9h7M8.5 12.5h7M8.5 16h4"/>',
+    "picture": '<rect x="3" y="4.5" width="18" height="15" rx="2"/>'
+               '<circle cx="8.5" cy="10" r="1.8"/>'
+               '<path d="M3.4 17.2 9 12l3.6 3.2L16 12.4l4.6 4.4"/>',
     "cloud": '<path d="M7.3 18.5a4.3 4.3 0 0 1-.4-8.6 5.6 5.6 0 0 1 10.7-1.2'
              ' 3.9 3.9 0 0 1-.7 7.8Z"/>'
              '<path d="M12 10.6v6.2M9.5 14.3 12 16.8l2.5-2.5"/>',
@@ -590,6 +593,14 @@ def select(name: str, options, selected: str = "", *, input_id: str = "",
     )
     return (f'<select id="{esc(ident)}" name="{esc(name)}" {extra}>'
             f"{body}</select>")
+
+
+def file_input(name: str, *, accept: str = "image/png,image/jpeg",
+               input_id: str = "", extra: str = "") -> str:
+    """A file picker. The only control on this site that posts bytes."""
+    input_id = input_id or f"f_{name}"
+    return (f'<input type="file" id="{esc(input_id)}" name="{esc(name)}"'
+            f' accept="{esc(accept)}" {extra}>')
 
 
 def checkbox(name: str, label: str, checked: bool = False, *,
