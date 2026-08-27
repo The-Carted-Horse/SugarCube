@@ -18,11 +18,13 @@ import html
 
 STYLE = """
 :root, [data-theme=dark] { color-scheme: dark;
-  --bg:#0d1117; --card:#161b22; --raise:#1c232c; --line:#2d333b; --fg:#ebeef1;
+  --bg:#0d1117; --bg-top:#131a23; --card:#161b22; --raise:#1c232c;
+  --line:#2d333b; --fg:#ebeef1;
   --dim:#9aa4af; --faint:#6e7681; --accent:#58a6ff; --btn:#238636;
   --btn-fg:#ffffff; --danger:#f85149; --ok:#3fb950; --warn:#d29922; }
 [data-theme=light] { color-scheme: light;
-  --bg:#f4f6f8; --card:#ffffff; --raise:#eaeef2; --line:#c6ccd3; --fg:#1a2027;
+  --bg:#f4f6f8; --bg-top:#fdfdfe; --card:#ffffff; --raise:#eaeef2;
+  --line:#c6ccd3; --fg:#1a2027;
   --dim:#5c6670; --faint:#8a939c; --accent:#0969da; --btn:#1a7f37;
   --btn-fg:#ffffff; --danger:#ce2626; --ok:#1a7f37; --warn:#9a6700; }
 
@@ -35,7 +37,11 @@ STYLE = """
    better a page showing every field than one with no way forward. */
 .reveal-nojs[hidden] { display: block !important; }
 html { -webkit-text-size-adjust: 100%; }
+/* A whisper of a gradient at the top so the page has a horizon rather
+   than a void; it resolves to the flat --bg before any card scrolls by. */
 body { margin:0; background:var(--bg); color:var(--fg);
+  background-image:linear-gradient(180deg, var(--bg-top), var(--bg) 22rem);
+  background-repeat:no-repeat;
   font-family:-apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", sans-serif;
   font-size:16px; line-height:1.45;
   padding:0 max(1rem, env(safe-area-inset-left))
@@ -128,6 +134,9 @@ button[disabled] { opacity:.55; cursor:default; }
 .opt.sel, .opt:has(input:checked) { border-color:var(--accent);
   box-shadow:inset 0 0 0 1px var(--accent); background:var(--card); }
 .opt.sel .tick, .opt:has(input:checked) .tick { visibility:visible; }
+/* wallpaper previews in the background picker */
+.opt .thumb { flex:0 0 auto; width:72px; aspect-ratio:5/3; object-fit:cover;
+  display:block; border-radius:8px; border:1px solid var(--line); }
 
 /* signal strength, drawn rather than described in a label nobody sees */
 .bars { flex:0 0 auto; display:inline-flex; align-items:flex-end; gap:2px;

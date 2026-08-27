@@ -38,6 +38,11 @@ board, and recent treatments.
 - **Update channels** — standard releases, or beta with the pre-releases
   as well; switching channels moves the device onto that channel's newest
   release straight away.
+- **Backgrounds** — the dashboard can sit on a flat colour, a quiet
+  gradient, or one of the bundled photo wallpapers (ferns, Half Dome at
+  night, an aurora, a pier at dusk, surf, dunes) — picked in **Settings →
+  The screen**, with a preview of each. Photos go behind a dark veil at
+  night and a paper wash by day, so the numbers stay readable either way.
 - **Per-person thresholds** — low/high/urgent ranges per person, with
   global defaults.
 - **Guided setup from a phone** — a fresh device shows a QR code that opens
@@ -116,7 +121,7 @@ guessing.
 
 | Page | What is on it |
 |---|---|
-| `/settings/screen` | Live view of the physical screen, and Day/Night |
+| `/settings/screen` | Live view of the physical screen, Day/Night, and the background |
 | `/settings/people` | One row per person, then a page each |
 | `/settings/ranges` | In-range and urgent thresholds, staleness |
 | `/settings/network` | Wi-Fi: what it is on, and what else is nearby |
@@ -252,13 +257,17 @@ personal and hobby use, study and research, and use by charities, schools,
 public health bodies and government, whatever their funding. Commercial use
 needs written permission: open an issue to ask.
 
-Three things in this repository are **not** under those terms:
+Four things in this repository are **not** under those terms:
 
 - The **enclosure** is Sarah Sabanis's design, under
   [CC BY-NC-SA 4.0](enclosure/LICENSE).
 - The **bundled fonts** in `glucocube/fonts/` stay solely under the SIL Open
   Font License 1.1. Your rights in them, commercial use included, are
   untouched by the license above — the OFL requires exactly that.
+- The **bundled wallpapers** in `glucocube/wallpapers/` are photographs from
+  the [elementary OS wallpaper collection](https://github.com/elementary/wallpapers),
+  each solely under its own license (CC0, Unsplash, Pexels, or CC BY-SA 4.0) —
+  see [`glucocube/wallpapers/COPYING`](glucocube/wallpapers/COPYING).
 - The **SD card image** is Raspberry Pi OS, and every package in it keeps its
   own license. GlucoCube's terms reach only the GlucoCube layer.
 

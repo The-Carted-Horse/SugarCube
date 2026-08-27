@@ -3,7 +3,8 @@
 Runs without a desktop: on the Pi, SDL's kmsdrm backend draws straight to
 the display. On a dev machine it opens a normal window (--windowed).
 
-Design: near-black background, left-aligned type. Each panel shows the
+Design: near-black background (flat, or one of the quiet wallpaper
+styles in ``wallpaper.py``), left-aligned type. Each panel shows the
 person's name with a source/freshness badge, a huge glucose number with
 trend arrow + delta, a FORECAST 2H header row, a 5-hour chart (3h history,
 2h forecast with a confidence cone), and an IOB/COB/CARBS/BOLUS stat row.
@@ -27,7 +28,7 @@ from dataclasses import dataclass
 
 import pygame
 
-from . import network, predict, touch
+from . import network, predict, touch, wallpaper
 from .config import SCREEN_PNG, Config, admin_url, merged_thresholds
 from .store import Store, UserSnapshot
 
@@ -179,8 +180,9 @@ class Display:
         pygame.display.set_caption("GlucoCube")
         self.clock = pygame.time.Clock()
         self._fonts: dict[tuple[str, int], pygame.font.Font] = {}
-        saved = store.get_params(THEME_STATE_USER).get("theme", "dark")
-        self.pal = THEMES.get(saved, DARK)
+        saved = store.get_params(THEME_STATE_USER)
+        self.pal = THEMES.get(saved.get("theme", "dark"), DARK)
+        self.wall = wallpaper.normalize(saved.get("wallpaper"))
         self._qr_rect, self._toggle_rect = self._controls_for(
             self._footer_rect())
         self._last_toggle = 0.0
@@ -236,10 +238,12 @@ class Display:
         return True
 
     def _sync_theme(self) -> None:
-        """Adopt a theme set elsewhere (the web UI writes the same key)."""
-        name = self.store.get_params(THEME_STATE_USER).get("theme")
+        """Adopt appearance set elsewhere (the web UI writes the same key)."""
+        params = self.store.get_params(THEME_STATE_USER)
+        name = params.get("theme")
         if name in THEMES and name != self.pal.name:
             self.pal = THEMES[name]
+        self.wall = wallpaper.normalize(params.get("wallpaper"))
 
     # ---- taps ----
 
@@ -717,11 +721,18 @@ class Display:
                          icon_c[1] + math.sin(angle) * icon_r)
                 pygame.draw.line(surface, color, inner, outer, 2)
         else:
-            # Moon: tapping goes back to dark mode.
-            pygame.draw.circle(surface, color, icon_c, icon_r * 0.8)
-            pygame.draw.circle(surface, self.pal.bg,
-                               (icon_c[0] + icon_r * 0.45,
-                                icon_c[1] - icon_r * 0.3), icon_r * 0.7)
+            # Moon: tapping goes back to dark mode. Carved on its own
+            # surface — pygame.draw writes alpha rather than blending, so
+            # the second circle punches a genuinely transparent bite and
+            # whatever wallpaper is behind shows through it.
+            side = int(icon_r * 2) + 2
+            moon = pygame.Surface((side, side), pygame.SRCALPHA)
+            c = side // 2
+            pygame.draw.circle(moon, color, (c, c), icon_r * 0.8)
+            pygame.draw.circle(moon, (0, 0, 0, 0),
+                               (c + icon_r * 0.45, c - icon_r * 0.3),
+                               icon_r * 0.7)
+            surface.blit(moon, (icon_c[0] - c, icon_c[1] - c))
 
     # A miniature code, cell by cell: three finder squares and enough
     # data specks to read as a QR at fourteen pixels. Drawn rather than
@@ -1041,7 +1052,7 @@ class Display:
 
     def draw(self):
         self._sync_theme()
-        self.screen.fill(self.pal.bg)
+        wallpaper.paint(self.screen, self.wall, self.pal)
         if self._hotspot_is_active():
             # No controls on the setup screens: clear the targets so taps
             # there can't hit a rect left over from the dashboard, and

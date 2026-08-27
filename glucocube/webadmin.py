@@ -22,6 +22,7 @@ import secrets as secrets_mod
 
 from . import config as config_mod
 from . import captive, network, onboarding, predict, synclog, ui, updater
+from . import wallpaper
 from . import verify
 from .server import DualStackServer
 from .config import SCREEN_PNG, Config, merged_thresholds
@@ -178,18 +179,22 @@ DASHBOARD_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8">
 @font-face { font-family:'JetBrains Mono'; font-weight:500;
   src:url('/fonts/JetBrainsMono-Medium.ttf') format('truetype'); }
 :root, [data-theme=dark] { color-scheme: dark;
-  --bg:#0a0c0f; --band:#14191e; --line:#262d34; --fg:#e9edf1;
+  --bg:#0a0c0f; --bg-top:#10151b; --band:#14191e; --line:#262d34; --fg:#e9edf1;
   --dim:#7a848e; --faint:#545d66; --trace:#9da5ae;
   --inrange:#5fde96; --high:#e9b949; --low:#f45c54; --urgent:#ff453a;
 }
 [data-theme=light] { color-scheme: light;
-  --bg:#f6f7f5; --band:#e9ebe6; --line:#d1d4cf; --fg:#181c20;
+  --bg:#f6f7f5; --bg-top:#fdfdfb; --band:#e9ebe6; --line:#d1d4cf; --fg:#181c20;
   --dim:#666e76; --faint:#949ba2; --trace:#7a828a;
   --inrange:#109448; --high:#b07408; --low:#cc2c24; --urgent:#e00000;
 }
 * { box-sizing:border-box; margin:0; }
 html, body { height:100%; }
+/* The same quiet horizon the settings pages have: a breath of light at
+   the top of the page, flat again before the charts. */
 body { font-family:'JetBrains Mono',ui-monospace,monospace; background:var(--bg);
+       background-image:linear-gradient(180deg, var(--bg-top), var(--bg) 45vh);
+       background-repeat:no-repeat;
        color:var(--fg); display:flex; flex-direction:column; overflow:hidden;
        transition:background .2s; }
 .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr));
@@ -682,6 +687,19 @@ class AdminHandler(BaseHTTPRequestHandler):
                     )
             else:
                 self._send(b"not found", "text/plain", 404)
+        elif path.startswith("/wallpapers/"):
+            # The background picker shows each bundled photo as its own
+            # preview; served locally, like the fonts, so the page needs
+            # no internet at all.
+            name = os.path.basename(path)
+            photo = (wallpaper.photo_path(name[:-4])
+                     if name.endswith(".jpg") else None)
+            if photo and os.path.isfile(photo):
+                with open(photo, "rb") as f:
+                    self._send(f.read(), "image/jpeg",
+                               extra={"Cache-Control": "max-age=604800"})
+            else:
+                self._send(b"not found", "text/plain", 404)
         else:
             self._send(ui.page("Not found", "<h1>Not found</h1>"
                                '<p><a href="/settings">Back to settings</a></p>'
@@ -892,10 +910,16 @@ class AdminHandler(BaseHTTPRequestHandler):
             updates_sub = (f"{updater.current_version()} · "
                            f"{channel_label} channel")
 
+        wall = wallpaper.normalize(
+            self.server.store.get_params("__display").get("wallpaper"))
+        screen_sub = "Night colours" if theme == "dark" else "Day colours"
+        if wall != wallpaper.DEFAULT:
+            screen_sub += f" · {wallpaper.label(wall)}"
+
         items = [
             ui.menu_item(
                 "/settings/screen", "The screen",
-                "Night colours" if theme == "dark" else "Day colours",
+                screen_sub,
                 lead='<span class="lead">' + ui.icon("screen")
                      + '<img class="thumb live" src="/screen.png" alt=""'
                        ' onerror="this.hidden=true"'
@@ -963,6 +987,16 @@ class AdminHandler(BaseHTTPRequestHandler):
         theme = self._theme()
         other, label = (("light", "Switch to Day") if theme == "dark"
                         else ("dark", "Switch to Night"))
+        wall = wallpaper.normalize(
+            self.server.store.get_params("__display").get("wallpaper"))
+        cards = []
+        for name in (*wallpaper.SHADE_NAMES, *wallpaper.PHOTO_NAMES):
+            style_label, sub, _renderer = wallpaper.STYLES[name]
+            lead = (f'<img class="thumb" src="/wallpapers/{name}.jpg" alt=""'
+                    ' loading="lazy">'
+                    if name in wallpaper.PHOTO_NAMES else "")
+            cards.append(ui.option_card("wallpaper", name, style_label, sub,
+                                        checked=(name == wall), lead=lead))
         return f"""<h1>The screen</h1>
 <p class="lede">Exactly what the device is showing, refreshed every few
 seconds.</p>
@@ -976,6 +1010,17 @@ seconds.</p>
     <span class="note">Currently {"night" if theme == "dark" else "day"}.
       The sun or moon on the device does the same thing, and the QR beside
       it opens these settings on a phone — no password to type.</span>
+  </div>
+</form>
+<h2>Background</h2>
+<form method="POST" action="/display/wallpaper">
+  <input type="hidden" name="back" value="/settings/screen">
+  <div class="opts">{''.join(cards)}</div>
+  <div class="actions">
+    <button type="submit" class="secondary">Set background</button>
+    <span class="note">Photos sit behind a dark veil at night and a paper
+      wash by day, so the numbers keep the room. The preview above catches
+      up within a few seconds.</span>
   </div>
 </form>"""
 
@@ -1492,6 +1537,16 @@ check, on whichever channel published it.</p>"""
             if theme in ("dark", "light"):
                 # The display picks this up on its next frame.
                 self.server.store.set_params("__display", {"theme": theme})
+            back = form.get("back", "/settings")
+            if not back.startswith("/settings"):
+                back = "/settings"
+            self._send(b"", "text/html", 303, {"Location": back})
+            return
+        if post_path == "/display/wallpaper":
+            wall = form.get("wallpaper")
+            if wall in wallpaper.STYLES:
+                # Same key the theme lives under; same next-frame pickup.
+                self.server.store.set_params("__display", {"wallpaper": wall})
             back = form.get("back", "/settings")
             if not back.startswith("/settings"):
                 back = "/settings"
