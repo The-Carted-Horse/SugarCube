@@ -342,7 +342,7 @@ const ARROWS = {DoubleUp:"\\u2191\\u2191", SingleUp:"\\u2191", FortyFiveUp:"\\u2
 const html = document.documentElement;
 function applyTheme(t){ html.dataset.theme = t;
   document.getElementById('theme').innerHTML =
-    t === 'dark' ? 'Night &#9788;' : 'Day &#9789;'; }
+    t === 'dark' ? 'Night &#9790;' : 'Day &#9788;'; }
 applyTheme(localStorage.theme ||
   (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
 document.getElementById('theme').onclick = () => {
@@ -672,6 +672,14 @@ class AdminHandler(BaseHTTPRequestHandler):
         # browser ask for a username instead of showing the setup page.
         if captive.maybe_handle(self, path):
             return
+        # Also before it: the typefaces every page is now set in carry no
+        # data, and captive.ALWAYS_SERVE already exempts them from the
+        # portal redirect. Behind Basic auth they meant a phone that typed
+        # the address by hand got a login prompt fired from a stylesheet,
+        # and then a settings page in the system sans it exists to replace.
+        if path.startswith("/fonts/"):
+            self._send_font(path)
+            return
         if not self._authorized() and not onboarding.open_without_login(path):
             self._deny()
             return
@@ -718,29 +726,31 @@ class AdminHandler(BaseHTTPRequestHandler):
                     self._send(f.read(), "image/png")
             except OSError:
                 self._send(b"no screenshot yet", "text/plain", 404)
-        elif path.startswith("/fonts/"):
-            # The dashboard uses the same typefaces as the physical screen;
-            # serving them locally keeps the page fully offline-capable.
-            # The OFL text is served alongside them because the license
-            # asks that each copy of the fonts carry it — and this handler
-            # hands a copy to every browser that loads the dashboard.
-            name = os.path.basename(path)
-            font_path = os.path.join(os.path.dirname(__file__), "fonts", name)
-            is_font = name.endswith(".ttf")
-            is_notice = name.startswith("OFL-") and name.endswith(".txt")
-            if (is_font or is_notice) and os.path.isfile(font_path):
-                with open(font_path, "rb") as f:
-                    self._send(
-                        f.read(),
-                        "font/ttf" if is_font else "text/plain; charset=utf-8",
-                        extra={"Cache-Control": "max-age=604800"},
-                    )
-            else:
-                self._send(b"not found", "text/plain", 404)
         else:
             self._send(ui.page("Not found", "<h1>Not found</h1>"
                                '<p><a href="/settings">Back to settings</a></p>'
                                ).encode(), "text/html; charset=utf-8", 404)
+
+    def _send_font(self, path: str) -> None:
+        """Every page is set in these, and no page can fetch them elsewhere.
+
+        The OFL text is served alongside them because the license asks that
+        each copy of the fonts carry it — and this handler hands a copy to
+        every browser that loads any page on the device.
+        """
+        name = os.path.basename(path)
+        font_path = os.path.join(os.path.dirname(__file__), "fonts", name)
+        is_font = name.endswith(".ttf")
+        is_notice = name.startswith("OFL-") and name.endswith(".txt")
+        if (is_font or is_notice) and os.path.isfile(font_path):
+            with open(font_path, "rb") as f:
+                self._send(
+                    f.read(),
+                    "font/ttf" if is_font else "text/plain; charset=utf-8",
+                    extra={"Cache-Control": "max-age=604800"},
+                )
+        else:
+            self._send(b"not found", "text/plain", 404)
 
     def do_HEAD(self):
         """Some Windows connectivity probes use HEAD rather than GET."""
@@ -920,20 +930,19 @@ class AdminHandler(BaseHTTPRequestHandler):
         name = user.get("name", "")
         source = user.get("source") or {}
         label = self.SOURCE_NAMES.get(source.get("type") or "push", "")
-        state = {"label": label, "value": "", "arrow": "", "delta": "",
-                 "age": "", "tone": "v-stale", "trend": "", "headline": "",
-                 "text": "", "short": "", "pill": "", "kind": "err"}
+        state = {"label": label, "value": "", "arrow": "", "age": "",
+                 "tone": "v-stale", "trend": "", "headline": "", "short": "",
+                 "pill": "", "kind": "err", "say": "not arriving"}
         if source.get("type") and not self._source_ready(source):
-            return {**state, "text": f"{label} — credentials missing",
-                    "short": "needs setup", "pill": "needs setup",
-                    "kind": "err",
+            return {**state, "short": "needs setup", "pill": "needs setup",
+                    "kind": "err", "say": "needs setup",
                     "headline": "No credentials yet, so nothing is arriving"}
         snap = self.server.store.snapshot(name)
         failure = self._last_failure(name)
         if not snap.sgv_date or snap.sgv is None:
-            return {**state, "text": f"{label} — nothing has arrived yet",
-                    "short": "no data", "pill": "", "kind": "warn",
-                    "headline": failure or "Nothing has arrived yet"}
+            return {**state, "short": "no data", "pill": "", "kind": "warn",
+                    "say": "nothing has arrived yet",
+                    "headline": ui.esc(failure) or "Nothing has arrived yet"}
         minutes = max(0, int((now_ms - snap.sgv_date) / 60000))
         when = ("just now" if minutes < 1
                 else f"{minutes}m ago" if minutes < 120
@@ -950,12 +959,15 @@ class AdminHandler(BaseHTTPRequestHandler):
         headline = (f"{ui.esc(failure)} \u00b7 last reading {when}" if failure
                     else f"Arriving \u00b7 <b>{reading} mg/dL</b>, {when}")
         return {
-            "label": label, "value": reading, "arrow": arrow, "delta": delta,
+            "label": label, "value": reading, "arrow": arrow,
             "trend": " ".join(part for part in (arrow, delta) if part),
             "age": when, "tone": self._tone(snap.sgv, stale, bands),
-            "text": f"{label} — {reading} mg/dL, {when}",
             "short": when, "pill": "stale" if stale else "",
             "kind": "err" if failure else "warn" if stale else "ok",
+            # Colour is not the only thing carrying this: the dot says it
+            # out loud for anyone who cannot see the colour.
+            "say": ("not arriving" if failure else "stale" if stale
+                    else "arriving"),
             "headline": headline,
         }
 
@@ -1026,7 +1038,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                               f'{ui.esc(state["short"] or "no data")}</span>')
             people.append(ui.menu_item(
                 f"/settings/person?i={index}", label, value_html=value_html,
-                lead=ui.dot(state["kind"])))
+                lead=ui.dot(state["kind"], label=state["say"])))
         people.append(ui.menu_errand("/settings/person?i=new", "Add a person",
                                      plus=True))
 
@@ -1167,7 +1179,7 @@ on a phone with no password to type.</p>"""
                 source=state["label"], value=state["value"],
                 trend=ui.esc(state["trend"]), age=state["age"],
                 tone=state["tone"], dot_kind=state["kind"],
-                note=state["short"] or "no data"))
+                dot_label=state["say"], note=state["short"] or "no data"))
         add = ('<a class="item quiet dashed" href="/settings/person?i=new">'
                '<span class="plus" aria-hidden="true">+</span>'
                '<span class="body">Add a person</span>'
@@ -1219,7 +1231,7 @@ on a phone with no password to type.</p>"""
             status = ui.banner(
                 state["kind"],
                 f'<span class="status">{state["headline"]}</span>',
-                dot_kind=state["kind"],
+                dot_kind=state["kind"], dot_label=state["say"], strip=True,
                 trail='<a class="link" href="/log">Log &rsaquo;</a>')
 
         def test_block(label: str) -> str:
@@ -1370,8 +1382,8 @@ goes away.</p>
       data-index="{ui.esc(index)}" data-dirty>
   {ui.row("Name", ui.text_input("name", name, input_id="name"),
           for_id="name")}
-  <label class="lbl">Where the data comes from</label>
   {ui.choice_cards("source", self.SOURCE_CARDS, stype, controls=control,
+                   legend="Where the data comes from",
                    bodies={"push": push, "tidepool": tidepool,
                            "nightscout": nightscout})}
   {ranges}
@@ -1432,7 +1444,7 @@ reads UTC.</p>
   <span class="cap"><span class="grow">The device reads</span></span>
   {clock}
 </div>
-<div class="banner ok" id="tzdetected" hidden>
+<div class="banner ok strip" id="tzdetected" hidden>
   <span class="grow"><span class="status">This phone says <b></b></span></span>
   <button type="button" class="tiny go">Use that</button>
 </div>
@@ -1525,12 +1537,12 @@ reads UTC.</p>
 <form method="POST" action="/wifi">
   {ui.network_picker(networks, selected=wifi.get("ssid", ""))}
   <p class="note spaced">{hint}</p>
-  {ui.row("Password", ui.password_input("wifi_password", "",
-                                        input_id="wifi_password"),
-          for_id="wifi_password",
-          hint="Check it before joining &mdash; the device drops off the "
-               "network while it tries, and a wrong password takes a minute "
-               "or two to come back.")}
+  <div data-wifi-password>{ui.row("Password",
+      ui.password_input("wifi_password", "", input_id="wifi_password"),
+      for_id="wifi_password",
+      hint="Check it before joining &mdash; the device drops off the network "
+           "while it tries, and a wrong password takes a minute or two to "
+           "come back.")}</div>
   <div class="actions"><button type="submit">Join network</button></div>
 </form>"""
 

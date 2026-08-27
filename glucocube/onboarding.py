@@ -392,8 +392,9 @@ def _render_wifi(draft_handler, draft, step, banner) -> str:
 <p class="lede">Pick your home network so the device can reach the internet.</p>
 <form method="POST" action="/setup/wifi">
   {ui.network_picker(networks, selected=wifi.get("attempted_ssid", ""))}
-  {ui.row("Password", ui.password_input("wifi_password", "",
-          input_id="wifi_password"), inline=False, for_id="wifi_password")}
+  <div data-wifi-password>{ui.row("Password",
+      ui.password_input("wifi_password", "", input_id="wifi_password"),
+      inline=False, for_id="wifi_password")}</div>
   <p class="note">{hint}</p>
   {_actions("Join this network")}
 </form>

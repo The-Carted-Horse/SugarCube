@@ -120,8 +120,9 @@ nav .mark { font-family:var(--mono); font-size:10.5px; letter-spacing:.2em;
   text-transform:uppercase; color:var(--faint); }
 
 /* ---- forms ---- */
-fieldset { border:0; margin:0; padding:0; }
+fieldset { border:0; margin:0; padding:0; min-width:0; }
 legend { padding:0; }
+fieldset.group { margin:0 0 4px; }
 .row { margin:0 0 22px; }
 .row:last-child { margin-bottom:0; }
 .row > label, label.lbl { display:block; width:auto; margin:0 0 8px;
@@ -248,7 +249,10 @@ button[disabled] { background:transparent; border:1px solid var(--line);
 .check span { color:var(--fg); font-size:14px; }
 
 /* ---- banners: a fact with a colour, sometimes a place to go ---- */
-.banner { display:flex; gap:12px; align-items:center; margin:16px 0;
+.banner.strip { gap:10px; padding:12px 14px; margin:14px 0 26px; }
+/* A one-line state readout at the top of a page (above), versus a notice
+   interrupting a list (below). Same component, two jobs, two rhythms. */
+.banner { display:flex; gap:12px; align-items:center; margin:22px 0 0;
   padding:14px; font-size:14px; line-height:1.45; background:var(--band);
   border-left:2px solid var(--line); border-radius:2px; color:var(--fg); }
 .banner > .grow { flex:1 1 auto; min-width:0; }
@@ -320,7 +324,7 @@ h1 + .stepno { margin:0 0 20px; }
 /* ---- menus: one tappable row per thing, read value first ---- */
 /* The label is the small line and the value is the big one, because the
    hub is a status report you occasionally tap, not a table of contents. */
-.menu { display:block; margin:0 0 8px; }
+.menu { display:block; }
 .item { display:flex; align-items:center; gap:14px; min-height:60px;
   padding:14px 0; border-bottom:1px solid var(--hair); color:var(--fg);
   text-decoration:none; }
@@ -734,7 +738,18 @@ SCRIPT = """<script>
     for (var i = 0; i < b.length; i++) b[i].hidden = false;
   }
 
-  function sync(){ enable(); syncCards(); syncGroups(); initSaveBars(); }
+  // An open network has no password, and a box asking for one reads as a
+  // box you have to fill in. "Other network" keeps it: we cannot know.
+  function syncWifi(){
+    var box = d.querySelector('[data-wifi-password]');
+    if (!box) return;
+    var picked = d.querySelector('input[name=wifi_ssid]:checked');
+    box.hidden = !!(picked && picked.dataset.secured === '0');
+  }
+
+  function sync(){
+    enable(); syncCards(); syncGroups(); syncWifi(); initSaveBars();
+  }
   d.addEventListener('change', sync);
   d.addEventListener('input', syncGroups);
   sync();
@@ -746,6 +761,8 @@ SCRIPT = """<script>
 NAV = """<nav><a href="/">Dashboard</a><a href="/log">Sync log</a>
 <span class="grow"></span>
 <button type="button" id="themebtn" onclick="toggleTheme()"
+  title="Switch this page between day and night"
+  aria-label="Switch this page between day and night"
   data-needs-js hidden>Theme</button></nav>"""
 
 # The restart and the install cannot be navigated away from, so the bar
@@ -761,6 +778,8 @@ def nav_html(back: str = "", back_label: str = "Settings") -> str:
     return (f'<nav><a href="{esc(back)}">&lsaquo; {esc(back_label)}</a>'
             '<a href="/">Dashboard</a><span class="grow"></span>'
             '<button type="button" id="themebtn" onclick="toggleTheme()"'
+            ' title="Switch this page between day and night"'
+            ' aria-label="Switch this page between day and night"'
             ' data-needs-js hidden>Theme</button></nav>')
 
 
@@ -776,7 +795,12 @@ def eyebrow(text: str) -> str:
     return f'<p class="eyebrow">{esc(text)}</p>'
 
 
-def dot(kind: str = "") -> str:
+def dot(kind: str = "", label: str = "") -> str:
+    """A coloured dot. Given a label it says its state out loud, because
+    colour on its own carries nothing to a screen reader."""
+    if label:
+        return (f'<span class="dot {esc(kind)}" role="img"'
+                f' aria-label="{esc(label)}"></span>')
     return f'<span class="dot {esc(kind)}" aria-hidden="true"></span>'
 
 
@@ -845,7 +869,8 @@ def copy_button(input_id: str, *, label: str = "Copy") -> str:
 
 def person_card(href: str, name: str, *, source: str = "", value: str = "",
                 trend: str = "", unit: str = "mg/dL", age: str = "",
-                tone: str = "", dot_kind: str = "", note: str = "") -> str:
+                tone: str = "", dot_kind: str = "", dot_label: str = "",
+                note: str = "") -> str:
     """One person on the people list, read the way the screen reads them."""
     tone_cls = f" {esc(tone)}" if tone else ""
     pill = f'<span class="pill">{esc(source)}</span>' if source else ""
@@ -859,7 +884,7 @@ def person_card(href: str, name: str, *, source: str = "", value: str = "",
     else:
         big = f'<span class="big"><span class="n v-stale">{esc(note)}</span></span>'
     return (f'<a class="pcard" href="{esc(href)}">'
-            f'<span class="head">{dot(dot_kind)}'
+            f'<span class="head">{dot(dot_kind, dot_label)}'
             f'<span class="who">{esc(name)}</span>{pill}'
             '<span class="chev" aria-hidden="true">&rsaquo;</span></span>'
             f"{big}</a>")
@@ -999,18 +1024,20 @@ def page(title: str, body: str, *, nav: bool = False, head: str = "",
 
 
 def banner(kind: str, body_html: str, *, href: str = "", dot_kind: str = "",
-           lead: str = "", trail: str = "") -> str:
+           dot_label: str = "", lead: str = "", trail: str = "",
+           strip: bool = False) -> str:
     """kind: info | ok | warn | err.
 
     With `href` it becomes the whole notice you tap: the hub's problems
     are one line each and each line is the way to fix it.
     """
-    dot_html = dot(dot_kind) if dot_kind else ""
+    dot_html = dot(dot_kind, dot_label) if dot_kind else ""
+    cls = f"banner {esc(kind)}" + (" strip" if strip else "")
     if href:
-        return (f'<a class="banner {esc(kind)}" href="{esc(href)}">'
+        return (f'<a class="{cls}" href="{esc(href)}">'
                 f'{dot_html}{lead}<span class="grow">{body_html}</span>'
                 '<span class="chev" aria-hidden="true">&rsaquo;</span></a>')
-    return (f'<div class="banner {esc(kind)}">{dot_html}{lead}'
+    return (f'<div class="{cls}">{dot_html}{lead}'
             f'<span class="grow">{body_html}</span>{trail}</div>')
 
 
@@ -1101,7 +1128,7 @@ def checkbox(name: str, label: str, checked: bool = False, *,
 def option_card(name: str, value: str, title: str, sub: str = "", *,
                 checked: bool = False, controls: str = "", lead: str = "",
                 trail: str = "", body_html: str = "",
-                wrap_extra: str = "") -> str:
+                wrap_extra: str = "", input_extra: str = "") -> str:
     """A tappable radio card, optionally carrying its own settings.
 
     `body_html` is what this choice needs to know — credentials, a poll
@@ -1117,7 +1144,7 @@ def option_card(name: str, value: str, title: str, sub: str = "", *,
         f'<div class="optw{" sel" if checked else ""}" {wrap_extra}>'
         f'<label class="opt">'
         f'<input type="radio" name="{esc(name)}" value="{esc(value)}"'
-        f'{" checked" if checked else ""}{ctl}>'
+        f'{" checked" if checked else ""}{ctl} {input_extra}>'
         f"{lead}"
         f'<span class="body"><span class="name">{esc(title)}</span>'
         + (f'<span class="sub">{esc(sub)}</span>' if sub else "")
@@ -1128,11 +1155,14 @@ def option_card(name: str, value: str, title: str, sub: str = "", *,
 
 
 def choice_cards(name: str, options, selected: str = "", *,
-                 controls: str = "", bodies: dict | None = None) -> str:
+                 controls: str = "", bodies: dict | None = None,
+                 legend: str = "") -> str:
     """Tappable radio cards. A <select> on a phone hides its options behind
     a picker; these are all visible and each is a 56px target.
 
-    `bodies` maps an option value to the markup that option carries.
+    `bodies` maps an option value to the markup that option carries, and
+    `legend` names the group: a bare <label> above a set of radios names
+    none of them.
     """
     bodies = bodies or {}
     cards = "".join(
@@ -1140,6 +1170,9 @@ def choice_cards(name: str, options, selected: str = "", *,
                     controls=controls, body_html=bodies.get(value, ""))
         for value, title, sub in options
     )
+    if legend:
+        return (f'<fieldset class="group"><legend class="lbl">{esc(legend)}'
+                f'</legend><div class="opts">{cards}</div></fieldset>')
     return f'<div class="opts">{cards}</div>'
 
 
@@ -1175,7 +1208,7 @@ def disclosure(label: str, body_html: str, *, state: str = "",
 def signal_bars(percent: int, *, live: bool = False) -> str:
     lit = 1 if percent < 30 else 2 if percent < 55 else 3 if percent < 78 else 4
     bars = "".join(f'<i class="{"on" if i < lit else ""}"></i>' for i in range(4))
-    return (f'<span class="bars{" live" if live else ""}"'
+    return (f'<span class="bars{" live" if live else ""}" role="img"'
             f' aria-label="{int(percent)}% signal">{bars}</span>')
 
 
@@ -1201,6 +1234,7 @@ def network_picker(networks, *, selected: str = "", other_ssid: str = "",
             name, net["ssid"], net["ssid"],
             checked=(net["ssid"] == selected and not other_selected),
             controls="wifiother",
+            input_extra=f'data-secured="{1 if net.get("secured") else 0}"',
             trail=lock + signal_bars(int(net.get("signal") or 0)),
         ))
     cards.append(option_card(

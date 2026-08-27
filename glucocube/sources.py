@@ -6,6 +6,7 @@ start_pollers() spawns the right poller thread per user.
 """
 
 import logging
+import socket
 import threading
 import urllib.error
 
@@ -15,6 +16,31 @@ from .store import Store
 log = logging.getLogger("glucocube.sources")
 
 ERROR_BACKOFF_SECONDS = 300
+
+
+def fault_phrase(exc: Exception) -> str:
+    """A failure in words, for the sync log and the person's own page.
+
+    What used to land there was `poll failed: HTTP Error 401: Unauthorized
+    (retry in 300s)` — a line that answers "did it break?" and nothing
+    else. The full exception and the backoff are still in the service log,
+    where the person reading them wants them.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code in (401, 403):
+            return f"Login rejected ({exc.code})"
+        if exc.code == 404:
+            return "That address answered, but not with readings (404)"
+        if exc.code == 429:
+            return "The source asked us to slow down (429)"
+        return f"The source answered with an error ({exc.code})"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "The source did not answer in time"
+    if isinstance(exc, (urllib.error.URLError, socket.gaierror, OSError)):
+        return "Could not reach the source"
+    if isinstance(exc, ValueError):
+        return "The source sent something we could not read"
+    return "Could not read from the source"
 
 
 class BasePoller(threading.Thread):
@@ -52,8 +78,8 @@ class BasePoller(threading.Thread):
                 )
                 log.warning("[%s] %s poll failed: %s (retry in %ds)",
                             self.user, self.kind, exc, delay)
-                synclog.add(self.kind, self.user,
-                            f"poll failed: {exc} (retry in {delay}s)", ok=False)
+                synclog.add(self.kind, self.user, fault_phrase(exc),
+                            ok=False)
             self._stop.wait(delay)
 
 

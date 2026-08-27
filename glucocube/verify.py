@@ -96,7 +96,10 @@ def _network_message(exc: Exception, secret: str, what: str) -> Result:
     detail = _scrub(f"{type(exc).__name__}: {exc}", secret)
     if isinstance(exc, urllib.error.HTTPError):
         if exc.code in (401, 403):
-            return Result(False, f"{what} rejected those credentials.", detail)
+            # Saying nothing was written is half the point of a test button:
+            # otherwise a rejection reads as "you have just broken it".
+            return Result(False, f"{what} refused that login ({exc.code}). "
+                                 "Nothing has been saved.", detail)
         if exc.code == 404:
             return Result(False, "That address answered, but it is not a "
                                  "Nightscout site.", detail)
@@ -150,9 +153,10 @@ def nightscout_site(url: str, key: str,
             result = _network_message(exc, key, "The site")
             if (isinstance(exc, urllib.error.HTTPError)
                     and exc.code in (401, 403)):
-                return Result(False, "The site rejected that key. Check it is "
-                                     "the API secret or an access token, not "
-                                     "the site's own password.", result.detail)
+                return Result(False, "The site rejected that key. Check it "
+                                     "is the API secret or an access token, "
+                                     "not the site's own password. Nothing "
+                                     "has been saved.", result.detail)
             return result
         style = {"sha1": "API secret", "token": "access token",
                  "raw": "API secret", "none": "no key"}.get(mode, mode)
