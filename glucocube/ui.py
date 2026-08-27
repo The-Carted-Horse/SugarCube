@@ -42,11 +42,16 @@ STYLE = """
   --fg:#e9edf1; --dim:#7a848e; --faint:#545d66;
   --ok:#5fde96; --warn:#e9b949; --danger:#f45c54; --urgent:#ff453a;
   --accent:#5fde96; --on-accent:#06120b; --shade:rgba(0,0,0,.7); }
+/* The design draws the night palette; day is derived from the dashboard's
+   own light theme, then darkened until every pair below clears 4.5:1 —
+   the reading colours keep the dashboard's hues, and --accent carries the
+   slightly darker green that chrome (buttons, links, ticks) needs to be
+   readable at 10-13px. */
 [data-theme=light] { color-scheme: light;
   --bg:#f6f7f5; --card:#eef0ec; --band:#e4e7e1; --line:#c9ccc5; --hair:#dfe2dc;
-  --fg:#181c20; --dim:#5c646c; --faint:#7d858c;
-  --ok:#109448; --warn:#8a5a06; --danger:#cc2c24; --urgent:#c00000;
-  --accent:#109448; --on-accent:#ffffff; --shade:rgba(0,0,0,.18); }
+  --fg:#181c20; --dim:#48505a; --faint:#61686d;
+  --ok:#109448; --warn:#8a5a06; --danger:#c42a23; --urgent:#c00000;
+  --accent:#0d763a; --on-accent:#ffffff; --shade:rgba(0,0,0,.18); }
 
 :root {
   --sans:'Space Grotesk', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
@@ -61,9 +66,6 @@ STYLE = """
    [hidden] (specificity 0,1,0, from the UA sheet) loses to all of them.
    Without this, a section the server rendered hidden shows anyway. */
 [hidden] { display: none !important; }
-/* ...except with JavaScript off, where no script can ever reveal them:
-   better a page showing every field than one with no way forward. */
-.reveal-nojs[hidden] { display: block !important; }
 html { -webkit-text-size-adjust: 100%; }
 body { margin:0; background:var(--bg); color:var(--fg);
   font-family:var(--sans); font-weight:500; font-size:16px; line-height:1.5;
@@ -102,7 +104,6 @@ hr { border:0; border-top:1px solid var(--line); margin:1.6rem 0; }
   font-family:var(--mono); font-size:10.5px; letter-spacing:.22em;
   text-transform:uppercase; color:var(--faint); }
 .rule .fill { flex:1 1 auto; border-top:1px solid var(--line); }
-.rule.tight { margin-top:0; }
 h2 { font-family:var(--mono); font-weight:400; font-size:10.5px;
   letter-spacing:.22em; text-transform:uppercase; color:var(--faint);
   margin:28px 0 12px; }
@@ -115,6 +116,8 @@ nav a, nav button { font-family:var(--mono); font-size:10.5px;
   background:none; border:0; padding:0; min-height:34px; cursor:pointer;
   text-decoration:none; display:inline-flex; align-items:center; }
 nav .grow { flex:1 1 auto; }
+nav .mark { font-family:var(--mono); font-size:10.5px; letter-spacing:.2em;
+  text-transform:uppercase; color:var(--faint); }
 
 /* ---- forms ---- */
 fieldset { border:0; margin:0; padding:0; }
@@ -222,6 +225,7 @@ button[disabled] { background:transparent; border:1px solid var(--line);
   padding:10px; }
 .optbody .withbtn button { min-height:44px; }
 .optbody .row { margin-bottom:12px; }
+.optbody input[aria-invalid=true] { border-color:var(--danger); }
 .optbody .rule { margin:0 0 12px; font-size:10px; }
 .optbody .note { margin:0 0 10px; }
 
@@ -309,7 +313,7 @@ h1 + .stepno { margin:0 0 20px; }
 .checklist { display:grid; gap:10px; font-family:var(--mono); font-size:11.5px; }
 .checklist > span { display:flex; gap:10px; color:var(--dim); }
 .checklist .mark { flex:0 0 auto; width:1em; text-align:center;
-  color:var(--ok); }
+  color:var(--accent); }
 .checklist > span.todo { color:var(--faint); }
 .checklist > span.todo .mark { color:var(--faint); }
 
@@ -331,8 +335,6 @@ h1 + .stepno { margin:0 0 20px; }
 .item .val small { font-size:14px; font-weight:500; color:var(--faint); }
 .item .chev { flex:0 0 auto; color:var(--faint); font-size:20px;
   line-height:1; }
-.item .thumb { flex:0 0 auto; width:64px; display:block; border-radius:2px;
-  border:1px solid var(--line); }
 /* Rows that are errands rather than settings: no value to report. */
 .item.quiet { min-height:52px; color:var(--dim); font-family:var(--mono);
   font-size:11px; letter-spacing:.18em; text-transform:uppercase; }
@@ -372,7 +374,7 @@ h1 + .stepno { margin:0 0 20px; }
   letter-spacing:.18em; text-transform:uppercase; padding:3px 7px;
   border:1px solid var(--line); border-radius:2px; color:var(--dim);
   white-space:nowrap; }
-.pill.ok { color:var(--ok); border-color:var(--ok); }
+.pill.ok { color:var(--accent); border-color:var(--accent); }
 .pill.warn { color:var(--warn); border-color:var(--warn); }
 .pill.err { color:var(--danger); border-color:var(--danger); }
 
@@ -443,7 +445,7 @@ a.hero .cap .go { color:var(--dim); }
 .rangekeys { display:flex; margin-top:8px; font-family:var(--mono);
   font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; }
 .rangekeys .k-low { color:var(--danger); }
-.rangekeys .k-inrange { color:var(--ok); }
+.rangekeys .k-inrange { color:var(--accent); }
 .rangekeys .k-high { color:var(--warn); }
 .rangekeys .k-urgent { color:var(--urgent); text-align:right; }
 
@@ -503,7 +505,8 @@ a.hero .cap .go { color:var(--dim); }
   font-family:var(--mono); font-size:11px; line-height:1.5; color:var(--dim);
   margin:0 0 14px; }
 .testresult .mark { flex:0 0 auto; }
-.testresult.ok { color:var(--ok); } .testresult.err { color:var(--danger); }
+.testresult.ok { color:var(--accent); }
+.testresult.err { color:var(--danger); }
 
 /* A value you copy but never edit: shown as text, selected from a field
    the clipboard fallback can actually focus. 16px so focusing it cannot
@@ -516,9 +519,6 @@ input.copysrc { position:absolute; width:1px; height:1px; min-height:0;
 .gap { height:8px; }
 /* A footnote that has earned a line above it. */
 .note.nudge { margin-top:20px; padding-top:16px; border-top:1px solid var(--hair); }
-.sr-only { position:absolute; width:1px; height:1px; padding:0; overflow:hidden;
-  clip:rect(0 0 0 0); white-space:nowrap; border:0; }
-.stack { display:grid; gap:14px; }
 table { width:100%; border-collapse:collapse; font-size:14px; }
 td, th { padding:12px 0; border-bottom:1px solid var(--hair); text-align:left;
          vertical-align:top; }
@@ -745,7 +745,13 @@ SCRIPT = """<script>
 
 NAV = """<nav><a href="/">Dashboard</a><a href="/log">Sync log</a>
 <span class="grow"></span>
-<button type="button" id="themebtn" onclick="toggleTheme()">Theme</button></nav>"""
+<button type="button" id="themebtn" onclick="toggleTheme()"
+  data-needs-js hidden>Theme</button></nav>"""
+
+# The restart and the install cannot be navigated away from, so the bar
+# carries the wordmark and nothing else — a link here is a broken promise.
+BRAND_NAV = ('<nav><span class="mark">GlucoCube</span>'
+             '<span class="grow"></span></nav>')
 
 
 def nav_html(back: str = "", back_label: str = "Settings") -> str:
@@ -754,8 +760,8 @@ def nav_html(back: str = "", back_label: str = "Settings") -> str:
         return NAV
     return (f'<nav><a href="{esc(back)}">&lsaquo; {esc(back_label)}</a>'
             '<a href="/">Dashboard</a><span class="grow"></span>'
-            '<button type="button" id="themebtn"'
-            ' onclick="toggleTheme()">Theme</button></nav>')
+            '<button type="button" id="themebtn" onclick="toggleTheme()"'
+            ' data-needs-js hidden>Theme</button></nav>')
 
 
 # ---------------------------------------------------------- components ----

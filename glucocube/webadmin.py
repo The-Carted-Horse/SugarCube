@@ -92,6 +92,12 @@ document.addEventListener('click', async (event) => {
     const result = await response.json();
     say(result.ok ? 'ok' : 'err', result.ok ? '\u2713' : '\u00d7',
         result.message);
+    // Say which field was refused, not just that something was.
+    const secret = card.querySelector('input[type=password]');
+    if (secret) {
+      if (result.ok) secret.removeAttribute('aria-invalid');
+      else secret.setAttribute('aria-invalid', 'true');
+    }
   } catch (err) {
     say('err', '\u00d7', 'Could not run the test.');
   }
@@ -1675,7 +1681,8 @@ next check, on whichever channel published it.</p>"""
     def _updating_page(version: str) -> bytes:
         return ui.page(
             "Installing",
-            f'{ui.eyebrow("Installing")}<h1>{ui.esc(version)}</h1>'
+            ui.BRAND_NAV
+            + f'{ui.eyebrow("Installing")}<h1>{ui.esc(version)}</h1>'
             '<p class="lede">The display restarts on the new version. This '
             "page reloads by itself in about a minute.</p>"
             + ui.steps_bar(3, 1)
@@ -1733,7 +1740,8 @@ next check, on whichever channel published it.</p>"""
                            "by itself as soon as the device answers again "
                            "\u2014 usually five seconds.")
         body = (
-            f'<p class="eyebrow ok">{ui.esc(heading)}</p>'
+            ui.BRAND_NAV
+            + f'<p class="eyebrow ok">{ui.esc(heading)}</p>'
             "<h1>The display is restarting</h1>"
             f'<p class="lede">{lede}</p>'
             + ui.steps_bar(3, 1)
@@ -2022,7 +2030,7 @@ next check, on whichever channel published it.</p>"""
 
     @staticmethod
     def _joining_page(ssid: str) -> bytes:
-        return ui.page("Joining " + ssid, f"""
+        return ui.page("Joining " + ssid, f"""{ui.BRAND_NAV}
 <h1>Joining {ui.esc(ssid)}&hellip;</h1>
 <p>This takes up to a minute. The setup hotspot drops while the device
 tries to connect, so your phone will lose this page — that is expected.</p>
