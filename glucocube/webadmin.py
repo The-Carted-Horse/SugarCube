@@ -30,32 +30,54 @@ from .store import Store
 log = logging.getLogger("glucocube.webadmin")
 
 SCREEN_SCRIPT = """<script>
-// Keep every live screenshot on the page current (the hub thumbnail and
-// the full preview are the same image).
-setInterval(() => {
-  document.querySelectorAll('img.live').forEach(img => {
-    img.src = '/screen.png?t=' + Date.now();
+// Keep every live screenshot on the page current (the hub hero and the
+// full preview are the same image), and say how fresh it is — "live" on
+// its own is a claim, "updated 2s ago" is the evidence.
+(function(){
+  var last = Date.now();
+  function shots(){ return document.querySelectorAll('img.live'); }
+  shots().forEach(function(img){
+    img.addEventListener('load', function(){ last = Date.now(); });
   });
-}, 5000);
+  setInterval(function(){
+    shots().forEach(function(img){ img.src = '/screen.png?t=' + Date.now(); });
+  }, 5000);
+  setInterval(function(){
+    var age = Math.round((Date.now() - last) / 1000);
+    document.querySelectorAll('.shotage').forEach(function(el){
+      el.textContent = age < 2 ? 'just now' : 'updated ' + age + 's ago';
+    });
+  }, 1000);
+})();
 </script>"""
 
 PERSON_SCRIPT = """<script>
-// "Test connection": check the credentials before saving, rather than
-// finding out from the sync log hours later that a letter was wrong.
+// "Test this login": check the credentials before saving, rather than
+// finding out from the sync log hours later that a letter was wrong. The
+// answer appears inside the source card that was tested, under the fields
+// it is about.
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('button.test');
   if (!button) return;
   event.preventDefault();
   const form = button.closest('form');
-  const out = document.getElementById('testresult');
+  const card = button.closest('.optbody') || form;
+  const out = card.querySelector('.testresult');
+  const mark = out ? out.querySelector('.mark') : null;
+  const msg = out ? out.querySelector('.msg') : null;
   const value = (name) => {
     const el = form.querySelector('[name="' + name + '"]');
     return el ? el.value : '';
   };
   const picked = form.querySelector('[name=source]:checked');
-  out.hidden = false;
-  out.className = 'banner info';
-  out.textContent = 'Testing…';
+  const say = (kind, glyph, text) => {
+    if (!out) return;
+    out.hidden = false;
+    out.className = 'testresult ' + kind;
+    if (mark) mark.textContent = glyph;
+    if (msg) msg.textContent = text;
+  };
+  say('', '\u00b7', 'Testing\u2026');
   button.disabled = true;
   try {
     const response = await fetch('/api/source/test', {
@@ -68,11 +90,10 @@ document.addEventListener('click', async (event) => {
       }),
     });
     const result = await response.json();
-    out.className = 'banner ' + (result.ok ? 'ok' : 'err');
-    out.textContent = result.message;
+    say(result.ok ? 'ok' : 'err', result.ok ? '\u2713' : '\u00d7',
+        result.message);
   } catch (err) {
-    out.className = 'banner err';
-    out.textContent = 'Could not run the test.';
+    say('err', '\u00d7', 'Could not run the test.');
   }
   button.disabled = false;
 });
@@ -133,31 +154,59 @@ CLOCK_SCRIPT = """<script>
       }
     }
   }
+  // The big readout is what the device believes the time is; keep it
+  // honest rather than letting it go stale on an open page.
+  var readout = document.getElementById('devclock');
+  function tick(){
+    if (!readout) return;
+    var zone = readout.dataset.zone;
+    if (!zone) return;
+    try {
+      var now = new Date();
+      readout.querySelector('.clock').textContent =
+        now.toLocaleTimeString(undefined, {timeZone: zone, hour: '2-digit',
+                                           minute: '2-digit', hour12: false});
+      readout.querySelector('.weekday').textContent =
+        now.toLocaleDateString(undefined, {timeZone: zone, weekday: 'long'});
+    } catch (err) {}
+  }
   document.addEventListener('change', preview);
   preview();
+  tick();
   setInterval(preview, 30000);
+  setInterval(tick, 10000);
 })();
 </script>"""
 
 
 LOG_BODY = """<h1>Sync log</h1>
-<p class="note">Most recent first. Cleared when the app restarts.</p>
-<div class="tablewrap"><table>
-<thead><tr><th>Time</th><th>Person</th><th>Source</th><th>Event</th></tr></thead>
-<tbody id="rows"><tr><td colspan="4">loading&hellip;</td></tr></tbody>
-</table></div>"""
+<p class="stepno">Most recent first &#183; cleared on restart</p>
+<div id="rows"><p class="note">Loading&hellip;</p></div>"""
 
+# A table asks you to read across four columns to find out whether
+# anything is wrong. A list can say it in the colour of one dot, and put
+# the failures against the edge of the page where they are hard to scroll
+# past.
 LOG_SCRIPT = """<script>
+function logRow(e){
+  const t = new Date(e.ts).toLocaleTimeString(undefined,
+    {hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false});
+  const esc = (v) => String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const who = [e.user, e.source].filter(Boolean).map(esc).join(' \u00b7 ');
+  return `<div class="logrow${e.ok ? '' : ' bad'}">` +
+    `<span class="t">${esc(t)}</span>` +
+    `<span class="dot ${e.ok ? 'ok' : 'err'}" aria-hidden="true"></span>` +
+    `<span class="body"><span class="who">${who}</span>` +
+    `<span class="msg">${esc(e.message)}</span></span></div>`;
+}
 async function refreshLog(){
   try {
     const r = await fetch('/api/log.json', {cache:'no-store'});
     const d = await r.json();
     document.getElementById('rows').innerHTML = d.entries.length
-      ? d.entries.map(e =>
-          `<tr><td class="time">${new Date(e.ts).toLocaleTimeString()}</td>` +
-          `<td>${e.user}</td><td>${e.source}</td>` +
-          `<td${e.ok ? '' : ' class="err"'}>${e.message}</td></tr>`).join('')
-      : '<tr><td colspan="4">no sync activity yet</td></tr>';
+      ? d.entries.map(logRow).join('')
+      : '<p class="note">Nothing has synced yet.</p>';
   } catch (err) {}
 }
 refreshLog();
@@ -639,7 +688,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                                   ).encode(), "application/json")
         elif path == "/log":
             page = ui.page("GlucoCube sync log", LOG_BODY, nav=True,
-                           script=LOG_SCRIPT)
+                           back="/settings", script=LOG_SCRIPT)
             self._send(page.encode(), "text/html; charset=utf-8")
         elif path == "/api/wifi.json":
             self._send(json.dumps({
@@ -758,6 +807,12 @@ class AdminHandler(BaseHTTPRequestHandler):
     )
     SOURCE_NAMES = {"push": "Trio", "tidepool": "twiist",
                     "nightscout": "Nightscout"}
+    # The glyphs the physical screen draws and the dashboard prints, so a
+    # reading means the same thing wherever it is read.
+    ARROWS = {"DoubleUp": "\u2191\u2191", "SingleUp": "\u2191",
+              "FortyFiveUp": "\u2197", "Flat": "\u2192",
+              "FortyFiveDown": "\u2198", "SingleDown": "\u2193",
+              "DoubleDown": "\u2193\u2193"}
     CHANNEL_CARDS = (
         ("stable", "Standard",
          "Full releases only — what almost everyone wants"),
@@ -802,37 +857,111 @@ class AdminHandler(BaseHTTPRequestHandler):
     @staticmethod
     def _secret_placeholder(is_current: bool, stored) -> str:
         if is_current and stored:
-            return "(unchanged — type to replace)"
+            return "unchanged — type to replace"
+        return ""
+
+    def _thresholds_for(self, user: dict) -> dict:
+        """This person's colour boundaries: the shared ones, then theirs."""
+        display = self.server.config.display
+        bands = {"low": float(display.low), "high": float(display.high),
+                 "urgent_low": float(display.urgent_low),
+                 "urgent_high": float(display.urgent_high)}
+        for key, value in (user.get("thresholds") or {}).items():
+            if key in bands and value not in (None, ""):
+                try:
+                    bands[key] = float(value)
+                except (TypeError, ValueError):
+                    pass
+        return bands
+
+    @staticmethod
+    def _tone(sgv, stale: bool, bands: dict) -> str:
+        """The class that paints a reading the colour the screen paints it.
+
+        Deliberately the same ladder as display.glucose_color: a number
+        that is amber on the device must not be green on the phone.
+        """
+        if sgv is None or stale:
+            return "v-stale"
+        if sgv <= bands["urgent_low"] or sgv >= bands["urgent_high"]:
+            return "v-urgent"
+        if sgv < bands["low"]:
+            return "v-low"
+        if sgv > bands["high"]:
+            return "v-high"
+        return "v-ok"
+
+    def _last_failure(self, name: str) -> str:
+        """The newest sync event for this person, if it was a failure.
+
+        "Nothing is arriving" is not a diagnosis. The log already knows
+        that Tidepool said 401; the person's own page should say so
+        rather than making someone go and find it.
+        """
+        for entry in synclog.recent():
+            if entry.get("user") != name:
+                continue
+            return "" if entry.get("ok") else (entry.get("message") or "")
         return ""
 
     def _person_state(self, user: dict, now_ms: int) -> dict:
-        """How this person is doing, in the words the lists use.
+        """How this person is doing, in the words every list uses.
 
         One place, because the hub, the people list and the person page
-        all have to agree about whether something needs attention.
+        all have to agree about whether something needs attention — and
+        now about what colour the number is, too.
         """
+        name = user.get("name", "")
         source = user.get("source") or {}
         label = self.SOURCE_NAMES.get(source.get("type") or "push", "")
+        state = {"label": label, "value": "", "arrow": "", "delta": "",
+                 "age": "", "tone": "v-stale", "trend": "", "headline": "",
+                 "text": "", "short": "", "pill": "", "kind": "err"}
         if source.get("type") and not self._source_ready(source):
-            return {"text": f"{label} — credentials missing",
+            return {**state, "text": f"{label} — credentials missing",
                     "short": "needs setup", "pill": "needs setup",
-                    "kind": "err"}
-        snap = self.server.store.snapshot(user.get("name", ""))
+                    "kind": "err",
+                    "headline": "No credentials yet, so nothing is arriving"}
+        snap = self.server.store.snapshot(name)
+        failure = self._last_failure(name)
         if not snap.sgv_date or snap.sgv is None:
-            return {"text": f"{label} — nothing has arrived yet",
-                    "short": "no data", "pill": "", "kind": "warn"}
+            return {**state, "text": f"{label} — nothing has arrived yet",
+                    "short": "no data", "pill": "", "kind": "warn",
+                    "headline": failure or "Nothing has arrived yet"}
         minutes = max(0, int((now_ms - snap.sgv_date) / 60000))
         when = ("just now" if minutes < 1
                 else f"{minutes}m ago" if minutes < 120
                 else f"{minutes // 60}h ago")
         stale = minutes > self.server.config.display.stale_minutes
-        return {"text": f"{label} — {snap.sgv:.0f} mg/dL, {when}",
-                "short": when, "pill": "stale" if stale else "",
-                "kind": "warn" if stale else "ok"}
+        bands = self._thresholds_for(user)
+        arrow = self.ARROWS.get(snap.direction or "", "")
+        delta = ""
+        if snap.delta is not None:
+            step = round(snap.delta)
+            delta = (f"+{step:.0f}" if step > 0
+                     else f"\u2212{abs(step):.0f}" if step < 0 else "0")
+        reading = f"{snap.sgv:.0f}"
+        headline = (f"{ui.esc(failure)} \u00b7 last reading {when}" if failure
+                    else f"Arriving \u00b7 <b>{reading} mg/dL</b>, {when}")
+        return {
+            "label": label, "value": reading, "arrow": arrow, "delta": delta,
+            "trend": " ".join(part for part in (arrow, delta) if part),
+            "age": when, "tone": self._tone(snap.sgv, stale, bands),
+            "text": f"{label} — {reading} mg/dL, {when}",
+            "short": when, "pill": "stale" if stale else "",
+            "kind": "err" if failure else "warn" if stale else "ok",
+            "headline": headline,
+        }
 
     # ---- settings: the hub ----
 
     def _page_hub(self) -> str:
+        """The hub, read as a status report you occasionally tap.
+
+        Every row leads with what is true — "Sabanis", "07:57", "124" —
+        and only then with the page that would change it. Someone opening
+        this at 3am usually wants an answer, not a table of contents.
+        """
         raw = self._raw_config()
         config = self.server.config
         display = raw.get("display", {})
@@ -842,161 +971,206 @@ class AdminHandler(BaseHTTPRequestHandler):
         wifi_up = network.available()
         hotspot = network.hotspot_active_cached() if wifi_up else False
         wifi = network.state() if wifi_up else {}
+        theme = self._theme()
+        states = [(user, self._person_state(user, now_ms)) for user in users]
 
         notices = [self._flash()]
         if update.get("available") and update.get("rejoin"):
             notices.append(ui.banner(
                 "warn", "This device is on a pre-release, but set to the "
-                'standard channel. <a href="/settings/updates">Put it back on '
-                "a full release</a>."))
+                "standard channel \u2014 put it back on a full release",
+                href="/settings/updates"))
         elif update.get("available"):
             notices.append(ui.banner(
-                "info", f"<b>{ui.esc(update.get('latest', ''))}</b> is ready to "
-                'install. <a href="/settings/updates">See what changed</a>.'))
+                "warn", f"<b>{ui.esc(update.get('latest', ''))}</b> is ready "
+                "to install \u2014 see what changed",
+                href="/settings/updates"))
         if hotspot:
             notices.append(ui.banner(
                 "info", "The setup hotspot is on, so this device has no "
-                'internet yet. <a href="/settings/network">Join a network</a>.'))
+                "internet yet \u2014 join a network",
+                href="/settings/network"))
         elif wifi.get("state") == "failed":
             notices.append(ui.banner(
-                "err", f"Could not join <b>{ui.esc(wifi.get('ssid', ''))}</b>. "
-                '<a href="/settings/network">Try again</a>.'))
+                "err", f"Could not join <b>{ui.esc(wifi.get('ssid', ''))}</b>"
+                " \u2014 try again", href="/settings/network"))
+        # A person with no credentials is the one fault the hub cannot
+        # show in a row: their row has no reading to colour.
+        for index, (user, state) in enumerate(states):
+            if state["pill"] == "needs setup":
+                notices.append(ui.banner(
+                    "err", f"<b>{ui.esc(user.get('name') or 'Someone')}</b> has "
+                    "no credentials yet, so nothing is arriving",
+                    href=f"/settings/person?i={index}"))
         if not config.admin_password:
             notices.append(ui.banner(
-                "warn", "Anyone on this network can change these settings. "
-                '<a href="/settings/access">Set a password</a>.'))
+                "warn", "Anyone on this network can change these settings "
+                "\u2014 set a password", href="/settings/access"))
 
-        states = [(user, self._person_state(user, now_ms)) for user in users]
-        parts = [f"{user.get('name') or 'unnamed'} — {state['short']}"
-                 for user, state in states[:2]]
-        if len(states) > 2:
-            parts.append(f"and {len(states) - 2} more")
-        # A pill only for what needs doing; "no data" on a device that was
-        # set up ten seconds ago is not a problem, and the line already
-        # says so.
-        needs_setup = [s for _, s in states if s["kind"] == "err"]
+        # ---- who it's for ----
+        people = []
+        for index, (user, state) in enumerate(states):
+            name = user.get("name") or f"Person {index + 1}"
+            label = f"{name} \u00b7 {state['label']}" if state["label"] else name
+            if state["value"]:
+                value_html = ui.reading(state["value"], arrow=state["arrow"],
+                                        age=state["age"], tone=state["tone"])
+            else:
+                value_html = ('<span class="val v-stale">'
+                              f'{ui.esc(state["short"] or "no data")}</span>')
+            people.append(ui.menu_item(
+                f"/settings/person?i={index}", label, value_html=value_html,
+                lead=ui.dot(state["kind"])))
+        people.append(ui.menu_errand("/settings/person?i=new", "Add a person",
+                                     plus=True))
 
-        theme = self._theme()
+        # ---- the display ----
+        has_shot = os.path.isfile(SCREEN_PNG)
+        colours = "Night colours" if theme == "dark" else "Day colours"
+        hero = ""
+        if has_shot:
+            hero = (
+                '<a class="hero" href="/settings/screen">'
+                '<img class="screen live" src="/screen.png"'
+                ' alt="what the display shows now" onerror="this.hidden=true">'
+                f'<span class="cap">{ui.dot("ok")}Live \u00b7 '
+                f'{ui.esc(colours.lower())}<span class="fill"></span>'
+                '<span class="go">Change &rsaquo;</span></span></a>')
+        screen_rows = []
+        if not hero:
+            # No screenshot yet (the display has not drawn one, or is off):
+            # the hero has nothing to show, so the row carries the door.
+            screen_rows.append(ui.menu_item("/settings/screen", "The screen",
+                                            colours))
+        low, high = _g(display.get("low"), 70), _g(display.get("high"), 180)
+        urgent_low = _g(display.get("urgent_low"), 55)
+        urgent_high = _g(display.get("urgent_high"), 250)
+        screen_rows.append(ui.menu_item(
+            "/settings/ranges", "Ranges",
+            value_html=f'<span class="val">{ui.esc(low)}\u2013{ui.esc(high)} '
+                       f'<small>\u00b7 urgent {ui.esc(urgent_low)} / '
+                       f'{ui.esc(urgent_high)}</small></span>'))
         zone = display.get("timezone") or ""
+        screen_rows.append(ui.menu_item(
+            "/settings/clock", "Clock",
+            value_html=f'<span class="val">{time.strftime("%H:%M")}'
+                       + (f' <small>\u00b7 {ui.esc(zone.replace("_", " "))}'
+                          "</small>" if zone else
+                          ' <small>\u00b7 no zone set</small>')
+                       + "</span>"))
+
+        # ---- this device ----
+        device_rows = []
+        if wifi_up:
+            trail = ""
+            if hotspot:
+                wifi_value = "Setup hotspot is on"
+            elif wifi.get("state") == "ok" and wifi.get("ssid"):
+                wifi_value = wifi["ssid"]
+                signal = next((net.get("signal")
+                               for net in network.cached_networks()
+                               if net.get("ssid") == wifi["ssid"]), None)
+                if signal is not None:
+                    trail = ui.signal_bars(int(signal))
+            elif wifi.get("state") == "failed":
+                wifi_value = f"Could not join {wifi.get('ssid', '')}"
+            else:
+                wifi_value = (f"{len(network.cached_networks())} networks "
+                              "nearby")
+            device_rows.append(ui.menu_item("/settings/network", "Wi-Fi",
+                                            wifi_value, trail=trail))
         channel = config_mod.normalize_channel(config.update_channel)
         channel_label = config_mod.CHANNEL_LABELS[channel]
+        running = updater.current_version()
         if update.get("rejoin"):
-            updates_sub = f"On a pre-release · {channel_label} channel"
+            updates_value, badge = "On a pre-release", "Rejoin"
         elif update.get("available"):
-            updates_sub = (f"{update.get('latest', '')} ready to install · "
-                           f"{channel_label} channel")
+            updates_value = f"{update.get('latest', '')} ready to install"
+            badge = "New"
         elif update.get("checked_at"):
-            updates_sub = (f"{updater.current_version()} · up to date · "
-                           f"{channel_label} channel")
+            updates_value, badge = f"{running} \u00b7 up to date", ""
         else:
-            updates_sub = (f"{updater.current_version()} · "
-                           f"{channel_label} channel")
+            updates_value, badge = running, ""
+        device_rows.append(ui.menu_item(
+            "/settings/updates", f"Updates \u00b7 {channel_label} channel",
+            updates_value,
+            trail=f'<span class="pill warn">{ui.esc(badge)}</span>'
+                  if badge else ""))
+        device_rows.append(ui.menu_item(
+            "/settings/access", "Access",
+            value_html='<span class="val">Password set '
+                       "<small>\u00b7 admin</small></span>"
+                       if config.admin_password else
+                       '<span class="val v-low">No password set</span>'))
 
-        items = [
-            ui.menu_item(
-                "/settings/screen", "The screen",
-                "Night colours" if theme == "dark" else "Day colours",
-                lead='<span class="lead">' + ui.icon("screen")
-                     + '<img class="thumb live" src="/screen.png" alt=""'
-                       ' onerror="this.hidden=true"'
-                       ' onload="this.previousElementSibling.hidden=true">'
-                       "</span>"),
-            ui.menu_item(
-                "/settings/people", "People",
-                ", ".join(parts) if parts else "nobody yet",
-                lead=ui.icon("people"),
-                badge="needs setup" if needs_setup else "", badge_kind="err"),
-            ui.menu_item(
-                "/settings/ranges", "Ranges",
-                f"{_g(display.get('low'), 70)}–{_g(display.get('high'), 180)}"
-                f" · urgent under {_g(display.get('urgent_low'), 55)},"
-                f" over {_g(display.get('urgent_high'), 250)}",
-                lead=ui.icon("ranges")),
-        ]
-        if wifi_up:
-            if hotspot:
-                wifi_sub = "Setup hotspot is on"
-            elif wifi.get("state") == "ok" and wifi.get("ssid"):
-                wifi_sub = f"Connected to {wifi['ssid']}"
-            elif wifi.get("state") == "failed":
-                wifi_sub = f"Could not join {wifi.get('ssid', '')}"
-            else:
-                wifi_sub = f"{len(network.cached_networks())} networks nearby"
-            items.append(ui.menu_item("/settings/network", "Wi-Fi", wifi_sub,
-                                      lead=ui.icon("wifi")))
-        items += [
-            ui.menu_item(
-                "/settings/clock", "Clock",
-                f"{zone.replace('_', ' ')} · {time.strftime('%H:%M')}" if zone
-                else f"No zone set — the clock reads {time.strftime('%H:%M')}",
-                lead=ui.icon("clock")),
-            ui.menu_item("/settings/updates", "Updates", updates_sub,
-                         lead=ui.icon("update"),
-                         badge="new" if update.get("available") else "",
-                         badge_kind="warn"),
-            ui.menu_item(
-                "/settings/access", "Access",
-                "Password set — the username is admin" if config.admin_password
-                else "No password set", lead=ui.icon("lock"),
-                badge="" if config.admin_password else "open",
-                badge_kind="warn"),
-        ]
-        more = ui.menu([
-            ui.menu_item("/setup?again=1", "Run guided setup again",
-                         "The same questions, one screen at a time",
-                         lead=ui.icon("wizard")),
-            ui.menu_item("/log", "Sync log", "What has arrived, and when",
-                         lead=ui.icon("log")),
-        ])
         address = config_mod.admin_url(self._lan_ip(), config.admin_port)
-        return f"""<h1>Settings</h1>
-<p class="lede">GlucoCube {ui.esc(updater.current_version())} at
-{ui.esc(address)}</p>
+        return f"""{ui.eyebrow(f"GlucoCube {running}")}
+<h1>Settings</h1>
+<p class="meta">{ui.esc(address)}</p>
+{hero}
 {''.join(notices)}
-{ui.menu(items)}
-<h2>More</h2>
-{more}"""
+{ui.rule("Who it's for")}
+{ui.menu(people)}
+{ui.rule("The display")}
+{ui.menu(screen_rows)}
+{ui.rule("This device")}
+{ui.menu(device_rows)}
+{ui.rule("More")}
+{ui.menu([
+    ui.menu_errand("/setup?again=1", "Run guided setup again"),
+    ui.menu_errand("/log", "Sync log"),
+])}"""
 
     # ---- settings: one page per thing ----
 
     def _page_screen(self) -> str:
         theme = self._theme()
-        other, label = (("light", "Switch to Day") if theme == "dark"
-                        else ("dark", "Switch to Night"))
+
+        def switch(to: str, label: str) -> str:
+            return (f'<form method="POST" action="/display/theme">'
+                    f'<input type="hidden" name="theme" value="{to}">'
+                    '<input type="hidden" name="back" value="/settings/screen">'
+                    f'<button type="submit">{label}</button></form>')
+
+        colours = ui.segmented([
+            (theme == "light", "Day &#9788;", switch("light", "Day &#9788;")),
+            (theme == "dark", "Night &#9790;", switch("dark", "Night &#9790;")),
+        ])
         return f"""<h1>The screen</h1>
 <p class="lede">Exactly what the device is showing, refreshed every few
 seconds.</p>
 <img class="screen live" id="screen" src="/screen.png"
      alt="what the display shows" onerror="this.hidden=true">
-<form method="POST" action="/display/theme">
-  <input type="hidden" name="theme" value="{other}">
-  <input type="hidden" name="back" value="/settings/screen">
-  <div class="actions">
-    <button type="submit" class="secondary">{label}</button>
-    <span class="note">Currently {"night" if theme == "dark" else "day"}.
-      The sun or moon on the device does the same thing, and the QR beside
-      it opens these settings on a phone — no password to type.</span>
-  </div>
-</form>"""
+<p class="livecap">{ui.dot("ok")}Live &#183;
+<span class="shotage">just now</span></p>
+{ui.rule("Colours")}
+{colours}
+<p class="note">Applies immediately &mdash; no restart. The sun or moon on
+the device does the same thing, and the QR beside it opens these settings
+on a phone with no password to type.</p>"""
 
     def _page_people(self) -> str:
         users = self._raw_config().get("users") or []
         now_ms = int(time.time() * 1000)
-        rows = []
+        cards = []
         for index, user in enumerate(users):
             state = self._person_state(user, now_ms)
-            rows.append(ui.menu_item(
+            cards.append(ui.person_card(
                 f"/settings/person?i={index}",
-                user.get("name") or f"Person {index + 1}", state["text"],
-                lead=ui.icon("people"), badge=state["pill"],
-                badge_kind=state["kind"]))
-        rows.append(ui.menu_item(
-            "/settings/person?i=new", "Add a person",
-            "Another panel on the screen", lead=ui.icon("people")))
+                user.get("name") or f"Person {index + 1}",
+                source=state["label"], value=state["value"],
+                trend=ui.esc(state["trend"]), age=state["age"],
+                tone=state["tone"], dot_kind=state["kind"],
+                note=state["short"] or "no data"))
+        add = ('<a class="item quiet dashed" href="/settings/person?i=new">'
+               '<span class="plus" aria-hidden="true">+</span>'
+               '<span class="body">Add a person</span>'
+               '<span class="chev" aria-hidden="true">&rsaquo;</span></a>')
         return f"""<h1>People</h1>
 <p class="lede">One panel on the screen each.</p>
 {self._flash()}
-{ui.menu(rows)}"""
+{''.join(cards)}
+{add}"""
 
     def _next_port(self, users: list[dict]) -> int:
         taken = {user.get("port") for user in users}
@@ -1007,6 +1181,12 @@ seconds.</p>
         return port
 
     def _page_person(self, index, *, form=None, banner: str = "") -> str:
+        """One person, and everything that decides what their panel says.
+
+        Credentials live inside the source card that needs them: the
+        answer to "where do I type the password?" should be "in the thing
+        you just picked", not "in one of three blocks further down".
+        """
         raw = self._raw_config()
         users = raw.get("users") or []
         adding = index == "new"
@@ -1022,221 +1202,269 @@ seconds.</p>
                   or config_mod.readable_secret(16))
         th = user.get("thresholds") or {}
         control = "src"
+        name = pick("name", user.get("name", ""))
+        heading = user.get("name") or "Add a person"
 
-        # The port and the push secret belong to the push source and to
-        # nothing else — someone on twiist was being asked for a "Port
-        # (Nightscout API)" they will never use. They stay in the form
-        # (hidden inputs still submit, so the port round-trips) but they
-        # are only *shown* for the source that needs them.
+        # Whether anything is actually arriving, said at the top rather
+        # than left for the sync log to reveal.
+        status = ""
+        if not adding:
+            state = self._person_state(user, int(time.time() * 1000))
+            status = ui.banner(
+                state["kind"],
+                f'<span class="status">{state["headline"]}</span>',
+                dot_kind=state["kind"],
+                trail='<a class="link" href="/log">Log &rsaquo;</a>')
+
+        def test_block(label: str) -> str:
+            return (f'<button type="button" class="test" data-needs-js hidden>'
+                    f"{label}</button>"
+                    '<p class="testresult" hidden>'
+                    '<span class="mark" aria-hidden="true"></span>'
+                    '<span class="msg"></span></p>')
+
+        def poll_block(field: str, value) -> str:
+            return (ui.rule("How often")
+                    + '<div class="inline-field">'
+                    + ui.text_input(field, value, kind="number",
+                                    input_id=field,
+                                    extra='min="15" step="5"'
+                                          ' aria-label="Seconds between checks"')
+                    + '<span class="note">seconds between checks</span></div>')
+
         push = (
-            ui.row("URL for the uploader",
-                   ui.copy_input("push_url", f"http://{self._lan_ip()}:{port}",
-                                 input_id="push_url"), inline=False)
-            + ui.row("API secret",
-                     ui.copy_input("api_secret", secret, input_id="api_secret"),
-                     inline=False,
-                     hint="Enter both in Trio under Settings &rarr; Services"
-                          " &rarr; Nightscout.")
-            + "<details><summary>Port</summary>"
-            + ui.row("Port", ui.text_input("port", port, kind="number",
-                                           input_id="port"),
-                     for_id="port",
-                     hint="The uploader connects to this port on this device."
-                          " Only change it if something else is using it.")
-            + "</details>"
+            ui.rule("Enter these in Trio")
+            + ui.copy_input("push_url", f"http://{self._lan_ip()}:{port}",
+                            input_id="push_url",
+                            label="URL for the uploader")
+            + ui.copy_input("api_secret", secret, input_id="api_secret",
+                            label="API secret")
+            + '<p class="note">Trio &rsaquo; Settings &rsaquo; Services &rsaquo;'
+              " Nightscout. The first box is the URL, the second the API"
+              " secret.</p>"
+            # The port belongs to this source and to nothing else — someone
+            # on twiist was being asked for a "Port (Nightscout API)" they
+            # will never use. It stays in the form so it round-trips.
+            + ui.disclosure(
+                f"Port {port}",
+                ui.row("Port", ui.text_input("port", port, kind="number",
+                                             input_id="port"),
+                       for_id="port",
+                       hint="The uploader connects to this port on this"
+                            " device. Only change it if something else is"
+                            " using it."),
+                slim=True)
         )
         tidepool = (
-            ui.row("Tidepool email",
-                   ui.text_input("tp_email",
-                                 pick("tp_email", source.get("email", "")
-                                      if stype == "tidepool" else ""),
-                                 kind="email", input_id="tp_email",
-                                 extra='autocapitalize="none" autocorrect="off"'
-                                       ' spellcheck="false"'),
-                   inline=False, for_id="tp_email")
+            ui.rule("Tidepool login")
+            + ui.text_input("tp_email",
+                            pick("tp_email", source.get("email", "")
+                                 if stype == "tidepool" else ""),
+                            kind="email", input_id="tp_email",
+                            placeholder="Tidepool email",
+                            extra='autocapitalize="none" autocorrect="off"'
+                                  ' spellcheck="false"'
+                                  ' aria-label="Tidepool email"')
+            + '<div class="gap"></div>'
             # Stored credentials are never rendered back into the page:
             # blank means "keep what is saved".
-            + ui.row("Tidepool password",
-                     ui.password_input("tp_password", "",
-                                       placeholder=self._secret_placeholder(
-                                           stype == "tidepool",
-                                           source.get("password")),
-                                       input_id="tp_password"),
-                     inline=False, for_id="tp_password")
+            + ui.password_input("tp_password", "",
+                                placeholder=self._secret_placeholder(
+                                    stype == "tidepool",
+                                    source.get("password"))
+                                or "Tidepool password",
+                                input_id="tp_password",
+                                extra='aria-label="Tidepool password"')
+            + test_block("Test this login")
+            + poll_block("poll", pick("poll", source.get("poll_seconds", 60)
+                                      if stype == "tidepool" else 60))
         )
         ns_key = source.get("api_secret") or source.get("token") or ""
         nightscout = (
-            ui.row("Nightscout address",
-                   ui.text_input("ns_url",
-                                 pick("ns_url", source.get("url", "")
-                                      if stype == "nightscout" else ""),
-                                 kind="url", placeholder="mysite.example.com",
-                                 input_id="ns_url",
-                                 extra='autocapitalize="none" autocorrect="off"'
-                                       ' spellcheck="false"'),
-                   inline=False, for_id="ns_url")
-            + ui.row("API secret or token",
-                     ui.password_input("ns_key", "",
-                                       placeholder=self._secret_placeholder(
-                                           stype == "nightscout", ns_key),
-                                       input_id="ns_key"),
-                     inline=False, for_id="ns_key",
-                     hint="Either works — GlucoCube works out which.")
+            ui.rule("The Nightscout site")
+            + ui.text_input("ns_url",
+                            pick("ns_url", source.get("url", "")
+                                 if stype == "nightscout" else ""),
+                            kind="url", placeholder="mysite.example.com",
+                            input_id="ns_url",
+                            extra='autocapitalize="none" autocorrect="off"'
+                                  ' spellcheck="false"'
+                                  ' aria-label="Nightscout address"')
+            + '<div class="gap"></div>'
+            + ui.password_input("ns_key", "",
+                                placeholder=self._secret_placeholder(
+                                    stype == "nightscout", ns_key)
+                                or "API secret or token",
+                                input_id="ns_key",
+                                extra='aria-label="Nightscout API secret'
+                                      ' or token"')
+            + '<p class="note">Either works &mdash; GlucoCube works out'
+              " which.</p>"
+            + test_block("Test this site")
+            + poll_block("ns_poll",
+                         pick("ns_poll", source.get("poll_seconds", 60)
+                              if stype == "nightscout" else 60))
         )
-        pull_extra = (
-            ui.row("Check every",
-                   ui.text_input("poll", pick("poll",
-                                              source.get("poll_seconds", 60)),
-                                 kind="number", input_id="poll"),
-                   for_id="poll", hint="seconds")
-            + '<button type="button" class="test secondary" data-needs-js'
-              " hidden>Test connection</button>"
-            + '<div class="banner" id="testresult" hidden></div>'
-        )
+
         # Open when this person has overrides, and when a failed save is
         # being re-rendered with some — collapsing over what someone just
         # typed is how you lose it.
         typed = any((form or {}).get(f"th_{key}") for key in
                     ("low", "high", "urgent_low", "urgent_high"))
-        ranges = "".join([
-            '<details class="ranges"' + (" open" if th or typed else "") + ">",
-            "<summary>Ranges just for this person</summary>",
-            ui.row("Low / high", '<div class="pair">'
-                   + ui.text_input("th_low", pick("th_low", _g(th.get("low"))),
-                                   kind="number", placeholder="default")
-                   + ui.text_input("th_high", pick("th_high",
-                                                   _g(th.get("high"))),
-                                   kind="number", placeholder="default")
-                   + "</div>", inline=False),
-            ui.row("Urgent low / high", '<div class="pair">'
-                   + ui.text_input("th_urgent_low",
-                                   pick("th_urgent_low",
-                                        _g(th.get("urgent_low"))),
-                                   kind="number", placeholder="default")
-                   + ui.text_input("th_urgent_high",
-                                   pick("th_urgent_high",
-                                        _g(th.get("urgent_high"))),
-                                   kind="number", placeholder="default")
-                   + "</div>", inline=False,
-                   hint="Blank uses the ranges everyone shares."),
-            "</details>",
-        ])
+        shared = self._range_defaults()
+        bands = self._thresholds_for(user)
+        overridden = bool(th)
+        summary_state = (
+            f"{_g(bands['low'])}\u2013{_g(bands['high'])}" if overridden
+            else f"using shared {_g(shared['low'])}\u2013{_g(shared['high'])}")
+        ranges = ui.disclosure(
+            f"Ranges just for {name or 'this person'}",
+            '<div class="pair">'
+            + ui.field("Low", ui.text_input(
+                "th_low", pick("th_low", _g(th.get("low"))), kind="number",
+                placeholder="default", input_id="th_low"))
+            + ui.field("High", ui.text_input(
+                "th_high", pick("th_high", _g(th.get("high"))), kind="number",
+                placeholder="default", input_id="th_high"))
+            + '</div><div class="gap"></div><div class="pair">'
+            + ui.field("Urgent under", ui.text_input(
+                "th_urgent_low", pick("th_urgent_low",
+                                      _g(th.get("urgent_low"))),
+                kind="number", placeholder="default", input_id="th_urgent_low"))
+            + ui.field("Urgent over", ui.text_input(
+                "th_urgent_high", pick("th_urgent_high",
+                                       _g(th.get("urgent_high"))),
+                kind="number", placeholder="default",
+                input_id="th_urgent_high"))
+            + '</div><p class="note">Blank uses the ranges everyone'
+              " shares.</p>",
+            state=summary_state, state_set=overridden,
+            open_=typed, top=True)
+
         remove = ""
         if not adding and len(users) > 1:
             remove = f"""
+<div class="farewell">
 <form method="POST" action="/settings/person/remove?i={index}"
       onsubmit="return confirm('Remove this person from the display?')">
-  <div class="actions">
-    <button type="submit" class="danger">Remove this person</button>
-    <span class="note">Their readings stay in the database — only the
-      panel goes away.</span>
-  </div>
-</form>"""
-        name = pick("name", user.get("name", ""))
-        heading = user.get("name") or "Add a person"
+  <button type="submit" class="danger">Remove
+    {ui.esc(user.get("name") or "this person")}</button>
+</form>
+<p class="note">Their readings stay in the database &mdash; only the panel
+goes away.</p>
+</div>"""
+        lede = ('<p class="lede">They get their own panel on the screen, '
+                "their own port and their own API secret.</p>" if adding
+                else "")
         return f"""<h1>{ui.esc(heading)}</h1>
-<p class="lede">{"They get their own panel, port and API secret."
-                 if adding else "Where their readings come from, and the "
-                 "ranges they are coloured against."}</p>
+{lede}
+{status}
 {banner}
 <form method="POST" action="/settings/person?i={ui.esc(index)}"
-      data-index="{ui.esc(index)}">
+      data-index="{ui.esc(index)}" data-dirty>
   {ui.row("Name", ui.text_input("name", name, input_id="name"),
-          inline=False, for_id="name")}
+          for_id="name")}
   <label class="lbl">Where the data comes from</label>
-  {ui.choice_cards("source", self.SOURCE_CARDS, stype, controls=control)}
-  {ui.group(control, "push", push, current=stype)}
-  {ui.group(control, "tidepool", tidepool, current=stype)}
-  {ui.group(control, "nightscout", nightscout, current=stype)}
-  {ui.group(control, ["tidepool", "nightscout"], pull_extra, current=stype)}
+  {ui.choice_cards("source", self.SOURCE_CARDS, stype, controls=control,
+                   bodies={"push": push, "tidepool": tidepool,
+                           "nightscout": nightscout})}
   {ranges}
-  <div class="actions stick">
-    <button type="submit">{"Add" if adding else "Save"} &amp; apply</button>
-    <span class="note">Restarts the display, about five seconds.</span>
-  </div>
+  {ui.save_bar("Add &amp; restart display" if adding
+               else "Save &amp; restart display")}
 </form>{remove}"""
 
     def _page_ranges(self) -> str:
         display = self._raw_config().get("display", {})
+        low = _g(display.get("low"), 70)
+        high = _g(display.get("high"), 180)
+        urgent_low = _g(display.get("urgent_low"), 55)
+        urgent_high = _g(display.get("urgent_high"), 250)
+
+        def number(name: str, value) -> str:
+            return ui.text_input(name, value, kind="number", input_id=name,
+                                 css="num")
+
         return f"""<h1>Ranges</h1>
 <p class="lede">What counts as in range, and where the numbers turn red.
 Everyone shares these unless their own page overrides them.</p>
 {self._flash()}
-<form method="POST" action="/settings/ranges">
-<fieldset><legend>mg/dL</legend>
-  {ui.row("In range", '<div class="pair">'
-          + ui.text_input("low", _g(display.get("low"), 70), kind="number")
-          + ui.text_input("high", _g(display.get("high"), 180), kind="number")
-          + "</div>", inline=False, hint="low and high")}
-  {ui.row("Urgent", '<div class="pair">'
-          + ui.text_input("urgent_low", _g(display.get("urgent_low"), 55),
-                          kind="number")
-          + ui.text_input("urgent_high", _g(display.get("urgent_high"), 250),
-                          kind="number")
-          + "</div>", inline=False,
-          hint="outside these the whole panel turns red")}
-  {ui.row("Stale after", ui.text_input(
-      "stale_minutes", _g(display.get("stale_minutes"), 12), kind="number",
-      input_id="stale_minutes"), for_id="stale_minutes",
-      hint="minutes without a reading before the panel greys out")}
-</fieldset>
-<div class="actions stick">
-  <button type="submit">Save &amp; apply</button>
-  <span class="note">Restarts the display, about five seconds.</span>
+{ui.range_preview(low, high, urgent_low, urgent_high)}
+<form method="POST" action="/settings/ranges" data-dirty>
+{ui.rule("In range · mg/dL")}
+<div class="pair">
+  {ui.field("Low", number("low", low))}
+  {ui.field("High", number("high", high))}
 </div>
+{ui.rule("Urgent · panel turns red")}
+<div class="pair">
+  {ui.field("Under", number("urgent_low", urgent_low))}
+  {ui.field("Over", number("urgent_high", urgent_high))}
+</div>
+{ui.rule("Stale after")}
+<div class="inline-field">
+  {ui.text_input("stale_minutes", _g(display.get("stale_minutes"), 12),
+                 kind="number", input_id="stale_minutes", css="num",
+                 extra='aria-label="Minutes before a panel greys out"')}
+  <span class="note">minutes without a reading before the panel greys
+    out</span>
+</div>
+{ui.save_bar()}
 </form>"""
 
     def _page_clock(self) -> str:
         display = self._raw_config().get("display", {})
         current = display.get("timezone", "")
+        clock = ('<div class="clockrow">'
+                 f'<span class="clock">{time.strftime("%H:%M")}</span>'
+                 f'<span class="weekday">{time.strftime("%A")}</span></div>')
         return f"""<h1>Clock</h1>
 <p class="lede">Where the device is, so the clock and the times on the
 chart are right. A device straight off the image has no zone set and
 reads UTC.</p>
 {self._flash()}
-<div class="banner info" id="tzdetected" hidden>
-  This phone says <b></b>.
-  <button type="button" class="quiet">Use that</button>
+<div class="panel" id="devclock" data-zone="{ui.esc(current)}">
+  <span class="cap"><span class="grow">The device reads</span></span>
+  {clock}
 </div>
-<form method="POST" action="/settings/clock">
+<div class="banner ok" id="tzdetected" hidden>
+  <span class="grow"><span class="status">This phone says <b></b></span></span>
+  <button type="button" class="tiny go">Use that</button>
+</div>
+<form method="POST" action="/settings/clock" data-dirty>
   {ui.row("Time zone", ui.select("timezone", timezone_options(), current,
-                                 input_id="timezone"), inline=False,
-          for_id="timezone")}
+                                 input_id="timezone"), for_id="timezone")}
   <p class="note" id="tzpreview"></p>
-  <div class="actions stick">
-    <button type="submit">Save &amp; apply</button>
-    <span class="note">Restarts the display, about five seconds.</span>
-  </div>
+  {ui.save_bar()}
 </form>"""
 
     def _page_network(self) -> str:
         if not network.available():
-            return ("<h1>Wi-Fi</h1><p>This device has no NetworkManager, so "
-                    "its network is managed elsewhere.</p>")
+            return ("<h1>Wi-Fi</h1><p class=\"lede\">This device has no "
+                    "NetworkManager, so its network is managed elsewhere.</p>")
         hotspot = network.hotspot_active()
         wifi = network.state()
         notices = [self._flash()]
         if hotspot:
             notices.append(ui.banner(
-                "info", "Setup hotspot is on — pick your home network below."))
+                "info", "Setup hotspot is on \u2014 pick your home network "
+                "below."))
         if wifi.get("state") == "failed":
             notices.append(ui.banner(
-                "err", f"Could not join <b>{ui.esc(wifi.get('ssid', ''))}</b> — "
-                       f"{ui.esc(wifi.get('error', 'unknown error'))}"))
+                "err", f"Could not join <b>{ui.esc(wifi.get('ssid', ''))}</b> "
+                       f"\u2014 {ui.esc(wifi.get('error', 'unknown error'))}"))
             if wifi.get("detail"):
-                notices.append("<details><summary>Technical detail</summary>"
+                notices.append("<details class=\"slim\"><summary>"
+                               "<span class=\"label\">Technical detail</span>"
+                               "</summary><div class=\"inner\">"
                                f"<pre class=\"detail\">{ui.esc(wifi['detail'])}"
-                               "</pre></details>")
+                               "</pre></div></details>")
         elif wifi.get("state") == "joining":
             notices.append(ui.banner(
                 "info", f"Joining <b>{ui.esc(wifi.get('ssid', ''))}</b>&hellip;"))
-        elif wifi.get("state") == "ok" and not hotspot:
-            notices.append(ui.banner(
-                "ok", f"Connected to <b>{ui.esc(wifi.get('ssid', ''))}</b>"))
         if wifi.get("reboot_error"):
             notices.append(ui.banner(
                 "err", "Could not restart automatically: "
-                       f"{ui.esc(wifi['reboot_error'])} — power-cycle the "
+                       f"{ui.esc(wifi['reboot_error'])} \u2014 power-cycle the "
                        "device to finish."))
         if wifi.get("hotspot_error"):
             notices.append(ui.banner(
@@ -1244,6 +1472,22 @@ reads UTC.</p>
                        f"{ui.esc(wifi['hotspot_error'])}"))
 
         networks = network.cached_networks()
+        address = config_mod.admin_url(self._lan_ip(),
+                                       self.server.config.admin_port)
+        # What you are on now, before what you could move to.
+        connected = ""
+        if wifi.get("state") == "ok" and wifi.get("ssid") and not hotspot:
+            signal = next((net.get("signal") for net in networks
+                           if net.get("ssid") == wifi["ssid"]), None)
+            bars = (ui.signal_bars(int(signal), live=True)
+                    if signal is not None else "")
+            connected = ui.panel(
+                "Connected to",
+                f'<span class="big"><span class="grow">'
+                f'{ui.esc(wifi["ssid"])}</span>{bars}</span>'
+                f'<span class="sub">This device &#183; {ui.esc(address)}</span>',
+                edge=True)
+
         age = network.scan_age_seconds()
         if network.scan_in_progress():
             hint = "Scanning&hellip;"
@@ -1252,29 +1496,37 @@ reads UTC.</p>
                     else f"{int(age // 60)} min ago")
             hint = f"{len(networks)} networks found, scanned {when}."
         else:
-            hint = ("No scan results — use “Other network” and type the name."
-                    if hotspot else "No networks found; try Rescan.")
-        rescan = (
-            '<form method="POST" action="/wifi/rescan">'
-            '<button type="submit" class="quiet">Rescan</button></form>'
-            if not hotspot else
-            '<p class="note">The radio cannot scan while the setup hotspot is '
-            'running, so this is the list from just before it started.</p>'
-        )
-        address = config_mod.admin_url(self._lan_ip(),
-                                       self.server.config.admin_port)
+            hint = ("No scan results \u2014 use \u201cOther network\u201d and "
+                    "type the name." if hotspot
+                    else "No networks found; try Rescan.")
+        # The rescan button lives in the section heading, and so needs its
+        # own form: a form inside the join form would not be valid markup.
+        if hotspot:
+            nearby = (ui.rule("Also nearby")
+                      + '<p class="note">The radio cannot scan while the setup'
+                        " hotspot is running, so this is the list from just"
+                        " before it started.</p>")
+        else:
+            nearby = ('<form method="POST" action="/wifi/rescan">'
+                      + ui.rule("Also nearby",
+                                trail='<button type="submit" class="tiny">'
+                                      "Rescan</button>")
+                      + "</form>")
         return f"""<h1>Wi-Fi</h1>
 {''.join(notices)}
-{ui.facts([("This device", ui.esc(address))])}
+{connected}
+{nearby}
 <form method="POST" action="/wifi">
   {ui.network_picker(networks, selected=wifi.get("ssid", ""))}
+  <p class="note spaced">{hint}</p>
   {ui.row("Password", ui.password_input("wifi_password", "",
                                         input_id="wifi_password"),
-          inline=False, for_id="wifi_password")}
-  <p class="note">{hint}</p>
+          for_id="wifi_password",
+          hint="Check it before joining &mdash; the device drops off the "
+               "network while it tries, and a wrong password takes a minute "
+               "or two to come back.")}
   <div class="actions"><button type="submit">Join network</button></div>
-</form>
-{rescan}"""
+</form>"""
 
     def _update_status(self, state: dict) -> tuple[str, str]:
         """(banner kind, sentence) for whatever the last check found."""
@@ -1306,36 +1558,74 @@ reads UTC.</p>
         channel = config_mod.normalize_channel(
             self.server.config.update_channel)
         kind, status = self._update_status(state)
+        running = ui.esc(updater.current_version())
+        latest = ui.esc(state.get("latest", ""))
+        offered = bool(state.get("available") and state.get("latest_tag"))
+
+        # Running, and what it could be running: two numbers with an arrow
+        # between them says "there is somewhere to go" faster than a
+        # sentence does.
+        versions = ('<div class="versions">'
+                    '<span class="v"><span class="cap">Running</span>'
+                    f'<span class="n">{running}</span></span>')
+        if state.get("available") and latest:
+            versions += ('<span class="to" aria-hidden="true">&rarr;</span>'
+                         '<span class="v new"><span class="cap">Available'
+                         f'</span><span class="n">{latest}</span></span>')
+        versions += "</div>"
+
+        checked = (time.strftime("%H:%M",
+                                 time.localtime(state["checked_at"] / 1000))
+                   if state.get("checked_at") else "")
+        notes = (f' &#183; <a href="{ui.esc(state.get("url", ""))}">release '
+                 "notes &rsaquo;</a>" if state.get("url") else "")
+        if not checked:
+            when = "Not checked yet &#183; checks run every six hours"
+        elif state.get("available"):
+            when = f"Checked {checked}{notes}"
+        else:
+            when = f"Checked {checked} &#183; up to date{notes}"
+
+        # The sentence still earns its place when the news is bad, or odd.
+        trouble = (ui.banner(kind, status)
+                   if state.get("error") or state.get("rejoin")
+                   or (checked and not state.get("latest")) else "")
         install = ""
-        if state.get("available") and state.get("latest_tag"):
+        if offered:
             install = f"""
+<div class="actions">
   <form method="POST" action="/update/apply">
     <input type="hidden" name="tag" value="{ui.esc(state.get('latest_tag', ''))}">
-    <button type="submit">Install {ui.esc(state.get('latest', ''))}</button>
-  </form>"""
-        running = ui.esc(updater.current_version())
+    <button type="submit">Install {latest}</button>
+  </form>
+</div>
+<p class="note spaced">The display restarts on the new version, about a
+minute. Readings are untouched.</p>"""
         return f"""<h1>Updates</h1>
-<p class="lede">Running GlucoCube <b>{running}</b>.</p>
 {self._flash()}
-{ui.banner(kind, status)}
+{versions}
+<p class="meta">{when}</p>
+{trouble}
+{install}
 <div class="actions">
   <form method="POST" action="/update/check">
-    <button type="submit" class="secondary">Check now</button>
-  </form>{install}
+    <button type="submit" class="quiet">Check now</button>
+  </form>
 </div>
-<h2>Release channel</h2>
+{ui.rule("Release channel")}
 <form method="POST" action="/settings/updates/channel">
   {ui.choice_cards("channel", self.CHANNEL_CARDS, channel)}
-  <p class="note">Changing this installs the newest release on the channel
-  you pick, right away — including stepping back onto the last full release
-  when you leave Beta. The display restarts, which takes about a minute.</p>
+  <p class="note">Switching installs that channel&#8217;s newest release
+  straight away &mdash; including stepping back onto the last full release
+  when you leave Beta. The display restarts, which takes about a
+  minute.</p>
   <div class="actions">
-    <button type="submit" class="secondary">Switch channel</button>
+    <button type="submit" class="quiet">Switch channel</button>
   </div>
 </form>
-<p class="note">Updates install from GitHub releases. A release marked
-<code>[force-update]</code> in its notes installs itself at the next
-check, on whichever channel published it.</p>"""
+<p class="note nudge">Updates install from GitHub releases. A release marked
+<span class="mono">[force-update]</span> in its notes installs itself at the
+next check, on whichever channel published it.</p>"""
 
     def _page_access(self) -> str:
         config = self.server.config
@@ -1343,33 +1633,33 @@ check, on whichever channel published it.</p>"""
         link = config_mod.admin_url(
             self._lan_ip(), config.admin_port,
             f"/settings?key={password}" if password else "/settings")
-        known = [("Username", "admin")] if password else []
+        current = ui.panel(
+            "Sign in as admin",
+            ui.copy_value(password, input_id="current")
+            + '<p class="note">The device&#8217;s own screen shows this too,'
+              " so you cannot lock yourself out.</p>",
+            cap_trail=ui.copy_button("current")) if password else ""
+        autolink = ui.panel(
+            "Link that skips the login",
+            ui.copy_value(link, input_id="autolink", css="link")
+            + '<p class="warnnote"><span aria-hidden="true">!</span><span>The '
+              "same link the QR code on the device carries. Anyone with it "
+              "can change these settings.</span></p>",
+            quiet=True, cap_trail=ui.copy_button("autolink"))
         return f"""<h1>Access</h1>
 <p class="lede">{"This page and the dashboard need a password."
                  if password else
                  "This page has no password: anyone on the network can "
                  "change these settings."}</p>
 {self._flash()}
-{ui.facts(known)}
-{ui.row("Current password", ui.copy_input("current", password,
-                                          input_id="current"), inline=False,
-        hint="The device's own screen shows this too, so you cannot lock "
-             "yourself out.") if password else ""}
-{ui.row("Link that opens settings without logging in",
-        ui.copy_input("autolink", link, input_id="autolink"), inline=False,
-        hint="The same link the QR code on the device carries. Anyone with "
-             "it can change these settings.")}
-<form method="POST" action="/settings/access">
+{current}
+{autolink}
+<form method="POST" action="/settings/access" data-dirty>
   {ui.row("New password", ui.password_input("admin_password", "",
-          input_id="admin_password"), inline=False, for_id="admin_password",
-          hint="At least six characters. You will stay logged in on this "
-               "phone.")}
-  <div class="actions stick">
-    <button type="submit">Save &amp; apply</button>
-    <span class="note">Restarts the display, about five seconds.</span>
-  </div>
+          input_id="admin_password"), for_id="admin_password",
+          hint="At least six characters. You stay logged in on this phone.")}
+  {ui.save_bar()}
 </form>"""
-
 
     @staticmethod
     def _source_ready(source: dict) -> bool:
@@ -1384,17 +1674,27 @@ check, on whichever channel published it.</p>"""
     @staticmethod
     def _updating_page(version: str) -> bytes:
         return ui.page(
-            "Installing", f"<h1>Installing {ui.esc(version)}&hellip;</h1>"
-            "<p>The display restarts on the new version — this page reloads"
-            " in about a minute.</p>",
+            "Installing",
+            f'{ui.eyebrow("Installing")}<h1>{ui.esc(version)}</h1>'
+            '<p class="lede">The display restarts on the new version. This '
+            "page reloads by itself in about a minute.</p>"
+            + ui.steps_bar(3, 1)
+            + ui.checklist([
+                (True, "Release downloaded"),
+                (False, "Installing\u2026"),
+                (False, "Waiting for the new version to answer\u2026"),
+            ]),
             refresh="45;url=/settings/updates").encode()
 
     @staticmethod
     def _error_page(message: str, back: str) -> bytes:
         return ui.page(
             "That did not save",
-            f"<h1>That did not save</h1><p>{ui.esc(message)}</p>"
-            f'<p><a href="{ui.esc(back)}">Back</a></p>').encode()
+            f'{ui.eyebrow("Not saved")}<h1>That did not save</h1>'
+            f'<p class="lede">{ui.esc(message)}</p>'
+            f'<p class="note">Nothing on the device has changed.</p>'
+            f'<div class="actions"><a class="btn" href="{ui.esc(back)}">'
+            "Back</a></div>").encode()
 
     @staticmethod
     def _applying_page(back: str, heading: str = "Saved",
@@ -1403,28 +1703,53 @@ check, on whichever channel published it.</p>"""
 
         It waits for the *new* process to answer rather than guessing at
         a number of seconds: the old fixed reload landed on a connection
-        error about half the time.
+        error about half the time. Naming the three beats of that wait —
+        written, stopped, answering — turns dead air into progress.
         """
         script = """<script>
 (function(){
   var next = %s, gone = false;
+  var bars = document.querySelectorAll('.steps i');
+  var steps = document.querySelectorAll('.checklist > span');
+  function done(i, text){
+    if (bars[i]) bars[i].className = 'done';
+    if (!steps[i]) return;
+    steps[i].className = '';
+    steps[i].querySelector('.mark').innerHTML = '&#10003;';
+    if (text) steps[i].lastChild.textContent = text;
+  }
   setInterval(function(){
     fetch('/api/health.json', {cache: 'no-store'}).then(function(r){
       if (!r.ok) throw new Error(r.status);
-      if (gone) location.replace(next);
-    }).catch(function(){ gone = true; });
+      if (gone) { done(2, 'The new one answered'); location.replace(next); }
+    }).catch(function(){
+      if (!gone) done(1, 'Old process stopped');
+      gone = true;
+    });
   }, 1200);
 })();
 </script>""" % json.dumps(back)
-        body = (f"<h1>{ui.esc(heading)}</h1><p>"
-                + (message or "The display is restarting on the new "
-                              "settings.")
-                + '</p><p class="note">This page comes back by itself.</p>')
+        lede = message or ("Your settings are written. This page comes back "
+                           "by itself as soon as the device answers again "
+                           "\u2014 usually five seconds.")
+        body = (
+            f'<p class="eyebrow ok">{ui.esc(heading)}</p>'
+            "<h1>The display is restarting</h1>"
+            f'<p class="lede">{lede}</p>'
+            + ui.steps_bar(3, 1)
+            + ui.checklist([
+                (True, "Settings written to config.json"),
+                (False, "Stopping the old process\u2026"),
+                (False, "Waiting for the new one to answer\u2026"),
+            ])
+            + '<p class="note nudge">Readings that arrive during the restart '
+              "are queued by the uploader and land as soon as it is back.</p>"
+        )
         return ui.page(heading, body, script=script,
                        refresh=f"12;url={back}").encode()
 
     def _settings_get(self, path: str) -> None:
-        back, script = "/settings", ""
+        back, script, back_label = "/settings", "", "Settings"
         if path == "/settings/screen":
             title, body, script = "The screen", self._page_screen(), SCREEN_SCRIPT
         elif path == "/settings/people":
@@ -1437,6 +1762,7 @@ check, on whichever channel published it.</p>"""
                 return
             title, script = "Person", PERSON_SCRIPT
             body, back = self._page_person(index), "/settings/people"
+            back_label = "People"
         elif path == "/settings/ranges":
             title, body = "Ranges", self._page_ranges()
         elif path == "/settings/network":
@@ -1451,7 +1777,7 @@ check, on whichever channel published it.</p>"""
             self._send(b"", "text/html", 303, {"Location": "/settings"})
             return
         self._send(ui.page(f"GlucoCube — {title}", body, nav=True, back=back,
-                           script=script).encode(),
+                           back_label=back_label, script=script).encode(),
                    "text/html; charset=utf-8")
 
     def _person_index(self):
@@ -1625,7 +1951,8 @@ check, on whichever channel published it.</p>"""
                 "GlucoCube — Person",
                 self._page_person(index, form=form,
                                   banner=ui.banner("err", ui.esc(str(exc)))),
-                nav=True, back="/settings/people", script=PERSON_SCRIPT,
+                nav=True, back="/settings/people", back_label="People",
+                script=PERSON_SCRIPT,
             ).encode(), "text/html; charset=utf-8", 400)
             return
         log.info("Person saved from web admin; restarting")
@@ -1769,7 +2096,10 @@ shows it too.</p>""").encode()
             _check_ranges({**self._range_defaults(), **thresholds})
             user["thresholds"] = thresholds
         kind = form.get("source", "push")
-        poll = max(15, int(_number(form, "poll", "Check every") or 60))
+        # Each pull source carries its own interval inside its own card, so
+        # both fields reach the server and only the chosen one is read.
+        poll_field = "ns_poll" if kind == "nightscout" else "poll"
+        poll = max(15, int(_number(form, poll_field, "Check every") or 60))
         if kind == "tidepool":
             # Blank means "keep what is saved": stored secrets are never
             # rendered back into the page, so an untouched field must not

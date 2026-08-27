@@ -408,14 +408,13 @@ def _render_timezone(handler, draft, step, banner) -> str:
 
     current = (draft.get("display") or {}).get(
         "timezone", handler.server.config.display.timezone)
+    # Hidden until the script fills in the zone it detected — on the card
+    # itself, not the label inside it, or an empty box is left behind.
     phone_card = ui.option_card(
         "tzmode", "phone", "Use this phone's setting", "",
         controls="tzmode",
-        trail='<span class="sub" id="tzphonename"></span>')
-    # Hidden until the script fills in the zone it detected.
-    phone_card = phone_card.replace('<label class="opt"',
-                                    '<label class="opt" id="tzphone"'
-                                    ' data-needs-js hidden', 1)
+        trail='<span class="sub" id="tzphonename"></span>',
+        wrap_extra='id="tzphone" data-needs-js hidden')
     list_card = ui.option_card("tzmode", "list", "Choose from a list", "",
                                checked=True, controls="tzmode")
     picker = ui.group(

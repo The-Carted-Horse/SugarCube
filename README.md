@@ -106,19 +106,32 @@ available (e.g. running by hand on a dev machine) it falls back to 8080.
 | `/screen.png` | What the physical screen shows right now |
 | `/api/dashboard.json` | The dashboard's data, as JSON |
 
-Settings is a hub rather than one long form: each row says what it is set
-to now — who is configured and when their last reading arrived, the
-ranges, the network, the time zone, the version and channel — and opens a
-short page for that one thing. Every person has their own page, with only
-the fields their data source actually needs. Saving restarts the display
-(a few seconds) and the page waits for it to come back rather than
-guessing.
+Settings is a hub rather than one long form, and it reads as a status
+report rather than a table of contents: each row leads with what is true
+now — the reading each person's panel is showing, `70–180`, `Sabanis`,
+`07:57` — and only then opens the short page that would change it. The
+rows are grouped into who it's for, the display and this device, under a
+live view of the screen itself. Anything that needs attention is one
+tappable line at the top that goes straight to the fix.
+
+Every person has their own page, and the credentials for a data source
+live inside the card for that source, so the answer to "where do I type
+the password?" is "in the thing you just picked". Saving restarts the
+display (a few seconds); the page says so before you press it, counts
+what you have changed, and waits for the new process to answer rather
+than guessing at a reload.
+
+Settings, the dashboard and the physical screen share one visual
+language — Space Grotesk for values, JetBrains Mono for labels, and the
+display's own palette — so a number is the same colour on the phone as it
+is on the device.
 
 | Page | What is on it |
 |---|---|
 | `/settings/screen` | Live view of the physical screen, and Day/Night |
-| `/settings/people` | One row per person, then a page each |
-| `/settings/ranges` | In-range and urgent thresholds, staleness |
+| `/settings/people` | Everyone, with their current reading |
+| `/settings/person` | One person: name, source, credentials, own ranges |
+| `/settings/ranges` | In-range and urgent thresholds, staleness, with a preview of how the screen will colour |
 | `/settings/network` | Wi-Fi: what it is on, and what else is nearby |
 | `/settings/clock` | Time zone (with what your phone thinks it is) |
 | `/settings/updates` | Version, release channel, install |
