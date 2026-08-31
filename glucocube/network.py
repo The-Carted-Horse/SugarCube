@@ -28,13 +28,13 @@ import subprocess
 import threading
 import time
 
-from . import synclog
+from . import contract, synclog
 
 log = logging.getLogger("glucocube.network")
 
-HOTSPOT_SSID = "GlucoCube-Setup"
+HOTSPOT_SSID = contract.HOTSPOT_SSID
 HOTSPOT_CONN = "glucocube-hotspot"
-HOTSPOT_ADDR = "10.42.0.1"
+HOTSPOT_ADDR = contract.HOTSPOT_ADDR
 
 STATE_KEY = "__wifi"        # persisted scan cache + last join attempt
 
@@ -523,10 +523,10 @@ class NetworkWatcher(threading.Thread):
     settings page has a network list to offer once the hotspot is up.
     """
 
-    CHECK_SECONDS = 30
-    FAILS_NEEDED = 3
-    FIRST_CHECK_DELAY = 5
-    SCAN_REFRESH_SECONDS = 300
+    CHECK_SECONDS = contract.NET_CHECK_SECONDS
+    FAILS_NEEDED = contract.NET_FAILS_NEEDED
+    FIRST_CHECK_DELAY = contract.NET_FIRST_CHECK_DELAY
+    SCAN_REFRESH_SECONDS = contract.NET_SCAN_REFRESH_SECONDS
 
     def __init__(self, hotspot_password: str):
         super().__init__(name="network-watcher", daemon=True)

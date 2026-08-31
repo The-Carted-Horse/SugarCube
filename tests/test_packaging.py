@@ -26,6 +26,12 @@ MODULES = sorted(path.stem for path in PACKAGE.glob("*.py")
 # What the README promises the device needs, and what the image installs.
 ALLOWED_THIRD_PARTY = {"pygame", "qrcode"}
 
+# Packages the device works without. These may only be imported inside a
+# try/except ImportError that degrades gracefully — push.py falls back to
+# long-polling when websocket-client is absent — so the image does not have
+# to carry them.
+OPTIONAL_THIRD_PARTY = {"websocket"}
+
 
 # --------------------------------------------------------------- imports ----
 
@@ -53,13 +59,68 @@ def top_level_imports(path: Path) -> set[str]:
     return names
 
 
+def module_scope_imports(path: Path) -> set[str]:
+    """Only the imports that run when the module is loaded."""
+    names = set()
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, ast.Import):
+            names |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module.split(".")[0])
+    return names
+
+
+def guarded_imports(path: Path) -> set[str]:
+    """Imports inside a try/except ImportError — the optional ones."""
+    names = set()
+    for node in ast.walk(ast.parse(path.read_text())):
+        if not isinstance(node, ast.Try):
+            continue
+        catches_import_error = any(
+            isinstance(handler.type, ast.Name)
+            and handler.type.id in ("ImportError", "ModuleNotFoundError")
+            or isinstance(handler.type, ast.Tuple)
+            and any(getattr(elt, "id", "") in ("ImportError", "ModuleNotFoundError")
+                    for elt in handler.type.elts)
+            for handler in node.handlers
+        )
+        if not catches_import_error:
+            continue
+        for child in ast.walk(node):
+            if isinstance(child, ast.Import):
+                names |= {alias.name.split(".")[0] for alias in child.names}
+            elif (isinstance(child, ast.ImportFrom)
+                  and child.level == 0 and child.module):
+                names.add(child.module.split(".")[0])
+    return names
+
+
 def test_nothing_outside_the_standard_library_creeps_in():
     """apt gives the Pi pygame and qrcode; anything else has to be installed."""
     stdlib = set(sys.stdlib_module_names)
-    extra = set()
+    required = set()
     for path in sorted(PACKAGE.glob("*.py")):
-        extra |= top_level_imports(path) - stdlib - {"glucocube"}
-    assert extra <= ALLOWED_THIRD_PARTY, f"new dependencies: {sorted(extra)}"
+        required |= module_scope_imports(path) - stdlib - {"glucocube"}
+    assert required <= ALLOWED_THIRD_PARTY, f"new dependencies: {sorted(required)}"
+
+
+def test_anything_else_imported_is_optional_and_guarded():
+    """A package the image does not carry may only be imported behind a guard.
+
+    Otherwise the module raises ImportError on a device that has exactly
+    what the README promises, which is every device we ship.
+    """
+    stdlib = set(sys.stdlib_module_names)
+    for path in sorted(PACKAGE.glob("*.py")):
+        extra = top_level_imports(path) - stdlib - {"glucocube"}
+        for name in extra - ALLOWED_THIRD_PARTY:
+            assert name in OPTIONAL_THIRD_PARTY, (
+                f"{path.name} imports {name}, which the device does not have"
+            )
+            assert name in guarded_imports(path), (
+                f"{path.name} imports the optional {name} without a "
+                f"try/except ImportError to fall back to"
+            )
 
 
 def test_the_web_app_never_needs_the_display_module():

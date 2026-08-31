@@ -23,18 +23,32 @@ This is for display only — it informs a wall monitor, not dosing.
 import math
 from dataclasses import dataclass
 
-MIN_5M_CARBIMPACT = 8.0     # oref0 default: mg/dL per 5m assumed while COB>0
-UAM_DECAY_STEPS = 12        # unannounced-meal deviation decays over 60 min
-CLAMP_LO, CLAMP_HI = 39, 401
-STEP_MIN = 5.0
+from .contract import (
+    CLAMP_HI,
+    CLAMP_LO,
+    DEVIATION_MAX_GAP_MIN,
+    DEVIATION_MIN_GAP_MIN,
+    DEVIATION_WINDOW_MS,
+    IOB_SCALE_MAX,
+    IOB_SCALE_MIN,
+    MIN_5M_CARBIMPACT,
+    PEAK_MAX_FRACTION_OF_DIA,
+    STEP_MIN,
+    SYNTHETIC_BOLUS_AGE_MIN,
+    SYNTHETIC_BOLUS_MIN_FRAC,
+    THERAPY_DEFAULTS,
+    THERAPY_RANGES,
+    UAM_DECAY_STEPS,
+    UAM_DEVIATION_THRESHOLD,
+)
 
 
 @dataclass
 class Therapy:
-    isf: float = 50.0        # mg/dL per U
-    cr: float = 10.0         # g per U
-    dia_hours: float = 6.0
-    peak_min: float = 75.0   # rapid-acting default (oref0 exponential model)
+    isf: float = THERAPY_DEFAULTS["isf"]              # mg/dL per U
+    cr: float = THERAPY_DEFAULTS["cr"]                # g per U
+    dia_hours: float = THERAPY_DEFAULTS["dia_hours"]
+    peak_min: float = THERAPY_DEFAULTS["peak_min"]    # oref0 exponential model
 
 
 def therapy_from_params(params: dict | None) -> Therapy:
@@ -48,10 +62,10 @@ def therapy_from_params(params: dict | None) -> Therapy:
         value = params.get(key)
         return float(value) if value and lo <= value <= hi else None
 
-    t.isf = plausible("isf", 10, 400) or t.isf
-    t.cr = plausible("cr", 2, 50) or t.cr
-    t.dia_hours = plausible("dia_hours", 3, 10) or t.dia_hours
-    t.peak_min = plausible("peak_min", 30, 120) or t.peak_min
+    for key in ("isf", "cr", "dia_hours", "peak_min"):
+        value = plausible(key, *THERAPY_RANGES[key])
+        if value is not None:
+            setattr(t, key, value)
     return t
 
 
@@ -60,8 +74,14 @@ def insulin_model(td_min: float, tp_min: float):
 
     activity is per-minute glucose-lowering activity for a bolus of u units
     at age t minutes; iob_frac is the fraction of a bolus still active.
+
+    The peak is clamped below half the duration: the model's tau term
+    divides by zero at exactly peak == duration / 2, and a profile saying
+    "3-hour DIA, 90-minute peak" — both values a Nightscout profile is
+    allowed to carry — is that case.
     """
-    td, tp = td_min, tp_min
+    td = td_min
+    tp = min(tp_min, td * PEAK_MAX_FRACTION_OF_DIA)
     tau = tp * (1 - tp / td) / (1 - 2 * tp / td)
     a = 2 * tau / td
     s = 1 / (1 - a + (1 + a) * math.exp(-td / tau))
@@ -112,12 +132,14 @@ def predict(
     scale = 1.0
     if pump_iob is not None:
         if computed_iob > 0.1:
-            scale = max(0.25, min(4.0, pump_iob / computed_iob))
+            scale = max(IOB_SCALE_MIN, min(IOB_SCALE_MAX, pump_iob / computed_iob))
         else:
             # No visible boluses: model the reported IOB as one synthetic
             # bolus about an hour old (mid-decay). Works for negative IOB
             # too, which then correctly pushes predictions upward.
-            known = [(60.0, pump_iob / max(iob_frac(60.0), 0.05))]
+            known = [(SYNTHETIC_BOLUS_AGE_MIN,
+                      pump_iob / max(iob_frac(SYNTHETIC_BOLUS_AGE_MIN),
+                                     SYNTHETIC_BOLUS_MIN_FRAC))]
 
     def activity_at(minutes_ahead: float) -> float:
         return scale * sum(
@@ -125,11 +147,11 @@ def predict(
         )
 
     # --- deviations: actual BG movement minus insulin-explained movement ---
-    recent = [(t, v) for t, v in history if now_ms - t <= 45 * 60 * 1000]
+    recent = [(t, v) for t, v in history if now_ms - t <= DEVIATION_WINDOW_MS]
     deviations = []
     for (t0, v0), (t1, v1) in zip(recent, recent[1:]):
         gap_min = (t1 - t0) / 60000.0
-        if not 2 <= gap_min <= 12:
+        if not DEVIATION_MIN_GAP_MIN <= gap_min <= DEVIATION_MAX_GAP_MIN:
             continue
         age_mid = (now_ms - (t0 + t1) / 2) / 60000.0
         expected = -scale * sum(
@@ -158,6 +180,6 @@ def predict(
 
     if cob > 0:
         return cob_pred[1:], "COB"
-    if abs(avg_dev) > 2:
+    if abs(avg_dev) > UAM_DEVIATION_THRESHOLD:
         return uam_pred[1:], "UAM"
     return iob_pred[1:], "IOB"

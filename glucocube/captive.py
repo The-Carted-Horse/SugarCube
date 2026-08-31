@@ -14,25 +14,17 @@ Everything here is inert unless the setup hotspot is actually up.
 import ipaddress
 import logging
 
-from . import network
+from . import contract, network
 from .config import admin_url
 
 log = logging.getLogger("glucocube.captive")
 
 # What each platform fetches to decide whether it is behind a portal.
-PROBE_PATHS = frozenset({
-    "/generate_204", "/gen_204",                     # Android, Chrome OS
-    "/mobile/status.php",                            # older Android
-    "/hotspot-detect.html", "/hotspotdetect.html",   # iOS, macOS
-    "/library/test/success.html",                    # iOS, older
-    "/success.txt", "/canonical.html",               # Firefox, NetworkManager
-    "/ncsi.txt", "/connecttest.txt", "/redirect",    # Windows
-    "/nmcheck.gnome.org",                            # GNOME
-})
+PROBE_PATHS = frozenset(contract.CAPTIVE_PROBE_PATHS)
 
 # Paths that must answer normally even from a captive browser, or the
 # portal page itself would redirect to itself.
-ALWAYS_SERVE = ("/setup", "/screen.png", "/fonts/", "/api/")
+ALWAYS_SERVE = contract.CAPTIVE_ALWAYS_SERVE
 
 
 def active() -> bool:

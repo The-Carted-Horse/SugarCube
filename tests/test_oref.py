@@ -279,3 +279,43 @@ def test_every_value_is_a_finite_number():
         sgv=120, history=flat_history(), boluses=[(minutes_ago(30), 2.0)],
         pump_iob=1.5, cob=25, params={"isf": 50, "cr": 10}, now_ms=NOW)
     assert all(math.isfinite(value) for value in values)
+
+
+# --------------------------------------------------- the model's own limits ----
+
+def test_a_peak_at_half_the_duration_does_not_divide_by_zero():
+    """DIA 3h with a 90-minute peak is inside both accepted ranges.
+
+    oref0's exponential model is undefined there — tau divides by zero — so
+    the peak is clamped rather than trusted. Before it was, a Nightscout
+    profile carrying those two values took the display down.
+    """
+    activity, iob_frac = oref.insulin_model(180.0, 90.0)
+    assert iob_frac(0.0) == 1.0
+    assert iob_frac(180.0) == 0.0
+    assert 0.0 < iob_frac(60.0) < 1.0
+    assert activity(45.0, 1.0) > 0.0
+
+
+def test_a_peak_past_half_the_duration_is_clamped_too():
+    activity, iob_frac = oref.insulin_model(180.0, 120.0)
+    assert 0.0 < iob_frac(60.0) < 1.0
+    assert activity(45.0, 1.0) > 0.0
+
+
+def test_an_impossible_profile_still_forecasts():
+    values, curve = oref.predict(
+        sgv=140.0, history=[], boluses=[(1_700_000_000_000 - 20 * 60000, 2.0)],
+        pump_iob=1.8, cob=None,
+        params={"dia_hours": 3.0, "peak_min": 90.0},
+        now_ms=1_700_000_000_000, steps=24,
+    )
+    assert len(values) == 24
+    assert all(math.isfinite(v) for v in values)
+    assert curve == "IOB"
+
+
+def test_an_ordinary_profile_is_untouched_by_the_clamp():
+    """The clamp must not move a curve anybody actually has."""
+    _, iob_frac = oref.insulin_model(360.0, 75.0)
+    assert iob_frac(60.0) == pytest.approx(0.7792959813945408)

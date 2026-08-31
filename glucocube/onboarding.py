@@ -312,8 +312,7 @@ setInterval(async () => {
 
 
 def render(handler, draft: dict, step: str, *, banner: str = "") -> str:
-    kind, _, raw_index = step.partition(":")
-    index = int(raw_index) if raw_index else 0
+    kind, _, _raw_index = step.partition(":")
     if kind == "welcome":
         return _render_welcome(handler, draft, step, banner)
     if kind == "wifi":

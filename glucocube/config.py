@@ -10,6 +10,8 @@ import zoneinfo
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import contract
+
 log = logging.getLogger("glucocube.config")
 
 # Where the display loop drops live screenshots for the /screen.png endpoint.
@@ -37,16 +39,16 @@ class DisplayConfig:
     fullscreen: bool = True
     width: int = 800
     height: int = 480
-    units: str = "mg/dL"
+    units: str = contract.UNITS_MGDL
     # IANA name, e.g. "Europe/London". Blank leaves the system alone.
     # A fresh image has no time zone set at all, so the clock reads UTC
     # until someone says where the device is.
     timezone: str = ""
-    low: float = 70
-    high: float = 180
-    urgent_low: float = 55
-    urgent_high: float = 250
-    stale_minutes: float = 12
+    low: float = contract.THRESHOLD_DEFAULTS["low"]
+    high: float = contract.THRESHOLD_DEFAULTS["high"]
+    urgent_low: float = contract.THRESHOLD_DEFAULTS["urgent_low"]
+    urgent_high: float = contract.THRESHOLD_DEFAULTS["urgent_high"]
+    stale_minutes: float = contract.STALE_MINUTES_DEFAULT
 
 
 @dataclass
@@ -77,8 +79,8 @@ class Config:
 
 # Kept here rather than in updater.py so config.load() can normalise the
 # channel without importing the updater (which pulls in the network).
-UPDATE_CHANNELS = ("stable", "beta")
-CHANNEL_LABELS = {"stable": "Standard", "beta": "Beta"}
+UPDATE_CHANNELS = contract.UPDATE_CHANNELS
+CHANNEL_LABELS = contract.CHANNEL_LABELS
 
 
 def normalize_channel(name) -> str:

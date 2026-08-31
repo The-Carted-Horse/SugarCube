@@ -27,9 +27,19 @@ from dataclasses import dataclass
 
 import pygame
 
-from . import network, predict, touch
+from . import contract, network, predict, touch
 from .config import SCREEN_PNG, Config, admin_url, merged_thresholds
 from .store import Store, UserSnapshot
+
+# Every number that decides what a person sees is in contract.py, so the
+# Pi and the ESP32 firmware lay the same dashboard out from one source.
+L = contract.LAYOUT
+LAYOUT_TRACKING = L["label_tracking"]
+
+
+def footer_px(footer) -> int:
+    """Type size for everything in the footer, from the footer's own height."""
+    return max(L["footer_px_min"], int(footer.height * L["footer_px_h"]))
 
 
 @dataclass(frozen=True)
@@ -49,35 +59,13 @@ class Palette:
     urgent: tuple
 
 
-DARK = Palette(
-    name="dark",
-    bg=(10, 12, 15), band=(20, 25, 30), line=(38, 45, 52),
-    fg=(233, 237, 241), dim=(122, 132, 142), faint=(84, 93, 102),
-    trace=(157, 165, 174), stale=(96, 104, 112),
-    in_range=(95, 222, 150), high=(233, 185, 73), low=(244, 92, 84),
-    urgent=(255, 69, 58),
-)
-LIGHT = Palette(
-    name="light",
-    bg=(246, 247, 245), band=(233, 235, 230), line=(209, 212, 207),
-    fg=(24, 28, 32), dim=(102, 110, 118), faint=(148, 155, 162),
-    trace=(122, 130, 138), stale=(170, 176, 182),
-    in_range=(16, 148, 72), high=(176, 116, 8), low=(204, 44, 36),
-    urgent=(224, 0, 0),
-)
+DARK = Palette(name="dark", **contract.PALETTES["dark"])
+LIGHT = Palette(name="light", **contract.PALETTES["light"])
 THEMES = {p.name: p for p in (DARK, LIGHT)}
 THEME_STATE_USER = "__display"     # params-table key for persisted UI state
-QR_OPEN_SECONDS = 120              # how long the settings QR stays up
+QR_OPEN_SECONDS = contract.QR_OPEN_SECONDS
 
-DIRECTION_ANGLES = {
-    "DoubleUp": (-90, 2),
-    "SingleUp": (-90, 1),
-    "FortyFiveUp": (-45, 1),
-    "Flat": (0, 1),
-    "FortyFiveDown": (45, 1),
-    "SingleDown": (90, 1),
-    "DoubleDown": (90, 2),
-}
+DIRECTION_ANGLES = contract.DIRECTION_ANGLES
 
 FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
 FONT_FILES = {
@@ -154,7 +142,7 @@ def age_compact(now_ms: int, then_ms: int | None) -> str:
 def source_label(user_cfg) -> str:
     """Short badge name for where this person's data comes from."""
     stype = (user_cfg.source or {}).get("type")
-    return {"tidepool": "TWIIST", "nightscout": "NS"}.get(stype, "TRIO")
+    return contract.SOURCE_LABELS.get(stype, contract.SOURCE_LABEL_DEFAULT)
 
 
 class Display:
@@ -229,7 +217,7 @@ class Display:
 
     def _debounce(self) -> bool:
         now = time.monotonic()
-        if now - self._last_toggle < 0.5:
+        if now - self._last_toggle < contract.TAP_DEBOUNCE_SECONDS:
             return False
         self._last_toggle = now
         self._tap_flash = now
@@ -262,8 +250,9 @@ class Display:
 
     def _footer_rect(self) -> pygame.Rect:
         full_h = self.screen.get_height()
-        return pygame.Rect(0, full_h - max(26, int(full_h * 0.072)),
-                           self.screen.get_width(), max(26, int(full_h * 0.072)))
+        height = max(L["footer_h_px"], int(full_h * L["footer_h"]))
+        return pygame.Rect(0, full_h - height,
+                           self.screen.get_width(), height)
 
     def _toggle_rect_for(self, footer: pygame.Rect) -> pygame.Rect:
         """Touch target for the NIGHT/DAY control.
@@ -273,8 +262,12 @@ class Display:
         depend on text metrics measured during the *previous* frame — that
         is why the first tap after boot used to do nothing.
         """
-        px = max(11, int(footer.height * 0.30))
-        rect = pygame.Rect(0, 0, max(120, px * 11), max(44, footer.height * 2))
+        px = footer_px(footer)
+        rect = pygame.Rect(
+            0, 0,
+            max(L["toggle_w_px"], px * L["toggle_w_ratio"]),
+            max(L["toggle_h_px"], footer.height * L["toggle_h_ratio"]),
+        )
         rect.midright = (footer.right, footer.centery)
         if rect.top < 0:
             rect.top = 0
@@ -289,13 +282,14 @@ class Display:
         than no control.
         """
         toggle = self._toggle_rect_for(footer)
-        px = max(11, int(footer.height * 0.30))
+        px = footer_px(footer)
         # Wide enough for the word as well as the mark: "SETTINGS" at
         # this size is about 8 characters of tracked mono, and a control
         # that is only a glyph is a control nobody presses.
-        qr = pygame.Rect(0, 0, max(104, px * 10), toggle.height)
+        qr = pygame.Rect(0, 0, max(L["qr_w_px"], px * L["qr_w_ratio"]),
+                         toggle.height)
         qr.midright = (toggle.left, footer.centery)
-        if qr.left < footer.left + int(footer.width * 0.34):
+        if qr.left < footer.left + int(footer.width * L["qr_min_left_w"]):
             return pygame.Rect(0, 0, 0, 0), toggle
         return qr, toggle
 
@@ -317,7 +311,8 @@ class Display:
         surface.blit(img, rect)
         return rect
 
-    def label(self, surface, s, px, color, kind="mono", tracking=0.22, **anchor):
+    def label(self, surface, s, px, color, kind="mono",
+              tracking=LAYOUT_TRACKING, **anchor):
         """Uppercase letterspaced text — the design's small-caps labels."""
         font = self.font(px, kind)
         imgs = [font.render(ch, True, color) for ch in s.upper()]
@@ -339,11 +334,14 @@ class Display:
         vimg = vfont.render(value, True, self.pal.fg)
         surface.blit(vimg, topleft)
         if unit:
-            ufont = self.font(int(px * 0.5), "num")
+            ufont = self.font(int(px * L["stats_unit_ratio"]), "num")
             uimg = ufont.render(unit, True, self.pal.dim)
             baseline = topleft[1] + vfont.get_ascent()
-            surface.blit(uimg, (topleft[0] + vimg.get_width() + int(px * 0.08),
-                                baseline - ufont.get_ascent()))
+            surface.blit(
+                uimg,
+                (topleft[0] + vimg.get_width() + int(px * L["stats_unit_gap"]),
+                 baseline - ufont.get_ascent()),
+            )
 
     # ---- panel pieces ----
 
@@ -412,13 +410,13 @@ class Display:
         """3h history + 2h forecast: range band, trace, cone, dotted forecast."""
         surface = self.screen
         pal = self.pal
-        t0 = now_ms - 180 * 60 * 1000
-        t1 = now_ms + 120 * 60 * 1000
+        t0 = now_ms - contract.CHART_HISTORY_MINUTES * 60 * 1000
+        t1 = now_ms + contract.CHART_FORECAST_MINUTES * 60 * 1000
         values = [v for _, v in snap.history] + [v for _, v in (future or [])]
         if not values:
             values = [th["low"], th["high"]]
-        lo = min(min(values), th["low"]) - 18
-        hi = max(max(values), th["high"]) + 24
+        lo = min(min(values), th["low"]) - contract.CHART_PAD_BELOW
+        hi = max(max(values), th["high"]) + contract.CHART_PAD_ABOVE
 
         def X(t):
             return chart.left + (t - t0) / (t1 - t0) * chart.width
@@ -430,36 +428,41 @@ class Display:
         band_top, band_bot = int(Y(th["high"])), int(Y(th["low"]))
         pygame.draw.rect(surface, pal.band,
                          (chart.left, band_top, chart.width, band_bot - band_top))
-        lab_px = max(10, int(chart.height * 0.15))
+        lab_px = max(L["chart_band_label_px_min"],
+                     int(chart.height * L["chart_band_label_px_h"]))
+        inset = L["chart_band_label_inset"]
         self.text(surface, f"{th['high']:.0f}", lab_px, pal.faint,
-                  topright=(chart.right - 5, band_top + 2))
-        if band_bot - band_top > lab_px * 2.4:  # skip when the band is thin
+                  topright=(chart.right - inset, band_top + 2))
+        if band_bot - band_top > lab_px * L["chart_band_thin_ratio"]:
+            # Skip the lower bound when the band is too thin to hold it.
             self.text(surface, f"{th['low']:.0f}", lab_px, pal.faint,
-                      bottomright=(chart.right - 5, band_bot - 2))
+                      bottomright=(chart.right - inset, band_bot - 2))
 
         # Dashed "now" divider between measured past and forecast.
         x_now = X(now_ms)
         y = chart.top
         while y < chart.bottom:
-            pygame.draw.line(surface, pal.line, (x_now, y),
-                             (x_now, min(y + 4, chart.bottom)), 1)
-            y += 9
+            pygame.draw.line(
+                surface, pal.line, (x_now, y),
+                (x_now, min(y + L["chart_now_dash_on"], chart.bottom)), 1)
+            y += L["chart_now_dash_period"]
 
         # Forecast confidence cone: widens with time; wider when the curve
         # is our own estimate rather than the pump's. Needs two points —
         # pygame polygons want at least 4 vertices.
         color_now = self.glucose_color(snap.sgv, stale, th)
         if future and len(future) >= 2:
-            rate = 0.26 if est else 0.17
+            rate = (contract.CONE_RATE_ESTIMATE if est
+                    else contract.CONE_RATE_DEVICE)
             upper, lower = [], []
             for t, v in future:
-                spread = 4 + (t - now_ms) / 60000 * rate
+                spread = contract.CONE_BASE_SPREAD + (t - now_ms) / 60000 * rate
                 upper.append((X(t) - chart.left, max(0, Y(v - spread) - chart.top)))
                 lower.append((X(t) - chart.left,
                               min(chart.height, Y(v + spread) - chart.top)))
             cone_color = self.glucose_color(future[-1][1], False, th)
             overlay = pygame.Surface(chart.size, pygame.SRCALPHA)
-            pygame.draw.polygon(overlay, (*cone_color, 30),
+            pygame.draw.polygon(overlay, (*cone_color, contract.CONE_ALPHA),
                                 upper + list(reversed(lower)))
             surface.blit(overlay, chart.topleft)
 
@@ -470,7 +473,7 @@ class Display:
         for t, v in snap.history:
             if t < t0:
                 continue
-            if last_t is not None and t - last_t > 15 * 60 * 1000:
+            if last_t is not None and t - last_t > contract.CHART_GAP_SPLIT_MS:
                 segments.append(seg)
                 seg = []
             seg.append((X(t), Y(v)))
@@ -484,7 +487,7 @@ class Display:
                                 [(x, y + 1) for x, y in seg])
 
         # Forecast: dots only, no line — clearly not measured data.
-        dot_r = max(1.6, chart.height * 0.022)
+        dot_r = max(L["chart_dot_r_px"], chart.height * L["chart_dot_r_h"])
         for t, v in (future or []):
             pygame.draw.circle(surface, self.glucose_color(v, False, th),
                                (X(t), Y(v)), dot_r)
@@ -493,9 +496,10 @@ class Display:
         if snap.history:
             t_last, v_last = snap.history[-1]
             cx, cy = X(min(t_last, now_ms)), Y(v_last)
-            r = max(4, int(chart.height * 0.075))
+            r = max(L["chart_now_r_px"], int(chart.height * L["chart_now_r_h"]))
             halo = pygame.Surface((r * 6, r * 6), pygame.SRCALPHA)
-            pygame.draw.circle(halo, (*color_now, 46), (r * 3, r * 3), r * 2)
+            pygame.draw.circle(halo, (*color_now, contract.NOW_HALO_ALPHA),
+                               (r * 3, r * 3), r * 2)
             surface.blit(halo, (cx - r * 3, cy - r * 3))
             pygame.draw.circle(surface, color_now, (cx, cy), r)
 
@@ -515,7 +519,7 @@ class Display:
         th = merged_thresholds(dc, user_cfg)
         now_ms = int(time.time() * 1000)
         h, w = rect.height, rect.width
-        pad = int(w * 0.075)
+        pad = int(w * L["panel_pad_w"])
         left, right = rect.left + pad, rect.right - pad
 
         stale = (
@@ -525,87 +529,98 @@ class Display:
         color = self.glucose_color(snap.sgv, stale, th)
 
         # Header: name left; freshness dot + source + reading age right.
-        top = rect.top + int(h * 0.055)
-        self.label(surface, user_cfg.name, int(h * 0.052), self.pal.fg,
+        top = rect.top + int(h * L["header_top_h"])
+        self.label(surface, user_cfg.name, int(h * L["name_px_h"]), self.pal.fg,
                    kind="mono-med", topleft=(left, top))
         age_min = (now_ms - snap.sgv_date) / 60000 if snap.sgv_date else None
         dot_color = (
-            self.pal.in_range if age_min is not None and age_min <= 7
+            self.pal.in_range
+            if age_min is not None and age_min <= contract.FRESH_MINUTES
             else self.pal.high
             if age_min is not None and age_min <= dc.stale_minutes
             else self.pal.low
         )
         badge = f"{source_label(user_cfg)} · {age_compact(now_ms, snap.sgv_date)}"
-        badge_rect = self.label(surface, badge, int(h * 0.032), self.pal.dim,
-                                topright=(right, top + int(h * 0.012)))
-        pygame.draw.circle(surface, dot_color,
-                           (badge_rect.left - int(h * 0.035),
-                            badge_rect.centery), max(3, int(h * 0.011)))
+        badge_rect = self.label(surface, badge, int(h * L["badge_px_h"]),
+                                self.pal.dim,
+                                topright=(right, top + int(h * L["badge_top_h"])))
+        pygame.draw.circle(
+            surface, dot_color,
+            (badge_rect.left - int(h * L["badge_dot_gap_h"]), badge_rect.centery),
+            max(L["badge_dot_r_px"], int(h * L["badge_dot_r_h"])))
 
         # Big glucose number, left-aligned; arrow/delta/unit column right of it.
         # Blit so the digits' cap top (not the font's line box) lands at
         # num_top — Space Grotesk carries a lot of internal leading.
         sgv_str = f"{snap.sgv:.0f}" if snap.sgv is not None else "---"
-        num_px = int(h * 0.33)
+        num_px = int(h * L["num_px_h"])
         num_font = self.font(num_px, "num")
         num_img = num_font.render(sgv_str, True, color)
         # Tiny panels: shrink the number so it and the trend column fit.
-        max_num_w = (right - left) - int(w * 0.26)
+        max_num_w = (right - left) - int(w * L["num_max_w_reserve_w"])
         if num_img.get_width() > max_num_w:
-            num_px = max(12, int(num_px * max_num_w / num_img.get_width()))
+            num_px = max(L["num_px_min"],
+                         int(num_px * max_num_w / num_img.get_width()))
             num_font = self.font(num_px, "num")
             num_img = num_font.render(sgv_str, True, color)
-        cap = int(num_px * 0.70)   # Space Grotesk capHeight = 700/1000 em
-        num_top = rect.top + int(h * 0.125)
+        cap = int(num_px * L["num_cap_ratio"])
+        num_top = rect.top + int(h * L["num_top_h"])
         surface.blit(num_img,
-                     (left - int(num_px * 0.05),
+                     (left - int(num_px * L["num_left_nudge"]),
                       num_top - (num_font.get_ascent() - cap)))
 
-        col_x = left + num_img.get_width() + int(w * 0.04)
+        col_x = left + num_img.get_width() + int(w * L["trend_gap_w"])
         if not stale and snap.direction in DIRECTION_ANGLES:
-            arrow_size = int(h * 0.06)
-            self.draw_arrow(surface, (col_x + arrow_size, num_top + cap * 0.16),
-                            arrow_size, snap.direction, color)
+            arrow_size = int(h * L["arrow_size_h"])
+            self.draw_arrow(
+                surface, (col_x + arrow_size, num_top + cap * L["arrow_y_cap"]),
+                arrow_size, snap.direction, color)
         if not stale and snap.delta is not None:
-            delta_font = self.font(int(h * 0.08), "num-med")
+            delta_font = self.font(int(h * L["delta_px_h"]), "num-med")
             delta_img = delta_font.render(f"{snap.delta:+.0f}", True, self.pal.fg)
-            surface.blit(delta_img, (col_x, num_top + int(cap * 0.36)))
-        self.label(surface, "MG/DL", int(h * 0.027), self.pal.faint,
-                   topleft=(col_x, num_top + int(cap * 0.80)))
+            surface.blit(delta_img,
+                         (col_x, num_top + int(cap * L["delta_y_cap"])))
+        self.label(surface, "MG/DL", int(h * L["unit_px_h"]), self.pal.faint,
+                   topleft=(col_x, num_top + int(cap * L["unit_y_cap"])))
 
         # FORECAST 2H header: label — rule — value + arrival time.
-        fy = rect.top + int(h * 0.48)
+        fy = rect.top + int(h * L["forecast_y_h"])
+        far = contract.HORIZONS[-1]
         horizons, future, fc_source = (None, None, None)
         if not stale:
             horizons, future, fc_source = predict.predict(snap, now_ms)
-        lab_rect = self.label(surface, "FORECAST 2H", int(h * 0.031),
+        lab_px = int(h * L["forecast_label_px_h"])
+        lab_rect = self.label(surface, f"FORECAST {far // 60}H", lab_px,
                               self.pal.dim, midleft=(left, fy))
+        rule_gap = int(w * L["forecast_rule_gap_w"])
         rule_end = right
-        if horizons and 120 in horizons:
+        if horizons and far in horizons:
             eta = time.strftime("%H:%M",
-                                time.localtime((now_ms + 120 * 60000) / 1000))
-            eta_rect = self.label(surface, eta, int(h * 0.031), self.pal.faint,
+                                time.localtime((now_ms + far * 60000) / 1000))
+            eta_rect = self.label(surface, eta, lab_px, self.pal.faint,
                                   midright=(right, fy))
             tilde = "~" if fc_source == "est" else ""
-            value_color = self.glucose_color(horizons[120], False, th)
-            val_rect = self.text(surface, f"{tilde}{horizons[120]:.0f}",
-                                 int(h * 0.055), value_color, kind="num",
-                                 midright=(eta_rect.left - int(w * 0.025), fy))
-            rule_end = val_rect.left - int(w * 0.03)
+            value_color = self.glucose_color(horizons[far], False, th)
+            val_rect = self.text(
+                surface, f"{tilde}{horizons[far]:.0f}",
+                int(h * L["forecast_value_px_h"]), value_color, kind="num",
+                midright=(eta_rect.left - int(w * L["forecast_eta_gap_w"]), fy))
+            rule_end = val_rect.left - rule_gap
         pygame.draw.line(surface, self.pal.line,
-                         (lab_rect.right + int(w * 0.03), fy), (rule_end, fy))
+                         (lab_rect.right + rule_gap, fy), (rule_end, fy))
 
         # Chart with its time axis.
-        chart = pygame.Rect(left, rect.top + int(h * 0.53),
-                            right - left, int(h * 0.20))
+        chart = pygame.Rect(left, rect.top + int(h * L["chart_top_h"]),
+                            right - left, int(h * L["chart_height_h"]))
         self.draw_chart(chart, snap, stale, th, future,
                         fc_source == "est", now_ms)
-        ax_y = chart.bottom + int(h * 0.022)
-        for minutes, lab in ((-180, "-3H"), (-120, "-2H"), (-60, "-1H"),
-                             (0, "NOW"), (60, "+1H"), (120, "+2H")):
-            x = chart.left + (minutes + 180) / 300 * chart.width
-            self.label(surface, lab, int(h * 0.026), self.pal.faint,
-                       midtop=(x, ax_y))
+        ax_y = chart.bottom + int(h * L["chart_axis_gap_h"])
+        span = contract.CHART_HISTORY_MINUTES + contract.CHART_FORECAST_MINUTES
+        for minutes, lab in contract.CHART_TICKS:
+            x = chart.left + (
+                minutes + contract.CHART_HISTORY_MINUTES) / span * chart.width
+            self.label(surface, lab, int(h * L["chart_axis_px_h"]),
+                       self.pal.faint, midtop=(x, ax_y))
 
         # Stats row: IOB, COB, last carbs, last bolus.
         stats = [
@@ -624,22 +639,26 @@ class Display:
              f"{age_compact(now_ms, snap.last_bolus_date)} AGO"
              if snap.last_bolus_date else None),
         ]
-        labels_y = rect.top + int(h * 0.815)
+        labels_y = rect.top + int(h * L["stats_label_y_h"])
         col_w = (right - left) / len(stats)
         for idx, (lab, value, unit, sub) in enumerate(stats):
             x = left + int(idx * col_w)
-            self.label(surface, lab, int(h * 0.028), self.pal.dim,
+            self.label(surface, lab, int(h * L["stats_label_px_h"]), self.pal.dim,
                        topleft=(x, labels_y))
-            value_y = labels_y + int(h * 0.048)
-            self.stat_value(surface, value, unit, int(h * 0.082), (x, value_y))
+            value_y = labels_y + int(h * L["stats_value_gap_h"])
+            self.stat_value(surface, value, unit,
+                            int(h * L["stats_value_px_h"]), (x, value_y))
             if sub:
-                self.label(surface, sub, int(h * 0.024), self.pal.faint,
-                           topleft=(x, value_y + int(h * 0.1)))
+                self.label(surface, sub, int(h * L["stats_sub_px_h"]),
+                           self.pal.faint,
+                           topleft=(x, value_y + int(h * L["stats_sub_gap_h"])))
 
         # Urgent readings get a colored border to catch the eye across a room.
         if color == self.pal.urgent:
-            pygame.draw.rect(surface, self.pal.urgent, rect.inflate(-6, -6), 3,
-                             border_radius=12)
+            inset = L["urgent_inset"]
+            pygame.draw.rect(surface, self.pal.urgent,
+                             rect.inflate(-inset, -inset), L["urgent_width"],
+                             border_radius=L["urgent_radius"])
 
     def _pending_update(self) -> dict:
         state, checked = self._update_state
@@ -653,15 +672,15 @@ class Display:
         surface = self.screen
         pygame.draw.line(surface, self.pal.line,
                          (rect.left, rect.top), (rect.right, rect.top))
-        if (time.monotonic() - self._tap_flash < 0.35
+        if (time.monotonic() - self._tap_flash < contract.TAP_FLASH_SECONDS
                 and self._flash_rect.width):
             # Momentary highlight so a tap is visibly acknowledged, on
             # whichever control was actually hit.
             pygame.draw.rect(surface, self.pal.band,
                              self._flash_rect.clip(rect).inflate(-2, -6),
                              border_radius=8)
-        pad = int(surface.get_width() * 0.028)
-        px = max(11, int(rect.height * 0.30))
+        pad = int(surface.get_width() * L["footer_pad_w"])
+        px = footer_px(rect)
         when = time.strftime("%a %d %b · %H:%M").upper()
         when_rect = self.label(surface, when, px, self.pal.dim,
                                midleft=(rect.left + pad, rect.centery))
@@ -671,18 +690,20 @@ class Display:
             # Mono glyph ≈ 0.6em + 0.22em tracking; skip the notice when
             # it would run into the theme toggle (narrow/portrait screens
             # still surface updates in the web UI).
-            notice_w = int(len(notice) * px * 0.85)
-            x = when_rect.right + int(px * 2.2)
-            if x + notice_w < rect.right - int(px * 10):
+            notice_w = int(len(notice) * px * L["footer_glyph_advance"])
+            x = when_rect.right + int(px * L["footer_update_gap"])
+            if x + notice_w < rect.right - int(px * L["qr_w_ratio"]):
                 self.label(surface, notice, px, self.pal.high,
                            midleft=(x, rect.centery))
 
         # The mark sits in the middle of the footer, and gives way to
         # anything that has something to say: the update notice is
         # actionable, this is decoration.
-        mark_px = max(9, int(px * 0.92))
-        mark_size = int(mark_px * 1.35)
-        mark_w = mark_size + int(mark_px * 0.6) + int(len("GLUCOCUBE") * mark_px * 0.85)
+        mark_px = max(L["footer_mark_px_min"],
+                      int(px * L["footer_mark_px_ratio"]))
+        mark_size = int(mark_px * L["footer_mark_size_ratio"])
+        mark_w = (mark_size + int(mark_px * 0.6)
+                  + int(len("GLUCOCUBE") * mark_px * L["footer_glyph_advance"]))
         left_edge = rect.centerx - mark_w // 2
         controls_left = (self._qr_rect.left if self._qr_rect.width
                          else self._toggle_rect.left)
@@ -698,7 +719,7 @@ class Display:
         if self._qr_rect.width:
             self.draw_qr_button(rect, px)
 
-        icon_r = max(6, int(rect.height * 0.14))
+        icon_r = max(L["footer_icon_r_px"], int(rect.height * L["footer_icon_r_h"]))
         icon_c = (rect.right - pad - icon_r, rect.centery)
         mode = "NIGHT" if self.pal.name == "dark" else "DAY"
         self.label(
@@ -726,21 +747,14 @@ class Display:
     # A miniature code, cell by cell: three finder squares and enough
     # data specks to read as a QR at fourteen pixels. Drawn rather than
     # set in a font because at this size a glyph turns to mush.
-    QR_GLYPH = (
-        "XXX.XXX",
-        "X.X.X.X",
-        "XXX.XXX",
-        "..X.X..",
-        "XXX..XX",
-        "X.X.X.X",
-        "XXX..X.",
-    )
+    QR_GLYPH = contract.QR_GLYPH
 
     def draw_qr_button(self, rect: pygame.Rect, px: int):
         """The SETTINGS control: a small QR mark, labelled, in the footer."""
         surface = self.screen
         color = self.pal.dim
-        cell = max(2, int(rect.height * 0.5) // len(self.QR_GLYPH))
+        cell = max(L["qr_glyph_cell_px"],
+                   int(rect.height * L["qr_glyph_cell_h"]) // len(self.QR_GLYPH))
         size = cell * len(self.QR_GLYPH)
         box = pygame.Rect(0, 0, size, size)
         box.midright = (self._qr_rect.right - int(px * 0.7), rect.centery)
@@ -752,7 +766,8 @@ class Display:
                                       cell, cell))
         label = "SETTINGS"
         label_right = box.left - int(px * 0.8)
-        if label_right - int(len(label) * px * 0.85) >= self._qr_rect.left:
+        if (label_right - int(len(label) * px * L["footer_glyph_advance"])
+                >= self._qr_rect.left):
             self.label(surface, label, px, color,
                        midright=(label_right, rect.centery))
 
@@ -1074,16 +1089,21 @@ class Display:
                 row_h = body_h // len(users)
                 rect = pygame.Rect(0, i * row_h, full_w, row_h)
                 if i > 0:
+                    inset = int(full_w * L["panel_divider_inset_portrait"])
                     pygame.draw.line(self.screen, self.pal.line,
-                                     (int(full_w * 0.03), rect.top),
-                                     (full_w - int(full_w * 0.03), rect.top))
+                                     (inset, rect.top),
+                                     (full_w - inset, rect.top))
             else:
                 col_w = full_w // len(users)
                 rect = pygame.Rect(i * col_w, 0, col_w, body_h)
                 if i > 0:
-                    pygame.draw.line(self.screen, self.pal.line,
-                                     (rect.left, int(body_h * 0.05)),
-                                     (rect.left, body_h - int(body_h * 0.03)))
+                    pygame.draw.line(
+                        self.screen, self.pal.line,
+                        (rect.left,
+                         int(body_h * L["panel_divider_inset_landscape"])),
+                        (rect.left,
+                         body_h - int(
+                             body_h * L["panel_divider_inset_landscape_bottom"])))
             self.draw_panel(rect, user, snap)
         self.draw_footer(footer)
         if self.qr_open():

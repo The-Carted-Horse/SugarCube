@@ -40,7 +40,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import __version__, synclog
+from . import __version__, contract, synclog
 from . import config as config_mod
 
 log = logging.getLogger("glucocube.updater")
@@ -48,16 +48,15 @@ log = logging.getLogger("glucocube.updater")
 # The product is GlucoCube; the repository it lives in is still called
 # SugarCube. That mismatch is deliberate — "correcting" it here points the
 # update check at a repository that does not exist, and it fails quietly.
-REPO = "The-Carted-Horse/SugarCube"
+REPO = contract.REPO
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 API_RELEASES = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
 RELEASES_URL = f"https://github.com/{REPO}/releases"
 TARBALL_URL = f"https://github.com/{REPO}/archive/refs/tags/{{tag}}.tar.gz"
-FORCE_MARKER = "[force-update]"
+FORCE_MARKER = contract.FORCE_MARKER
 PARAMS_KEY = "__updates"
 
-STABLE = "stable"
-BETA = "beta"
+STABLE, BETA = contract.UPDATE_CHANNELS
 
 _apply_lock = threading.Lock()
 

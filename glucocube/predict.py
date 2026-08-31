@@ -16,11 +16,11 @@ display hint, not medicine.
 import time
 
 from . import oref
+from .contract import HORIZONS, MAX_PREDICTION_AGE_MS, STEP_MS
 from .store import UserSnapshot, parse_time_ms
 
-HORIZONS = (30, 60, 90, 120)          # minutes
-STEP_MS = 5 * 60 * 1000               # AID predictions are 5-minute series
-MAX_PREDICTION_AGE_MS = 15 * 60 * 1000
+__all__ = ["HORIZONS", "STEP_MS", "MAX_PREDICTION_AGE_MS",
+           "device_series", "predict"]
 
 
 def device_series(raw: dict) -> tuple[int, list[float]] | None:

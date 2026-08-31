@@ -1,0 +1,90 @@
+# Defaults for every GlucoCube board profile. Board-specific overrides, if a
+# profile ever needs any, go in firmware/sdkconfig.defaults.<board>.
+#
+# The two profiles today are both ESP32-S3-WROOM-1-N16R8: 16 MB flash,
+# 8 MB octal PSRAM, driving an 800x480 RGB565 panel over the S3's LCD_CAM
+# peripheral.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# ---- flash ----------------------------------------------------------------
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ---- PSRAM ----------------------------------------------------------------
+# A single 800x480 RGB565 frame is 750 KB, so the framebuffers have to live
+# in PSRAM; the S3 has 512 KB of internal SRAM in total.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# Small allocations stay in internal RAM, where they are faster and where
+# ISR-safe code needs them to be.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+# ESP32-S3 errata workaround: with the RGB peripheral streaming from PSRAM,
+# an SPI-flash operation that disables the cache tears the frame. Putting
+# instructions and rodata in PSRAM keeps the panel fed through those windows.
+CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
+CONFIG_SPIRAM_RODATA=y
+
+# ---- scheduler ------------------------------------------------------------
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+
+# ---- OTA ------------------------------------------------------------------
+# An image that cannot get itself onto Wi-Fi and draw a frame is rolled back
+# by the bootloader rather than left bricking a wall-mounted device.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_APP_ANTI_ROLLBACK=n
+CONFIG_OTA_ALLOW_HTTP=n
+
+# ---- TLS ------------------------------------------------------------------
+# GlucoCore, Tidepool, arbitrary Nightscout sites and the GitHub release
+# assets are all HTTPS, and the sites are not ours to pin, so the device
+# carries Mozilla's root store.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# Handshake buffers are the single largest heap user on the device; the
+# dynamic buffer frees them between requests.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_PEER_CERT=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+
+# ---- HTTP -----------------------------------------------------------------
+CONFIG_ESP_TLS_INSECURE=n
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# ---- Wi-Fi ----------------------------------------------------------------
+# The setup hotspot and the station interface both exist during onboarding.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+CONFIG_LWIP_IPV6=y
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_MDNS_MAX_INTERFACES=2
+
+# ---- LVGL -----------------------------------------------------------------
+# 16-bit colour, matching the panel; the dashboard is drawn into a canvas
+# the RGB peripheral scans out directly.
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_USE_PERF_MONITOR=n
+CONFIG_LV_USE_LOG=n
+# Space Grotesk and JetBrains Mono are rasterised at runtime, because the
+# type sizes come from the same layout fractions the Pi uses and so are not
+# known until the panel size is.
+CONFIG_LV_USE_TINY_TTF=y
+CONFIG_LV_TINY_TTF_FILE_SUPPORT=n
+CONFIG_LV_USE_CANVAS=y
+CONFIG_LV_FONT_MONTSERRAT_14=n
+
+# ---- logging --------------------------------------------------------------
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

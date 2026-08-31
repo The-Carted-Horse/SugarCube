@@ -17,3 +17,12 @@ config.json
 coverage.xml
 htmlcov/
 junit*.xml
+
+# Firmware build output
+firmware/build/
+firmware/build-*/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+firmware/dist/
+firmware/host_test/test_parity
