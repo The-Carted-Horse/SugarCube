@@ -16,6 +16,10 @@ log = logging.getLogger("glucocube.config")
 
 # Where the display loop drops live screenshots for the /screen.png endpoint.
 SCREEN_PNG = os.path.join(tempfile.gettempdir(), "glucocube-screen.png")
+# Params key the "identify" command writes and the display reads. Here
+# rather than in display.py because --no-display must work on a machine
+# with no pygame, and display.py imports it at module level.
+IDENTIFY_KEY = "__identify"
 
 
 @dataclass
@@ -32,6 +36,15 @@ class UserConfig:
     # Optional per-person overrides of the global display thresholds, e.g.
     # {"low": 80, "high": 160}. Keys not present inherit the display defaults.
     thresholds: dict | None = None
+    # What goes behind this person in ambient mode. One of the forms
+    # wallpaper.resolve understands: a 32-hex id to fetch from GlucoCore,
+    # "bundled:<name>" for art this device draws itself, or "none" to say
+    # deliberately nothing even where the display has art of its own.
+    # Blank falls through to the display's own.
+    wallpaper: str = ""
+    # Seconds this person holds the screen before the rotation moves on.
+    # None uses the display's own figure.
+    rotate_seconds: float | None = None
 
 
 @dataclass
@@ -49,6 +62,56 @@ class DisplayConfig:
     urgent_low: float = contract.THRESHOLD_DEFAULTS["urgent_low"]
     urgent_high: float = contract.THRESHOLD_DEFAULTS["urgent_high"]
     stale_minutes: float = contract.STALE_MINUTES_DEFAULT
+    # The panel's backlight, 0-100, and the dimmer figure for overnight
+    # with the hours it applies between. None means "leave the panel
+    # alone", which is what a display nobody has asked to dim should do.
+    # Equal hours mean the night figure is never used.
+    brightness: float | None = None
+    night_brightness: float | None = None
+    night_from_hour: int | None = None
+    night_to_hour: int | None = None
+    # 12 or 24. The classic footer has always read the system clock; the
+    # ambient screen puts the time in 56px type, so it stops being a
+    # detail nobody would notice getting wrong.
+    time_format: int = 24
+    # How the people share the screen. "split" is what every display drew
+    # before there was a choice, and stays the default: a device upgraded
+    # into having one must not change what it shows on that account alone.
+    layout: str = "split"
+    # In split mode: "columns" side by side, "rows" stacked, or "auto" to
+    # follow the panel's own shape, which is what it did before.
+    split_direction: str = "auto"
+    # The most faces on screen at once in split mode; None means all of
+    # them. A cap pages through the rest at rotate_seconds.
+    split_max: int | None = None
+    # Seconds each person holds the screen in ambient mode, and each page
+    # holds it in a capped split.
+    rotate_seconds: float = 12
+    # The art behind everything, when a person has none of their own.
+    wallpaper: str = ""
+    # How far the art is dimmed, 0-100, so the reading stays readable over
+    # it — and how much further overnight. The reading wins over the
+    # picture; that is what these two are for.
+    wallpaper_dim: float = 60
+    night_dim_boost: float = 24
+
+
+@dataclass
+class WeatherConfig:
+    """Where this device is, for the clock corner of the ambient screen.
+
+    Off until somebody says where the device is. The alternative — guessing
+    a location from the time zone — needs a coordinate table in the
+    firmware and confidently shows the wrong town's sky, which is worse
+    than showing none.
+    """
+
+    enabled: bool = False
+    latitude: float | None = None
+    longitude: float | None = None
+    # What the place resolved to, so the settings page can say it back.
+    place: str = ""
+    units: str = "fahrenheit"
 
 
 @dataclass
@@ -56,6 +119,9 @@ class GlucoCoreConfig:
     device_id: str = ""
     device_token: str = ""
     hardware_id: str = ""
+    # What this display is called in GlucoCore. Kept locally so the
+    # settings page can say which device this is without a round trip.
+    name: str = ""
 
 
 @dataclass
@@ -75,12 +141,48 @@ class Config:
     # checker, so flipping it on the settings page takes effect at once.
     update_channel: str = "stable"
     glucocore: GlucoCoreConfig | None = None
+    weather: WeatherConfig = field(default_factory=WeatherConfig)
 
 
 # Kept here rather than in updater.py so config.load() can normalise the
 # channel without importing the updater (which pulls in the network).
 UPDATE_CHANNELS = contract.UPDATE_CHANNELS
 CHANNEL_LABELS = contract.CHANNEL_LABELS
+
+
+LAYOUTS = ("split", "rotate")
+SPLIT_DIRECTIONS = ("auto", "columns", "rows")
+TEMPERATURE_UNITS = ("fahrenheit", "celsius")
+
+
+def _coordinate(value, limit: float) -> float | None:
+    """A latitude or longitude, or None for anything that is not one."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if -limit <= number <= limit else None
+
+
+def normalize_layout(name) -> str:
+    """A layout this device can draw, or the one it has always drawn.
+
+    Coerced rather than rejected, like the update channel: a display that
+    does not recognise a mode should draw the classic panel, not refuse to
+    boot. GlucoCore may know about a layout this firmware does not.
+    """
+    name = str(name or "").strip().lower()
+    return name if name in LAYOUTS else "split"
+
+
+def normalize_split_direction(name) -> str:
+    name = str(name or "").strip().lower()
+    return name if name in SPLIT_DIRECTIONS else "auto"
+
+
+def normalize_temperature_units(name) -> str:
+    name = str(name or "").strip().lower()
+    return name if name in TEMPERATURE_UNITS else "fahrenheit"
 
 
 def normalize_channel(name) -> str:
@@ -289,6 +391,11 @@ def load(path: str | Path) -> Config:
         raise ValueError(f"{path}: each user needs a unique port")
 
     display = DisplayConfig(**raw.get("display", {}))
+    # Coerced after construction rather than rejected in it: an unknown
+    # layout is a newer GlucoCore talking to an older display, and the
+    # answer to that is the classic panel, not a device that will not boot.
+    display.layout = normalize_layout(display.layout)
+    display.split_direction = normalize_split_direction(display.split_direction)
 
     database = raw.get("database", "glucocube.db")
     if not Path(database).is_absolute():
@@ -304,7 +411,20 @@ def load(path: str | Path) -> Config:
             device_id=str(gc_raw.get("device_id") or ""),
             device_token=str(gc_raw.get("device_token") or ""),
             hardware_id=str(gc_raw.get("hardware_id") or ""),
+            name=str(gc_raw.get("name") or ""),
         )
+    # Field by field, not **: this block is the newest thing in the file and
+    # the most likely to gain a key, and an unknown key here must not be the
+    # difference between a device that boots and one that does not.
+    weather_raw = raw.get("weather") or {}
+    weather = WeatherConfig(
+        enabled=bool(weather_raw.get("enabled")),
+        latitude=_coordinate(weather_raw.get("latitude"), 90),
+        longitude=_coordinate(weather_raw.get("longitude"), 180),
+        place=str(weather_raw.get("place") or "")[:80],
+        units=normalize_temperature_units(weather_raw.get("units")),
+    )
+
     return Config(
         users=users,
         display=display,
@@ -316,4 +436,5 @@ def load(path: str | Path) -> Config:
         admin_password_off=bool(admin.get("password_off")) and not admin_password,
         update_channel=normalize_channel(updates.get("channel")),
         glucocore=glucocore,
+        weather=weather,
     )

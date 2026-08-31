@@ -247,6 +247,30 @@ class Store:
             )
             self._db.commit()
 
+    def clear_readings(self, users=None) -> int:
+        """Drop stored readings so the next poll starts again.
+
+        The therapy parameters in `params` stay: they are settings read
+        from a profile, not readings, and dropping them would leave the
+        forecast with nothing to work from until the next profile fetch.
+        Returns the number of rows removed.
+        """
+        removed = 0
+        with self._lock:
+            for table in ("entries", "treatments", "devicestatus"):
+                if users is None:
+                    cursor = self._db.execute(f"DELETE FROM {table}")
+                else:
+                    names = list(users)
+                    if not names:
+                        continue
+                    marks = ",".join("?" * len(names))
+                    cursor = self._db.execute(
+                        f"DELETE FROM {table} WHERE user IN ({marks})", names)
+                removed += cursor.rowcount or 0
+            self._db.commit()
+        return removed
+
     def rename_user(self, old: str, new: str) -> None:
         """Carry someone's history over when they are renamed.
 

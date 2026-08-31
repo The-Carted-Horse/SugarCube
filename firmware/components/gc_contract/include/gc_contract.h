@@ -52,7 +52,7 @@ gc_theme_t gc_theme_from_name(const char *name);
 #define GC_URGENT_HIGH_DEFAULT 250.0
 #define GC_STALE_MINUTES_DEFAULT 12.0
 #define GC_FRESH_MINUTES 7.0
-#define GC_MGDL_PER_MMOL 18.0182
+#define GC_MGDL_PER_MMOL 18.0
 
 /* forecast */
 #define GC_STEP_MS 300000

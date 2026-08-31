@@ -75,7 +75,17 @@ STALE_MINUTES_DEFAULT = 12.0
 FRESH_MINUTES = 7.0
 
 UNITS_MGDL = "mg/dL"
-MGDL_PER_MMOL = 18.0182
+UNITS_MMOL = "mmol/L"
+
+# The divisor every CGM app uses. The exact molar figure is 18.0182, and
+# nobody displays it: matching what the pump app on the same shelf says
+# matters more than the third decimal place. Both products divide by the
+# same number or they disagree at the first decimal.
+MGDL_PER_MMOL = 18.0
+
+# What people write when they mean mmol/L, including what a config file
+# edited by hand is likely to contain.
+MMOL_SPELLINGS = ("mmol", "mmol/l", "mmoll", "mm")
 
 
 # -------------------------------------------------------------- forecast ----

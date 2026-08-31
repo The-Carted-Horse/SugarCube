@@ -29,17 +29,20 @@ class RecordingPoller(BasePoller):
         if isinstance(outcome, Exception):
             raise outcome
 
-    def _wait(self, delay):
+    def _sleep(self, delay):
         self.waits.append(delay)
-        self._stop.set()
+        self._stopping.set()
         return True
 
 
 @pytest.fixture
-def run_once(monkeypatch):
-    """Run a poller's loop body once, capturing the delay it chose."""
+def run_once():
+    """Run a poller's loop body once, capturing the delay it chose.
+
+    RecordingPoller overrides _sleep — the one place the loop waits — so
+    it records the delay and ends the loop instead of sleeping it out.
+    """
     def runner(poller):
-        monkeypatch.setattr(poller._stop, "wait", poller._wait)
         poller.run()
         return poller.waits[-1]
     return runner
@@ -191,3 +194,24 @@ def test_each_person_gets_their_own_poller(store, dummy_pollers):
         user("Bo", {"type": "nightscout", "url": "https://ns.example.invalid"}),
     ], store)
     assert dummy_pollers.started == [("tidepool", "Ada"), ("nightscout", "Bo")]
+
+
+def test_a_poke_polls_now_rather_than_at_the_end_of_the_interval(store):
+    """"Refresh now" from GlucoCore should not wait out a minute."""
+    import threading
+    polls = threading.Semaphore(0)
+
+    class Counting(BasePoller):
+        def _poll_once(self):
+            polls.release()
+
+    poller = Counting("test", "Ada", 600, store)
+    poller.start()
+    try:
+        assert polls.acquire(timeout=2), "the first poll runs at once"
+        poller.poke()
+        assert polls.acquire(timeout=2), "a poke does not wait out 600s"
+    finally:
+        poller.stop()
+        poller.join(timeout=2)
+    assert not poller.is_alive()

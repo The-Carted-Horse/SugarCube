@@ -24,7 +24,10 @@ MODULES = sorted(path.stem for path in PACKAGE.glob("*.py")
                  if path.stem != "__init__")
 
 # What the README promises the device needs, and what the image installs.
-ALLOWED_THIRD_PARTY = {"pygame", "qrcode"}
+# websocket is imported inside the function that uses it and falls back to
+# long-polling when it is absent, so it is here because the image ships it,
+# not because the app cannot run without it.
+ALLOWED_THIRD_PARTY = {"pygame", "qrcode", "websocket"}
 
 # Packages the device works without. These may only be imported inside a
 # try/except ImportError that degrades gracefully — push.py falls back to
@@ -96,7 +99,7 @@ def guarded_imports(path: Path) -> set[str]:
 
 
 def test_nothing_outside_the_standard_library_creeps_in():
-    """apt gives the Pi pygame and qrcode; anything else has to be installed."""
+    """apt gives the Pi these three; anything else has to be installed."""
     stdlib = set(sys.stdlib_module_names)
     required = set()
     for path in sorted(PACKAGE.glob("*.py")):
@@ -261,6 +264,23 @@ def test_each_font_family_carries_its_licence():
     """The OFL requires the notice to travel with every copy."""
     notices = {path.name for path in (PACKAGE / "fonts").glob("OFL-*.txt")}
     assert notices == {"OFL-JetBrainsMono.txt", "OFL-SpaceGrotesk.txt"}
+
+
+# --------------------------------------------------------- the wallpapers ----
+
+def test_the_bundled_photos_are_there():
+    """wallpaper.PHOTOS loads them by filename; a rename is a flat panel."""
+    from glucocube import wallpaper
+    photos = {path.name for path in (PACKAGE / "wallpapers").glob("*.jpg")}
+    assert set(wallpaper.PHOTOS.values()) <= photos
+
+
+def test_the_photos_carry_their_licences():
+    """Each photo keeps its own license; the notice travels with them."""
+    from glucocube import wallpaper
+    notice = (PACKAGE / "wallpapers" / "COPYING").read_text()
+    for filename in wallpaper.PHOTOS.values():
+        assert filename in notice
 
 
 # ---------------------------------------------------------- the workflows ----

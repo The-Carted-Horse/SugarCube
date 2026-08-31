@@ -12,7 +12,7 @@ import urllib.error
 
 import pytest
 
-from glucocube import nspull, tidepool, verify
+from glucocube import glucocore, nspull, tidepool, verify
 from glucocube.verify import Result
 
 
@@ -87,7 +87,10 @@ def test_a_rejected_tidepool_password_says_so(monkeypatch):
     monkeypatch.setattr(tidepool, "login", _raise(http_error(401)))
     result = verify.tidepool_login("cassidy@example.invalid", "wrong")
     assert result.ok is False
-    assert "rejected those credentials" in result.message
+    assert "refused that login" in result.message
+    # A test button that says nothing was saved is half the reason to have
+    # one: a refusal must not read as "you have just broken it".
+    assert "Nothing has been saved" in result.message
 
 
 def test_the_password_is_never_shown_back(monkeypatch):
@@ -258,3 +261,119 @@ def test_a_push_person_has_nothing_to_test(config):
     result = verify.source(config)
     assert result.ok is True
     assert "Nothing to test" in result.message
+
+
+# ------------------------------------------------------------ glucocore ----
+#
+# A display pairs with a six-digit code rather than an account password,
+# so what is checked here is the code: its shape before anything is sent,
+# and that GlucoCore's deliberate refusal to say *why* a code failed is
+# repeated rather than guessed at.
+
+@pytest.mark.parametrize("code", ["", "12345", "1234567", "abcdef", "    "])
+def test_a_code_the_wrong_shape_is_not_sent(monkeypatch, code):
+    monkeypatch.setattr(glucocore, "claim", _never_called)
+    result, claimed = verify.glucocore_claim(code, "mac-abc")
+    assert result.ok is False
+    assert "6 digits" in result.message
+    assert claimed == {}
+
+
+def test_a_code_typed_with_spaces_is_still_a_code(monkeypatch):
+    """Nobody reads six digits out in one breath."""
+    seen = {}
+
+    def claim(code, hardware_id, name="", timeout=30):
+        seen["code"] = code
+        return {"deviceToken": "device-token", "device": {"id": "dev-42"}}
+
+    monkeypatch.setattr(glucocore, "claim", claim)
+    result, claimed = verify.glucocore_claim("123 456", "mac-abc")
+    assert result.ok is True
+    assert seen["code"] == "123456"
+    assert claimed["deviceToken"] == "device-token"
+
+
+def test_a_device_with_no_hardware_id_cannot_pair(monkeypatch):
+    monkeypatch.setattr(glucocore, "claim", _never_called)
+    result, _claimed = verify.glucocore_claim("123456", "")
+    assert result.ok is False
+
+
+def test_a_refused_code_says_the_one_thing_that_helps(monkeypatch):
+    """Wrong, expired, spent and too-fast all answer alike, on purpose."""
+    monkeypatch.setattr(glucocore, "claim", _raise(http_error(400)))
+    result, claimed = verify.glucocore_claim("123456", "mac-abc")
+    assert result.ok is False
+    assert "make a new one in GlucoCore" in result.message
+    assert claimed == {}
+
+
+def test_a_claim_that_answers_without_a_token_is_not_a_pairing(monkeypatch):
+    monkeypatch.setattr(glucocore, "claim",
+                        lambda *a, **k: {"device": {"id": "dev-42"}})
+    result, claimed = verify.glucocore_claim("123456", "mac-abc")
+    assert result.ok is False
+    assert claimed == {}
+
+
+def test_an_unreachable_glucocore_does_not_blame_a_typo(monkeypatch):
+    """Nobody typed this address, so there is no spelling to check."""
+    monkeypatch.setattr(glucocore, "claim",
+                        _raise(urllib.error.URLError(
+                            socket.gaierror(-2, "Name or service not known"))))
+    result, _claimed = verify.glucocore_claim("123456", "mac-abc")
+    assert result.ok is False
+    assert "spelling" not in result.message
+    assert glucocore.GLUCOCORE_BASE in result.message
+    assert "Name or service not known" in result.detail
+
+
+def test_a_mistyped_nightscout_address_still_says_to_check_it(monkeypatch):
+    """The other half of the same branch: there, the address *was* typed."""
+    monkeypatch.setattr(nspull, "probe",
+                        _raise(urllib.error.URLError("no route")))
+    result = verify.nightscout_site("ns.exampl.invalid", "key")
+    assert "check the spelling" in result.message
+
+
+def test_the_code_is_never_shown_back(monkeypatch):
+    """It is single-use, but it is still somebody's key to an account."""
+    monkeypatch.setattr(glucocore, "claim",
+                        _raise(RuntimeError("claim failed for 123456")))
+    result, _claimed = verify.glucocore_claim("123456", "mac-abc")
+    assert "123456" not in result.message + result.detail
+    assert "***" in result.detail
+
+
+def test_a_slow_service_hands_back_no_pairing(monkeypatch):
+    """A worker that overran must not leak a token nobody is waiting on."""
+    monkeypatch.setattr(glucocore, "claim", lambda *a, **k: time.sleep(30))
+    result, claimed = verify.glucocore_claim("123456", "mac-abc", timeout=0.3)
+    assert result.ok is False
+    assert claimed == {}
+
+
+def test_the_same_code_twice_in_a_row_is_throttled(monkeypatch):
+    """The service answers a rate-limit exactly as it answers a wrong code."""
+    monkeypatch.setattr(glucocore, "claim",
+                        lambda *a, **k: {"deviceToken": "t", "device": {}})
+    first, _ = verify.glucocore_claim("123456", "mac-abc")
+    second, _ = verify.glucocore_claim("123456", "mac-abc")
+    assert first.ok is True
+    assert second.ok is False
+    assert "wait" in second.message
+
+
+def test_a_redirect_the_client_would_not_follow_explains_itself(monkeypatch):
+    """"answered with an error (308)" is not something anyone can act on."""
+    import email.message
+    headers = email.message.Message()
+    headers["Location"] = "https://elsewhere.example/collect"
+    monkeypatch.setattr(glucocore, "claim", _raise(urllib.error.HTTPError(
+        "https://glucocore.app/v1/sugar_cubes/claim", 308, "Permanent Redirect",
+        headers, None)))
+    result, _claimed = verify.glucocore_claim("123456", "mac-abc")
+    assert result.ok is False
+    assert "redirecting" in result.message
+    assert "elsewhere.example" in result.message

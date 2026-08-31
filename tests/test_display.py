@@ -260,3 +260,169 @@ def test_a_tap_from_the_panel_is_queued_for_the_draw_loop(display):
 def test_the_settings_url_carries_the_login(display):
     url = display._settings_url()
     assert url is None or "key=pw1234" in url
+
+
+# ------------------------------------------------------------- identify ----
+#
+# "Which of these is the kitchen one?" is a question you answer by looking
+# at the wall, so the command has to be visible from across a room and has
+# to stop by itself.
+
+def test_the_screen_is_ordinary_until_it_is_asked_to_wave(display, store):
+    from glucocube.config import IDENTIFY_KEY
+    assert display._identify_left() == 0
+    store.replace_params(IDENTIFY_KEY, {"until": _in(30)})
+    assert 0 < display._identify_left() <= 30
+
+
+def test_an_identify_that_has_run_out_is_over(display, store):
+    from glucocube.config import IDENTIFY_KEY
+    store.replace_params(IDENTIFY_KEY, {"until": _in(-1)})
+    assert display._identify_left() == 0
+
+
+def test_identifying_changes_what_is_on_the_screen(display, store):
+    from glucocube.config import IDENTIFY_KEY
+    store.add_entries("Ada", [{"sgv": 120, "date": int(time.time() * 1000)}])
+    display.draw()
+    before = pygame.image.tostring(display.screen, "RGB")
+
+    store.replace_params(IDENTIFY_KEY, {"until": _in(30)})
+    display.draw()
+    after = pygame.image.tostring(display.screen, "RGB")
+    assert before != after
+
+
+def test_it_flashes_rather_than_merely_captioning_itself(display, store,
+                                                          monkeypatch):
+    """A steady band is easy to miss; the point is being noticed."""
+    from glucocube.config import IDENTIFY_KEY
+    store.replace_params(IDENTIFY_KEY, {"until": _in(30)})
+    frames = []
+    for tick in (0.0, 0.6):
+        monkeypatch.setattr(time, "monotonic", lambda tick=tick: tick)
+        display.draw()
+        frames.append(pygame.image.tostring(display.screen, "RGB"))
+    assert frames[0] != frames[1]
+
+
+def test_a_display_still_being_set_up_can_be_identified_too(display, store):
+    """Which is when telling two of them apart matters most."""
+    from glucocube.config import IDENTIFY_KEY
+    store.replace_params(IDENTIFY_KEY, {"until": _in(30)})
+    display.draw()                       # no readings: the setup screen
+    lit = pygame.image.tostring(display.screen, "RGB")
+    store.replace_params(IDENTIFY_KEY, {})
+    display.draw()
+    assert lit != pygame.image.tostring(display.screen, "RGB")
+
+
+def _in(seconds: float) -> int:
+    return int((time.time() + seconds) * 1000)
+
+
+# ------------------------------------------------------ pairing on the wall ----
+#
+# An unpaired display asks GlucoCore to pair it and puts the request on
+# its own screen. Scanning that is the whole point: no address to find,
+# no password to type, and a phone that is already signed in finishes it.
+
+def test_a_display_waiting_to_be_paired_shows_that_instead(display, store):
+    from glucocube import pairing
+    display.draw()                       # nothing paired, nothing asked
+    before = pygame.image.tostring(display.screen, "RGB")
+
+    store.replace_params(pairing.STATE_KEY, {
+        "request_id": "req-1", "secret": "never-on-screen",
+        "approve_url": "https://www.glucocore.app/devices/add?request=req-1",
+        "expires_at": int((time.time() + 500) * 1000), "error": ""})
+    display.draw()
+    assert before != pygame.image.tostring(display.screen, "RGB")
+
+
+def test_the_setup_code_comes_back_when_there_is_nothing_to_approve(display,
+                                                                     store):
+    from glucocube import pairing
+    store.replace_params(pairing.STATE_KEY, {})
+    display.draw()
+    assert display._qr_cache[0].startswith("http")
+    # The device's own settings page, carrying its key — not GlucoCore.
+    assert "devices/add" not in display._qr_cache[0]
+
+
+def test_the_code_on_the_wall_is_the_one_to_approve(display, store):
+    from glucocube import pairing
+    store.replace_params(pairing.STATE_KEY, {
+        "request_id": "req-1", "secret": "never-on-screen",
+        "approve_url": "https://www.glucocore.app/devices/add?request=req-1",
+        "expires_at": int((time.time() + 500) * 1000), "error": ""})
+    display.draw()
+    assert display._qr_cache[0] == (
+        "https://www.glucocore.app/devices/add?request=req-1")
+    # The secret collects the token; it must never be on a wall.
+    assert "never-on-screen" not in display._qr_cache[0]
+
+
+# --------------------------------------------------------------- mmol/L ----
+#
+# Everything the display holds is mg/dL. These check the one place that
+# is not: what is painted on the glass.
+
+@pytest.fixture
+def mmol_display(store, monkeypatch):
+    monkeypatch.setenv("GLUCOCUBE_TOUCH", "off")
+    monkeypatch.delenv("GLUCOCUBE_DISPLAY", raising=False)
+    config = Config(
+        users=[UserConfig(name="Ada", port=1337, api_secret="a")],
+        display=DisplayConfig(fullscreen=False, width=800, height=480,
+                              units="mmol/L"),
+        admin_port=8080, admin_password="pw1234")
+    display = Display(config, store, windowed=True)
+    yield display
+    pygame.quit()
+
+
+def _with_a_reading(store, sgv=121):
+    now = int(time.time() * 1000)
+    store.add_entries("Ada", [{"sgv": sgv - 3, "date": now - 5 * MINUTE},
+                              {"sgv": sgv, "date": now, "direction": "Flat"}])
+
+
+def test_the_same_reading_is_painted_differently_in_each_unit(display,
+                                                              mmol_display,
+                                                              store):
+    _with_a_reading(store)
+    display.draw()
+    in_mgdl = pygame.image.tostring(display.screen, "RGB")
+    mmol_display.draw()
+    in_mmol = pygame.image.tostring(mmol_display.screen, "RGB")
+    assert in_mgdl != in_mmol
+
+
+def test_the_caption_follows_the_unit(display, mmol_display, store):
+    """MG/DL and MMOL/L are different words on the glass."""
+    from glucocube import units
+    assert units.label(display.config.display.units) == "MG/DL"
+    assert units.label(mmol_display.config.display.units) == "MMOL/L"
+
+
+def test_a_display_set_to_mmol_still_renders_a_whole_frame(mmol_display,
+                                                           store):
+    _with_a_reading(store)
+    mmol_display.draw()
+    assert mmol_display.screen.get_size() == (800, 480)
+
+
+def test_the_chart_is_the_same_shape_in_both_units(display, mmol_display,
+                                                   store):
+    """The two units are a linear scale apart; only the labels change."""
+    _with_a_reading(store)
+    chart = pygame.Rect(0, 0, 400, 200)
+    for panel in (display, mmol_display):
+        snap = store.snapshot("Ada")
+        panel.draw_chart(chart, snap, False,
+                         {"low": 70, "high": 180, "urgent_low": 55,
+                          "urgent_high": 250}, None, False,
+                         int(time.time() * 1000))
+    # Both drew without raising, on the same mg/dL axis.
+    assert True

@@ -40,10 +40,15 @@ board, and recent treatments.
   release straight away.
 - **Per-person thresholds** — low/high/urgent ranges per person, with
   global defaults.
+- **mg/dL or mmol/L** — chosen under **Settings → Ranges**, or followed from
+  a paired GlucoCore account. Readings, the change since the last one, the
+  forecast and the chart's band all read in it, on the display and in the
+  web app. Everything stored stays mg/dL, `/api/dashboard.json` included, so
+  switching converts what is shown rather than moving any threshold.
 - **Guided setup from a phone** — a fresh device shows a QR code that opens
   a step-by-step wizard: Wi-Fi, where in the world it is so the clock is
-  right, who it's for, where each person's data comes from, and the
-  credentials for it, one question per screen. Credentials are
+  right, and the pairing code from GlucoCore that says who it shows, one
+  question per screen. Credentials are
   tested before they're saved, and nothing is written until the last step.
   With no network at all the device opens its own setup hotspot — join it
   and the wizard opens by itself, no second QR code to scan. Once a network
@@ -83,6 +88,24 @@ finishes by printing the URL and API secret for each person's uploader.
   [Tidepool](https://www.tidepool.org) account (one-time), then enter the
   Tidepool login in the web settings under their data source.
 - **Nightscout**: enter the site URL and its API secret or access token.
+- **GlucoCore**: three ways in, under **Settings → GlucoCore** or during
+  guided setup, and they end in the same place.
+  - **Scan it.** An unpaired display asks GlucoCore to pair it and shows the
+    request as a QR code, on its own screen and on the settings page. Scan it
+    with a phone that is signed in, choose who the display shows, approve —
+    and it pairs itself. Nothing is typed at the display, and it never
+    handles the account password. The code on the wall carries a request id
+    and nothing else; the secret that collects the token stays on the device.
+  - **Sign in on the display.** Email and password, used once to create the
+    display in GlucoCore. Only the read-only device token is kept.
+  - **Type a pairing code.** In GlucoCore, open **Devices** and create one:
+    six digits, ten minutes, single use.
+
+  Pairing adds those people to the display — anyone already fed by Trio,
+  twiist or Nightscout keeps the source they have. Who appears, what they are
+  called and their ranges then follow what GlucoCore says. Unpairing turns
+  them back into uploader-fed people, each with their own port and API
+  secret.
 
 ## The web app
 
@@ -112,21 +135,36 @@ available (e.g. running by hand on a dev machine) it falls back to 8080.
 | `/screen.png` | What the physical screen shows right now |
 | `/api/dashboard.json` | The dashboard's data, as JSON |
 
-Settings is a hub rather than one long form: each row says what it is set
-to now — who is configured and when their last reading arrived, the
-ranges, the network, the time zone, the version and channel — and opens a
-short page for that one thing. Every person has their own page, with only
-the fields their data source actually needs. Saving restarts the display
-(a few seconds) and the page waits for it to come back rather than
-guessing.
+Settings is a hub rather than one long form, and it reads as a status
+report rather than a table of contents: each row leads with what is true
+now — the reading each person's panel is showing, `70–180`, `Sabanis`,
+`07:57` — and only then opens the short page that would change it. The
+rows are grouped into who it's for, the display and this device, under a
+live view of the screen itself. Anything that needs attention is one
+tappable line at the top that goes straight to the fix.
+
+Every person has their own page, and the credentials for a data source
+live inside the card for that source, so the answer to "where do I type
+the password?" is "in the thing you just picked". Saving restarts the
+display (a few seconds); the page says so before you press it, counts
+what you have changed, and waits for the new process to answer rather
+than guessing at a reload.
+
+Settings, the dashboard and the physical screen share one visual
+language — Space Grotesk for values, JetBrains Mono for labels, and the
+display's own palette — so a number is the same colour on the phone as it
+is on the device.
 
 | Page | What is on it |
 |---|---|
 | `/settings/screen` | Live view of the physical screen, and Day/Night |
-| `/settings/people` | One row per person, then a page each |
-| `/settings/ranges` | In-range and urgent thresholds, staleness |
+| `/settings/people` | Everyone, with their current reading |
+| `/settings/person` | One person: name, source, credentials, own ranges |
+| `/settings/glucocore` | Pair this display with a GlucoCore code, or unpair it |
+| `/settings/ranges` | mg/dL or mmol/L, in-range and urgent thresholds, staleness, with a preview of how the screen will colour |
 | `/settings/network` | Wi-Fi: what it is on, and what else is nearby |
 | `/settings/clock` | Time zone (with what your phone thinks it is) |
+| `/settings/weather` | Whether the ambient screen shows a temperature, and where from |
 | `/settings/updates` | Version, release channel, install |
 | `/settings/access` | Password (or none at all), and a link that opens settings without logging in |
 
@@ -148,6 +186,81 @@ off. If it fails, the hotspot comes back within a minute or two and **the
 reason appears both on the device's own screen and at the top of the page**
 (wrong password, network not found, and so on) — no SSH needed to find out
 what went wrong.
+
+### What a paired display takes from GlucoCore
+
+Who it shows and in what order, what they are called, the in-range and
+urgent bands, the time zone, the clock format, the staleness cutoff — and
+the backlight: a daytime brightness and a dimmer night-time one, with the
+hours between which the night figure applies (equal hours mean never).
+Dimming needs a panel with a backlight under `/sys/class/backlight`, which
+the official 7" display has and an HDMI monitor does not; without one the
+setting is simply ignored.
+
+It also takes how the people share the screen, and the art behind them —
+see [Ambient mode](#ambient-mode). A background chosen in GlucoCore is
+fetched once and kept, so a display redraws from its own copy and only
+re-downloads when the picture actually changes.
+
+GlucoCore can still send settings this display does nothing with — the
+alert toggles, because this is not an alarm device (see
+[Safety note](#safety-note)). Each config push logs what it did not apply,
+so "I changed it and nothing happened" has an answer in
+[`/log`](#the-web-app).
+
+### Ambient mode
+
+A second way to draw the screen, for a display that lives on a nightstand
+or a desk rather than a kitchen wall: **one person at a time, full-bleed,
+over a background**, with the time and the weather in the corner and
+everything else anchored out of the middle so the picture stays visible.
+The two-panel dashboard is unchanged and is still what a display shows by
+default; **Settings → The screen** switches between them, and a tap on the
+ambient screen brings the usual footer back for a few seconds so the
+sun/moon and the settings QR are still one press away.
+
+Backgrounds come from three places: ten the device carries itself — four it
+draws, and six bundled photographs (ferns, Half Dome at night, an aurora, a
+pier at dusk, surf, dunes; each under its own license, see
+[`glucocube/wallpapers/COPYING`](glucocube/wallpapers/COPYING)) — anything
+uploaded on a person's settings page, and anything chosen in GlucoCore. A
+person can have their own, the display can have one for everyone else, and
+a person can be set to *nothing* — which is not the same as unset, and is
+how you keep a picture off one person on your own wall when they have
+chosen one for themselves.
+
+The art is dimmed, by a figure you set, and dimmed further overnight. That
+is not a style choice: the reading has to stay readable over whatever is
+behind it. For the same reason the border carries the glucose state
+whatever the picture is doing, a stale reading still goes grey and drops
+its arrow, and **an urgent reading holds the screen** rather than taking
+its turn — see the [Safety note](#safety-note).
+
+The weather is off until you say where the device is, under
+**Settings → Weather**. It asks [Open-Meteo](https://open-meteo.com/),
+which needs no account and no key, every fifteen minutes; a town name is
+looked up once, when you save it. Guessing a location from the time zone
+would need a coordinate table on the device and would confidently show the
+wrong town's sky, so it does not.
+
+### From GlucoCore's devices screen
+
+A paired display collects the commands queued for it — on its realtime
+channel when it has one, otherwise within the minute — and says what it
+did with each, so the devices screen shows the outcome rather than a
+silence:
+
+| Command | On this display |
+|---|---|
+| Identify | Flashes a band across the screen for 30 seconds |
+| Restart | Restarts the display; it comes back in a few seconds |
+| Refresh now | Polls every pull source immediately |
+| Clear cache | Drops stored readings and fetches again (therapy settings stay) |
+| Check for updates | Runs the release check, and installs a forced release |
+
+The heartbeat carries the version it is running and the config version it
+has applied, which is what lets that screen tell a display that is behind
+from one that is simply offline.
 
 ## Updates
 
@@ -244,8 +357,11 @@ frame and exits.
 If the touchscreen is mounted rotated relative to the panel, correct it
 with `GLUCOCUBE_TOUCH_TRANSFORM` — a comma-separated list of `swap`,
 `invx` and `invy` — in the systemd unit. `GLUCOCUBE_TOUCH=off` disables
-reading the panel altogether. The only runtime dependencies are `pygame` and `qrcode`
-(both from apt on the Pi); everything else is the Python standard library.
+reading the panel altogether. The runtime dependencies are `pygame` and
+`qrcode`, plus `websocket-client` for GlucoCore's realtime channel — a
+config change then reaches the display in seconds rather than at the next
+poll, and without the package it long-polls instead. All three come from
+apt on the Pi; everything else is the Python standard library.
 The display and web app are typeset in
 [Space Grotesk](https://github.com/floriankarsten/space-grotesk) and
 [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono), bundled under
@@ -288,13 +404,17 @@ personal and hobby use, study and research, and use by charities, schools,
 public health bodies and government, whatever their funding. Commercial use
 needs written permission: open an issue to ask.
 
-Three things in this repository are **not** under those terms:
+Four things in this repository are **not** under those terms:
 
 - The **enclosure** is Sarah Sabanis's design, under
   [CC BY-NC-SA 4.0](enclosure/LICENSE).
 - The **bundled fonts** in `glucocube/fonts/` stay solely under the SIL Open
   Font License 1.1. Your rights in them, commercial use included, are
   untouched by the license above — the OFL requires exactly that.
+- The **bundled wallpapers** in `glucocube/wallpapers/` are photographs from
+  the [elementary OS wallpaper collection](https://github.com/elementary/wallpapers),
+  each solely under its own license (CC0, Unsplash, Pexels, or CC BY-SA 4.0) —
+  see [`glucocube/wallpapers/COPYING`](glucocube/wallpapers/COPYING).
 - The **SD card image** is Raspberry Pi OS, and every package in it keeps its
   own license. GlucoCube's terms reach only the GlucoCube layer.
 

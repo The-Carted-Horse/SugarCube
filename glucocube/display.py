@@ -27,8 +27,11 @@ from dataclasses import dataclass
 
 import pygame
 
-from . import contract, network, predict, touch
-from .config import SCREEN_PNG, Config, admin_url, merged_thresholds
+from . import (
+    backlight, contract, network, pairing, predict, touch, units, wallpaper,
+    weather,
+)
+from .config import IDENTIFY_KEY, SCREEN_PNG, Config, admin_url, merged_thresholds
 from .store import Store, UserSnapshot
 
 # Every number that decides what a person sees is in contract.py, so the
@@ -64,6 +67,10 @@ LIGHT = Palette(name="light", **contract.PALETTES["light"])
 THEMES = {p.name: p for p in (DARK, LIGHT)}
 THEME_STATE_USER = "__display"     # params-table key for persisted UI state
 QR_OPEN_SECONDS = contract.QR_OPEN_SECONDS
+# How long a tap keeps the classic footer up over the ambient screen. Long
+# enough to reach the control you meant, short enough that the screen goes
+# back to being a picture on its own.
+CONTROLS_SECONDS = 8              # how long the settings QR stays up
 
 DIRECTION_ANGLES = contract.DIRECTION_ANGLES
 
@@ -142,7 +149,7 @@ def age_compact(now_ms: int, then_ms: int | None) -> str:
 def source_label(user_cfg) -> str:
     """Short badge name for where this person's data comes from."""
     stype = (user_cfg.source or {}).get("type")
-    return contract.SOURCE_LABELS.get(stype, contract.SOURCE_LABEL_DEFAULT)
+    return {"tidepool": "TWIIST", "nightscout": "NS"}.get(stype, "TRIO")
 
 
 class Display:
@@ -183,6 +190,20 @@ class Display:
         self._hotspot_pw = store.get_params("__network").get("hotspot_password", "")
         self._hotspot_state = (False, 0.0)  # (active, checked-at monotonic time)
         self._update_state: tuple[dict, float] = ({}, 0.0)
+        # Ambient mode. The index is into the *drawable* people, recomputed
+        # each frame — somebody with no data at all is skipped rather than
+        # given a blank turn, so the list this indexes can change under it.
+        self._rot_index = 0
+        self._rot_started = time.monotonic()
+        # Decoded and scaled once, then kept: a 7" Pi cannot afford to
+        # rescale a photograph every frame. See wallpaper.Surfaces.
+        self._art = wallpaper.Surfaces(config.database)
+        # The flat scrim and its centre-left radial, composited once per
+        # frame from a surface rebuilt only when the dim actually changes.
+        self._dim_cache: tuple[tuple, pygame.Surface] | None = None
+        # A tap in ambient mode brings the classic footer back for a few
+        # seconds, which is where the theme toggle and the settings QR live.
+        self._controls_until = 0.0
         # SDL's dummy video driver (forced by the fbdev path) pumps no
         # events at all, so the panel has to be read directly. kmsdrm
         # already delivers taps; GLUCOCUBE_TOUCH=evdev forces the reader
@@ -247,6 +268,14 @@ class Display:
             self.toggle_qr()
         elif self._toggle_rect.collidepoint(pos):
             self.toggle_theme()
+        elif self.config.display.layout == "rotate":
+            # Ambient mode has no visible chrome to aim at, so a tap
+            # anywhere brings the classic footer back for a few seconds —
+            # the theme toggle and the settings QR live in it, and there is
+            # nowhere else on this screen to reach them.
+            if self._debounce():
+                self._controls_until = time.monotonic() + CONTROLS_SECONDS
+                self._wake.set()
 
     def _footer_rect(self) -> pygame.Rect:
         full_h = self.screen.get_height()
@@ -334,14 +363,11 @@ class Display:
         vimg = vfont.render(value, True, self.pal.fg)
         surface.blit(vimg, topleft)
         if unit:
-            ufont = self.font(int(px * L["stats_unit_ratio"]), "num")
+            ufont = self.font(int(px * 0.5), "num")
             uimg = ufont.render(unit, True, self.pal.dim)
             baseline = topleft[1] + vfont.get_ascent()
-            surface.blit(
-                uimg,
-                (topleft[0] + vimg.get_width() + int(px * L["stats_unit_gap"]),
-                 baseline - ufont.get_ascent()),
-            )
+            surface.blit(uimg, (topleft[0] + vimg.get_width() + int(px * 0.08),
+                                baseline - ufont.get_ascent()))
 
     # ---- panel pieces ----
 
@@ -407,9 +433,15 @@ class Display:
 
     def draw_chart(self, chart: pygame.Rect, snap: UserSnapshot, stale: bool,
                    th: dict, future, est: bool, now_ms: int):
-        """3h history + 2h forecast: range band, trace, cone, dotted forecast."""
+        """3h history + 2h forecast: range band, trace, cone, dotted forecast.
+
+        Every value here is mg/dL, including the axis it is plotted on —
+        the two units are a linear scale apart, so the curve is the same
+        shape either way and only the two numbers written on it change.
+        """
         surface = self.screen
         pal = self.pal
+        shown_in = self.config.display.units
         t0 = now_ms - contract.CHART_HISTORY_MINUTES * 60 * 1000
         t1 = now_ms + contract.CHART_FORECAST_MINUTES * 60 * 1000
         values = [v for _, v in snap.history] + [v for _, v in (future or [])]
@@ -430,22 +462,20 @@ class Display:
                          (chart.left, band_top, chart.width, band_bot - band_top))
         lab_px = max(L["chart_band_label_px_min"],
                      int(chart.height * L["chart_band_label_px_h"]))
-        inset = L["chart_band_label_inset"]
-        self.text(surface, f"{th['high']:.0f}", lab_px, pal.faint,
-                  topright=(chart.right - inset, band_top + 2))
+        self.text(surface, units.fmt(th["high"], shown_in), lab_px, pal.faint,
+                  topright=(chart.right - 5, band_top + 2))
         if band_bot - band_top > lab_px * L["chart_band_thin_ratio"]:
             # Skip the lower bound when the band is too thin to hold it.
-            self.text(surface, f"{th['low']:.0f}", lab_px, pal.faint,
-                      bottomright=(chart.right - inset, band_bot - 2))
+            self.text(surface, units.fmt(th["low"], shown_in), lab_px,
+                      pal.faint, bottomright=(chart.right - 5, band_bot - 2))
 
         # Dashed "now" divider between measured past and forecast.
         x_now = X(now_ms)
         y = chart.top
         while y < chart.bottom:
-            pygame.draw.line(
-                surface, pal.line, (x_now, y),
-                (x_now, min(y + L["chart_now_dash_on"], chart.bottom)), 1)
-            y += L["chart_now_dash_period"]
+            pygame.draw.line(surface, pal.line, (x_now, y),
+                             (x_now, min(y + 4, chart.bottom)), 1)
+            y += 9
 
         # Forecast confidence cone: widens with time; wider when the curve
         # is our own estimate rather than the pump's. Needs two points —
@@ -534,80 +564,74 @@ class Display:
                    kind="mono-med", topleft=(left, top))
         age_min = (now_ms - snap.sgv_date) / 60000 if snap.sgv_date else None
         dot_color = (
-            self.pal.in_range
-            if age_min is not None and age_min <= contract.FRESH_MINUTES
+            self.pal.in_range if age_min is not None and age_min <= 7
             else self.pal.high
             if age_min is not None and age_min <= dc.stale_minutes
             else self.pal.low
         )
         badge = f"{source_label(user_cfg)} · {age_compact(now_ms, snap.sgv_date)}"
-        badge_rect = self.label(surface, badge, int(h * L["badge_px_h"]),
-                                self.pal.dim,
-                                topright=(right, top + int(h * L["badge_top_h"])))
-        pygame.draw.circle(
-            surface, dot_color,
-            (badge_rect.left - int(h * L["badge_dot_gap_h"]), badge_rect.centery),
-            max(L["badge_dot_r_px"], int(h * L["badge_dot_r_h"])))
+        badge_rect = self.label(surface, badge, int(h * 0.032), self.pal.dim,
+                                topright=(right, top + int(h * 0.012)))
+        pygame.draw.circle(surface, dot_color,
+                           (badge_rect.left - int(h * 0.035),
+                            badge_rect.centery), max(3, int(h * 0.011)))
 
         # Big glucose number, left-aligned; arrow/delta/unit column right of it.
         # Blit so the digits' cap top (not the font's line box) lands at
         # num_top — Space Grotesk carries a lot of internal leading.
-        sgv_str = f"{snap.sgv:.0f}" if snap.sgv is not None else "---"
+        shown_in = self.config.display.units
+        sgv_str = units.fmt(snap.sgv, shown_in)
         num_px = int(h * L["num_px_h"])
         num_font = self.font(num_px, "num")
         num_img = num_font.render(sgv_str, True, color)
         # Tiny panels: shrink the number so it and the trend column fit.
-        max_num_w = (right - left) - int(w * L["num_max_w_reserve_w"])
+        max_num_w = (right - left) - int(w * 0.26)
         if num_img.get_width() > max_num_w:
-            num_px = max(L["num_px_min"],
-                         int(num_px * max_num_w / num_img.get_width()))
+            num_px = max(12, int(num_px * max_num_w / num_img.get_width()))
             num_font = self.font(num_px, "num")
             num_img = num_font.render(sgv_str, True, color)
         cap = int(num_px * L["num_cap_ratio"])
         num_top = rect.top + int(h * L["num_top_h"])
         surface.blit(num_img,
-                     (left - int(num_px * L["num_left_nudge"]),
+                     (left - int(num_px * 0.05),
                       num_top - (num_font.get_ascent() - cap)))
 
-        col_x = left + num_img.get_width() + int(w * L["trend_gap_w"])
+        col_x = left + num_img.get_width() + int(w * 0.04)
         if not stale and snap.direction in DIRECTION_ANGLES:
-            arrow_size = int(h * L["arrow_size_h"])
-            self.draw_arrow(
-                surface, (col_x + arrow_size, num_top + cap * L["arrow_y_cap"]),
-                arrow_size, snap.direction, color)
+            arrow_size = int(h * 0.06)
+            self.draw_arrow(surface, (col_x + arrow_size, num_top + cap * 0.16),
+                            arrow_size, snap.direction, color)
         if not stale and snap.delta is not None:
-            delta_font = self.font(int(h * L["delta_px_h"]), "num-med")
-            delta_img = delta_font.render(f"{snap.delta:+.0f}", True, self.pal.fg)
-            surface.blit(delta_img,
-                         (col_x, num_top + int(cap * L["delta_y_cap"])))
-        self.label(surface, "MG/DL", int(h * L["unit_px_h"]), self.pal.faint,
-                   topleft=(col_x, num_top + int(cap * L["unit_y_cap"])))
+            delta_font = self.font(int(h * 0.08), "num-med")
+            delta_img = delta_font.render(units.fmt_delta(snap.delta, shown_in),
+                                          True, self.pal.fg)
+            surface.blit(delta_img, (col_x, num_top + int(cap * 0.36)))
+        self.label(surface, units.label(shown_in), int(h * 0.027),
+                   self.pal.faint,
+                   topleft=(col_x, num_top + int(cap * 0.80)))
 
         # FORECAST 2H header: label — rule — value + arrival time.
         fy = rect.top + int(h * L["forecast_y_h"])
-        far = contract.HORIZONS[-1]
         horizons, future, fc_source = (None, None, None)
         if not stale:
             horizons, future, fc_source = predict.predict(snap, now_ms)
-        lab_px = int(h * L["forecast_label_px_h"])
-        lab_rect = self.label(surface, f"FORECAST {far // 60}H", lab_px,
+        lab_rect = self.label(surface, "FORECAST 2H", int(h * 0.031),
                               self.pal.dim, midleft=(left, fy))
-        rule_gap = int(w * L["forecast_rule_gap_w"])
         rule_end = right
-        if horizons and far in horizons:
+        if horizons and 120 in horizons:
             eta = time.strftime("%H:%M",
-                                time.localtime((now_ms + far * 60000) / 1000))
-            eta_rect = self.label(surface, eta, lab_px, self.pal.faint,
+                                time.localtime((now_ms + 120 * 60000) / 1000))
+            eta_rect = self.label(surface, eta, int(h * 0.031), self.pal.faint,
                                   midright=(right, fy))
             tilde = "~" if fc_source == "est" else ""
-            value_color = self.glucose_color(horizons[far], False, th)
-            val_rect = self.text(
-                surface, f"{tilde}{horizons[far]:.0f}",
-                int(h * L["forecast_value_px_h"]), value_color, kind="num",
-                midright=(eta_rect.left - int(w * L["forecast_eta_gap_w"]), fy))
-            rule_end = val_rect.left - rule_gap
+            value_color = self.glucose_color(horizons[120], False, th)
+            val_rect = self.text(surface,
+                                 f"{tilde}{units.fmt(horizons[120], shown_in)}",
+                                 int(h * 0.055), value_color, kind="num",
+                                 midright=(eta_rect.left - int(w * 0.025), fy))
+            rule_end = val_rect.left - int(w * 0.03)
         pygame.draw.line(surface, self.pal.line,
-                         (lab_rect.right + rule_gap, fy), (rule_end, fy))
+                         (lab_rect.right + int(w * 0.03), fy), (rule_end, fy))
 
         # Chart with its time axis.
         chart = pygame.Rect(left, rect.top + int(h * L["chart_top_h"]),
@@ -615,12 +639,11 @@ class Display:
         self.draw_chart(chart, snap, stale, th, future,
                         fc_source == "est", now_ms)
         ax_y = chart.bottom + int(h * L["chart_axis_gap_h"])
-        span = contract.CHART_HISTORY_MINUTES + contract.CHART_FORECAST_MINUTES
-        for minutes, lab in contract.CHART_TICKS:
-            x = chart.left + (
-                minutes + contract.CHART_HISTORY_MINUTES) / span * chart.width
-            self.label(surface, lab, int(h * L["chart_axis_px_h"]),
-                       self.pal.faint, midtop=(x, ax_y))
+        for minutes, lab in ((-180, "-3H"), (-120, "-2H"), (-60, "-1H"),
+                             (0, "NOW"), (60, "+1H"), (120, "+2H")):
+            x = chart.left + (minutes + 180) / 300 * chart.width
+            self.label(surface, lab, int(h * 0.026), self.pal.faint,
+                       midtop=(x, ax_y))
 
         # Stats row: IOB, COB, last carbs, last bolus.
         stats = [
@@ -643,22 +666,516 @@ class Display:
         col_w = (right - left) / len(stats)
         for idx, (lab, value, unit, sub) in enumerate(stats):
             x = left + int(idx * col_w)
-            self.label(surface, lab, int(h * L["stats_label_px_h"]), self.pal.dim,
+            self.label(surface, lab, int(h * 0.028), self.pal.dim,
                        topleft=(x, labels_y))
-            value_y = labels_y + int(h * L["stats_value_gap_h"])
+            value_y = labels_y + int(h * 0.048)
             self.stat_value(surface, value, unit,
                             int(h * L["stats_value_px_h"]), (x, value_y))
             if sub:
-                self.label(surface, sub, int(h * L["stats_sub_px_h"]),
-                           self.pal.faint,
-                           topleft=(x, value_y + int(h * L["stats_sub_gap_h"])))
+                self.label(surface, sub, int(h * 0.024), self.pal.faint,
+                           topleft=(x, value_y + int(h * 0.1)))
 
         # Urgent readings get a colored border to catch the eye across a room.
         if color == self.pal.urgent:
-            inset = L["urgent_inset"]
-            pygame.draw.rect(surface, self.pal.urgent,
-                             rect.inflate(-inset, -inset), L["urgent_width"],
-                             border_radius=L["urgent_radius"])
+            pygame.draw.rect(surface, self.pal.urgent, rect.inflate(-6, -6), 3,
+                             border_radius=12)
+
+    # ---- ambient mode ----
+
+    def _ambient_dim(self, size, strength: float) -> pygame.Surface:
+        """The scrim between the art and the chrome, built once and kept.
+
+        Two layers in one surface. The flat dim is what makes any
+        photograph a background rather than a competitor; the centre-left
+        radial is what keeps the number readable when the art has
+        something bright exactly where the digits sit — without it, a
+        picture with a pale patch behind the reading wins.
+
+        Cached on (size, strength) because it is the same every frame and
+        costs a full-panel per-pixel pass to build.
+        """
+        key = (size, round(strength, 3))
+        if self._dim_cache and self._dim_cache[0] == key:
+            return self._dim_cache[1]
+
+        width, height = size
+        layer = pygame.Surface(size, pygame.SRCALPHA)
+        layer.fill((10, 12, 15, int(max(0.0, min(1.0, strength)) * 255)))
+
+        # Ellipse centred at (36%, 52%), radii (58%, 56%), opaque at the
+        # centre and gone by 72% of the radius. Drawn as concentric
+        # ellipses because pygame has no radial gradient; 48 steps is
+        # under the eye's banding threshold at this alpha.
+        radial = pygame.Surface(size, pygame.SRCALPHA)
+        cx, cy = int(width * 0.36), int(height * 0.52)
+        rx, ry = int(width * 0.58), int(height * 0.56)
+        steps = 48
+        for step in range(steps, 0, -1):
+            fraction = step / steps
+            alpha = int(0.58 * 255 * max(0.0, 1 - fraction / 0.72))
+            if alpha <= 0:
+                continue
+            box = pygame.Rect(0, 0, int(rx * 2 * fraction), int(ry * 2 * fraction))
+            box.center = (cx, cy)
+            pygame.draw.ellipse(radial, (10, 12, 15, alpha), box)
+        layer.blit(radial, (0, 0))
+
+        self._dim_cache = (key, layer)
+        return layer
+
+    def draw_sparkline(self, box: pygame.Rect, snap: UserSnapshot, th: dict,
+                       future, color, now_ms: int) -> None:
+        """Three hours behind and two ahead, in a plate the size of a stamp.
+
+        Its own function rather than a smaller draw_chart: that one writes
+        to self.screen whatever surface it is handed, carries an axis, a
+        cone and a halo, and is sized for a panel. This is the same maths
+        with none of the furniture.
+        """
+        values = [v for _, v in snap.history] + [v for _, v in (future or [])]
+        if not values:
+            return
+        lo, hi = min(values) - 12, max(values) + 12
+        if hi - lo < 1:
+            return
+        t0 = now_ms - 180 * 60 * 1000
+
+        def X(t):
+            return box.left + (t - t0) / (300 * 60 * 1000) * box.width
+
+        def Y(v):
+            return box.bottom - (v - lo) / (hi - lo) * box.height
+
+        # The target band, but only when both its edges are inside the
+        # plate. When the whole plotted range sits inside the target, a
+        # band would fill the box and read as a stray grey rectangle — so
+        # that case gets a baseline instead, which says the same thing.
+        band_top, band_bottom = Y(th["high"]), Y(th["low"])
+        if band_top > box.top + 1 and band_bottom < box.bottom - 1:
+            pygame.draw.rect(self.screen, self.pal.band,
+                             pygame.Rect(box.left, int(band_top), box.width,
+                                         max(1, int(band_bottom - band_top))))
+        else:
+            pygame.draw.line(self.screen, self.pal.line,
+                             (box.left, box.bottom - 1),
+                             (box.right, box.bottom - 1))
+
+        history = [(X(t), Y(v)) for t, v in snap.history]
+        if len(history) > 1:
+            pygame.draw.aalines(self.screen, self.pal.trace, False, history)
+        # Dashed, and deliberately not the mark measured data gets: a
+        # forecast drawn like a reading is a forecast somebody will read
+        # as one.
+        if future and len(future) > 1:
+            points = [(X(t), Y(v)) for t, v in future]
+            for index in range(0, len(points) - 1, 2):
+                pygame.draw.aaline(self.screen, color, points[index],
+                                   points[index + 1])
+        if snap.sgv is not None and snap.sgv_date:
+            pygame.draw.circle(self.screen, color,
+                               (int(X(snap.sgv_date)), int(Y(snap.sgv))), 3)
+
+    def draw_state_ring(self, rect: pygame.Rect, color, urgent: bool) -> None:
+        """The border that carries the state, whatever the art is doing.
+
+        This is the part of ambient mode that is not decoration. A number
+        over a photograph is harder to read across a room than a number on
+        black, and the ring is what puts the state back — at ten feet it is
+        the only thing still legible. It generalises the border the classic
+        panel already draws for an urgent reading.
+        """
+        width = 3 if urgent else 2
+        if urgent:
+            # An inner glow, so urgent reads as urgent from the doorway.
+            glow = pygame.Surface(rect.size, pygame.SRCALPHA)
+            depth = max(6, int(min(rect.width, rect.height) * 0.12))
+            for step in range(depth):
+                alpha = int(56 * (1 - step / depth) ** 2)
+                if alpha <= 0:
+                    continue
+                pygame.draw.rect(glow, (*color, alpha),
+                                 pygame.Rect(step, step,
+                                             rect.width - step * 2,
+                                             rect.height - step * 2), 1)
+            self.screen.blit(glow, rect.topleft)
+            pygame.draw.rect(self.screen, color, rect, width)
+            return
+        ring = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(ring, (*color, 102),
+                         pygame.Rect(0, 0, rect.width, rect.height), width)
+        self.screen.blit(ring, rect.topleft)
+
+    def draw_weather_mark(self, center, size: int, code: int, color) -> None:
+        """Sun, cloud, rain, snow or fog — drawn, like the sun in the footer."""
+        kind = weather.mark_for(code)
+        radius = size * 0.34
+        cx, cy = center
+        if kind in ("clear", "partly"):
+            sun = (cx - size * 0.12, cy - size * 0.12) if kind == "partly" else (cx, cy)
+            pygame.draw.circle(self.screen, color,
+                               (int(sun[0]), int(sun[1])), int(radius), 2)
+            for i in range(8):
+                angle = i * math.pi / 4
+                pygame.draw.line(
+                    self.screen, color,
+                    (sun[0] + math.cos(angle) * radius * 1.45,
+                     sun[1] + math.sin(angle) * radius * 1.45),
+                    (sun[0] + math.cos(angle) * radius * 1.9,
+                     sun[1] + math.sin(angle) * radius * 1.9), 2)
+        if kind in ("partly", "cloudy", "rain", "snow", "storm", "fog"):
+            cloud = pygame.Rect(0, 0, int(size * 0.8), int(size * 0.34))
+            cloud.center = (int(cx + size * 0.05),
+                            int(cy + (size * 0.16 if kind == "partly" else 0)))
+            pygame.draw.ellipse(self.screen, color, cloud,
+                                0 if kind != "fog" else 2)
+        if kind in ("rain", "storm"):
+            for i in range(3):
+                x = cx - size * 0.24 + i * size * 0.24
+                pygame.draw.line(self.screen, color,
+                                 (x, cy + size * 0.26),
+                                 (x - size * 0.06, cy + size * 0.46), 2)
+        if kind == "snow":
+            for i in range(3):
+                x = cx - size * 0.24 + i * size * 0.24
+                pygame.draw.circle(self.screen, color,
+                                   (int(x), int(cy + size * 0.36)), 2)
+
+    def _ambient_people(self, users, snaps):
+        """Who ambient mode can actually show, and who holds the screen.
+
+        Somebody with no data at all is skipped rather than given a turn —
+        a rotation that stops for fifteen seconds on an empty panel is a
+        display that looks broken. If nobody has anything, everybody is
+        shown, because the alternative is a blank screen with no
+        explanation.
+        """
+        pairs = [(u, s) for u, s in zip(users, snaps) if s.sgv is not None]
+        return pairs or list(zip(users, snaps))
+
+    def _ambient_turn(self, people, now_ms: int) -> int:
+        """Whose turn it is, advancing the rotation when the interval is up.
+
+        An urgent reading holds the screen. Ambient mode exists to make the
+        panel prettier and it must not make an urgent reading quieter — so
+        the rotation stops on somebody who is in trouble until they are out
+        of it, rather than moving on after fifteen seconds.
+        """
+        if not people:
+            return 0
+        self._rot_index %= len(people)
+        dc = self.config.display
+
+        def is_urgent(pair) -> bool:
+            user_cfg, snap = pair
+            if snap.sgv is None or snap.sgv_date is None:
+                return False
+            if now_ms - snap.sgv_date > dc.stale_minutes * 60 * 1000:
+                return False
+            th = merged_thresholds(dc, user_cfg)
+            return snap.sgv <= th["urgent_low"] or snap.sgv >= th["urgent_high"]
+
+        urgent = [i for i, pair in enumerate(people) if is_urgent(pair)]
+        if urgent:
+            if self._rot_index not in urgent:
+                self._rot_index = urgent[0]
+                self._rot_started = time.monotonic()
+            return self._rot_index
+
+        user_cfg = people[self._rot_index][0]
+        seconds = getattr(user_cfg, "rotate_seconds", None) or dc.rotate_seconds
+        seconds = max(3.0, float(seconds))
+        if time.monotonic() - self._rot_started >= seconds and len(people) > 1:
+            self._rot_index = (self._rot_index + 1) % len(people)
+            self._rot_started = time.monotonic()
+        return self._rot_index
+
+    def _ambient_seconds_left(self) -> float:
+        """How long until the rotation moves on, for the wait in run()."""
+        dc = self.config.display
+        people = self.config.users
+        if dc.layout != "rotate" or len(people) < 2:
+            return 0.0
+        seconds = max(3.0, float(dc.rotate_seconds or 12))
+        return max(0.0, seconds - (time.monotonic() - self._rot_started))
+
+    def draw_ambient(self, users, snaps) -> None:
+        """One person, full bleed, everything else anchored to a corner.
+
+        The design is "2b — Edge-lit calm": no bars at all, so the middle
+        of the artwork stays visible and the reading sits over the part of
+        it that has been dimmed for exactly that purpose.
+
+        Every number here is the handoff's, expressed as a ratio of the
+        panel the way the rest of this file does, so it holds its
+        proportions on something that is not 800x480.
+        """
+        screen = self.screen
+        width, height = screen.get_width(), screen.get_height()
+        s = min(width, height)
+        dc = self.config.display
+        now_ms = int(time.time() * 1000)
+
+        people = self._ambient_people(users, snaps)
+        index = self._ambient_turn(people, now_ms)
+        user_cfg, snap = people[index]
+
+        th = merged_thresholds(dc, user_cfg)
+        stale = (snap.sgv_date is None
+                 or now_ms - snap.sgv_date > dc.stale_minutes * 60 * 1000)
+        color = self.glucose_color(snap.sgv, stale, th)
+        urgent = (not stale and snap.sgv is not None
+                  and (snap.sgv <= th["urgent_low"]
+                       or snap.sgv >= th["urgent_high"]))
+
+        # 1. the art, 2. the scrim over it.
+        art = self._art.get(wallpaper.resolve(dc, user_cfg), (width, height))
+        if art is not None:
+            screen.blit(art, (0, 0))
+            strength = (dc.wallpaper_dim or 0) / 100
+            if self.pal.name == "dark" and backlight.is_night(
+                    time.localtime().tm_hour, dc.night_from_hour,
+                    dc.night_to_hour):
+                strength = min(0.88, strength + (dc.night_dim_boost or 0) / 100)
+            screen.blit(self._ambient_dim((width, height), strength), (0, 0))
+
+        inset = int(s * 0.071)          # 34px at 480
+        top_inset = int(s * 0.058)      # 28px
+        fg = (233, 237, 241)
+        secondary = (138, 147, 156)     # a step brighter than `dim`, for art
+        mark = (198, 205, 212)
+
+        # --- top left: who this is ---
+        avatar_r = int(s * 0.031)
+        avatar_c = (inset + avatar_r, top_inset + avatar_r)
+        pygame.draw.circle(screen, color, avatar_c, avatar_r)
+        initial = (getattr(user_cfg, "name", "") or "?").strip()[:1].upper()
+        self.text(screen, initial, int(s * 0.029), self.pal.bg, kind="num",
+                  center=avatar_c)
+        name_x = avatar_c[0] + avatar_r + int(s * 0.027)
+        self.label(screen, getattr(user_cfg, "name", "") or "", int(s * 0.027),
+                   fg, tracking=0.23,
+                   midleft=(name_x, avatar_c[1] - int(s * 0.014)))
+        self.label(screen,
+                   f"{source_label(user_cfg)} · {age_compact(now_ms, snap.sgv_date)}",
+                   int(s * 0.023), secondary, tracking=0.18,
+                   midleft=(name_x, avatar_c[1] + int(s * 0.016)))
+
+        # --- top right: the clock, and the weather if it knows where it is ---
+        right = width - inset
+        clock_px = int(s * 0.117)
+        now_local = time.localtime()
+        if dc.time_format == 12:
+            hour = now_local.tm_hour % 12 or 12
+            meridiem = "AM" if now_local.tm_hour < 12 else "PM"
+        else:
+            hour, meridiem = f"{now_local.tm_hour:02d}", ""
+        clock = f"{hour}:{now_local.tm_min:02d}"
+        # The clock and its meridiem are one right-aligned group, so the
+        # clock has to make room for the AM before it is placed — right
+        # -aligning the clock on its own puts the meridiem off the panel.
+        gap = int(s * 0.012)
+        meridiem_px = int(s * 0.025)
+        meridiem_w = (self.font(meridiem_px).size(meridiem)[0]
+                      + int(meridiem_px * 0.22) * max(0, len(meridiem) - 1)
+                      + gap) if meridiem else 0
+        clock_rect = self.text(screen, clock, clock_px, fg, kind="num-med",
+                               topright=(right - meridiem_w, int(s * 0.05)))
+        if meridiem:
+            # On the clock's own baseline rather than its box: Space
+            # Grotesk carries enough leading that aligning the boxes would
+            # float the AM well below the digits.
+            baseline = clock_rect.top + self.font(clock_px, "num-med").get_ascent()
+            self.label(screen, meridiem, meridiem_px, secondary,
+                       bottomleft=(clock_rect.right + gap, baseline))
+        date_rect = self.label(
+            screen, time.strftime("%a %d %b").upper(), int(s * 0.023),
+            (154, 164, 174), tracking=0.25,
+            topright=(right, clock_rect.bottom + int(s * 0.021)))
+
+        reading = weather.current(self.store)
+        if reading:
+            # Right-aligned, laid out right to left so the row ends flush
+            # with the clock above it: the range, then the temperature,
+            # then the condition mark.
+            row_y = date_rect.bottom + int(s * 0.045)
+            cursor = right
+            if reading.get("range"):
+                range_rect = self.label(screen, reading["range"],
+                                        int(s * 0.021), secondary,
+                                        tracking=0.2, midright=(cursor, row_y))
+                cursor = range_rect.left - int(s * 0.019)
+            temp_rect = self.text(screen, reading["temp"], int(s * 0.042), fg,
+                                  kind="num-med", midright=(cursor, row_y))
+            mark_size = int(s * 0.035)
+            self.draw_weather_mark(
+                (temp_rect.left - int(s * 0.019) - mark_size // 2, row_y),
+                mark_size, reading.get("code", 0),
+                mark if reading.get("fresh") else secondary)
+
+        # --- the hero: the reading itself ---
+        hero_y = int(height * 0.483)
+        num_px = int(height * 0.417)
+        shown_in = dc.units
+        sgv_text = units.fmt(snap.sgv, shown_in) if not stale else units.fmt(
+            snap.sgv, shown_in)
+        num_color = self.pal.stale if stale else color
+        num_font = self.font(num_px, "num")
+        num_img = num_font.render(sgv_text, True, num_color)
+        # Shrink to leave the trend column room, exactly as the classic
+        # panel does — a 200px number and a three-digit reading in mmol/L
+        # would otherwise run into it.
+        max_w = int(width * 0.52)
+        if num_img.get_width() > max_w:
+            num_px = max(24, int(num_px * max_w / num_img.get_width()))
+            num_font = self.font(num_px, "num")
+            num_img = num_font.render(sgv_text, True, num_color)
+        cap = int(num_px * 0.70)
+        num_top = hero_y - cap // 2
+        screen.blit(num_img, (int(s * 0.083) - int(num_px * 0.05),
+                              num_top - (num_font.get_ascent() - cap)))
+
+        col_x = int(s * 0.083) + num_img.get_width() + int(s * 0.046)
+        # Hidden when the reading is old, exactly as the classic panel
+        # does: a trend arrow on a stale number is a claim about now that
+        # nothing supports.
+        if not stale:
+            arrow_size = int(s * 0.113)
+            self.draw_arrow(screen, (col_x + arrow_size // 2,
+                                     num_top + int(cap * 0.20)),
+                            arrow_size, snap.direction, color)
+            self.text(screen, units.fmt_delta(snap.delta, shown_in),
+                      int(s * 0.088), fg, kind="num-med",
+                      topleft=(col_x, num_top + int(cap * 0.42)))
+        self.label(screen, units.label(shown_in), int(s * 0.023), secondary,
+                   tracking=0.24, topleft=(col_x, num_top + int(cap * 0.82)))
+
+        # --- the forecast, and three hours of history ---
+        forecast_y = height - int(s * 0.183)
+        horizons, future, fc_source = (None, None, None)
+        if not stale:
+            horizons, future, fc_source = predict.predict(snap, now_ms)
+        left = int(s * 0.083)
+        if horizons and 120 in horizons:
+            label_rect = self.label(screen, "2H", int(s * 0.023), secondary,
+                                    tracking=0.24, midleft=(left, forecast_y))
+            prefix = "~" if fc_source == "est" else ""
+            value_rect = self.text(
+                screen, prefix + units.fmt(horizons[120], shown_in),
+                int(s * 0.046), self.glucose_color(horizons[120], False, th),
+                kind="num",
+                midleft=(label_rect.right + int(s * 0.029), forecast_y))
+            spark_left = value_rect.right + int(s * 0.029)
+        else:
+            spark_left = left
+        spark = pygame.Rect(spark_left, forecast_y - int(s * 0.042),
+                            int(s * 0.437), int(s * 0.083))
+        if spark.right < width - inset:
+            self.draw_sparkline(spark, snap, th, future, color, now_ms)
+
+        # --- bottom left: insulin, carbs, and the state in words ---
+        bottom = height - int(s * 0.062)
+        parts = [
+            ("IOB", f"{snap.iob:.1f}U" if snap.iob is not None else "--"),
+            ("COB", f"{snap.cob:.0f}G" if snap.cob is not None else "--"),
+        ]
+        x = left
+        for name, value in parts:
+            name_rect = self.label(screen, name, int(s * 0.025), (154, 164, 174),
+                                   tracking=0.22, midleft=(x, bottom))
+            value_rect = self.label(screen, value, int(s * 0.025), fg,
+                                    tracking=0.22,
+                                    midleft=(name_rect.right + int(s * 0.021),
+                                             bottom))
+            x = value_rect.right + int(s * 0.046)
+        if stale:
+            state = "NO READING"
+        elif urgent:
+            state = ("URGENT LOW" if snap.sgv <= th["urgent_low"]
+                     else "URGENT HIGH")
+        elif snap.sgv is None:
+            state = "NO READING"
+        elif snap.sgv < th["low"]:
+            state = "BELOW RANGE"
+        elif snap.sgv > th["high"]:
+            state = "ABOVE RANGE"
+        else:
+            state = "IN RANGE"
+        self.label(screen, state, int(s * 0.025),
+                   self.pal.stale if stale else color, tracking=0.22,
+                   midleft=(x, bottom))
+
+        # --- bottom right: status, whose turn it is, and the way in ---
+        cursor = width - inset
+        cells = len(self.QR_GLYPH)
+        cell = max(2, int(s * 0.0063))
+        qr_size = cell * cells
+        qr_box = pygame.Rect(0, 0, qr_size, qr_size)
+        qr_box.midright = (cursor, bottom)
+        for row, line in enumerate(self.QR_GLYPH):
+            for column, glyph in enumerate(line):
+                if glyph == "X":
+                    pygame.draw.rect(screen, (122, 132, 142),
+                                     pygame.Rect(qr_box.left + column * cell,
+                                                 qr_box.top + row * cell,
+                                                 cell, cell))
+        cursor = qr_box.left - int(s * 0.033)
+
+        if len(people) > 1:
+            dot_r = max(2, int(s * 0.0063))
+            gap = dot_r * 2 + int(s * 0.015)
+            for i in range(len(people) - 1, -1, -1):
+                centre = (cursor - dot_r, bottom)
+                if i == index:
+                    pygame.draw.circle(screen, fg, centre, dot_r)
+                else:
+                    faint = pygame.Surface((dot_r * 2, dot_r * 2),
+                                           pygame.SRCALPHA)
+                    pygame.draw.circle(faint, (233, 237, 241, 82),
+                                       (dot_r, dot_r), dot_r)
+                    screen.blit(faint, (centre[0] - dot_r, centre[1] - dot_r))
+                cursor -= gap
+            cursor -= int(s * 0.018)
+
+        if self._pending_update().get("latest"):
+            self.label(screen, "UPDATE", int(s * 0.021), self.pal.high,
+                       tracking=0.2, midright=(cursor, bottom))
+
+        # The touch targets. In ambient mode the settings mark is the only
+        # thing with a target of its own; a tap anywhere else brings the
+        # classic footer back, which is where the theme toggle lives.
+        self._qr_rect = qr_box.inflate(int(s * 0.05), int(s * 0.05))
+        self._toggle_rect = pygame.Rect(0, 0, 0, 0)
+
+        self.draw_state_ring(pygame.Rect(0, 0, width, height), color, urgent)
+
+        # The revealed footer, over the bottom of the art, for a few
+        # seconds after a tap.
+        if time.monotonic() < self._controls_until:
+            footer = self._footer_rect()
+            plate = pygame.Surface(footer.size, pygame.SRCALPHA)
+            plate.fill((10, 12, 15, 224))
+            screen.blit(plate, footer.topleft)
+            self._qr_rect, self._toggle_rect = self._controls_for(footer)
+            self.draw_footer(footer)
+
+    def _split_page(self, pairs):
+        """Everyone, or one page of them when a cap is set.
+
+        Four people on a 7" panel is four 200px columns and a number too
+        small to read from a doorway, which is what the cap is for: show
+        two, then the other two, on the interval the rotation uses.
+        """
+        cap = self.config.display.split_max
+        if not cap or cap >= len(pairs) or cap < 1:
+            self._rot_index = 0
+            return pairs
+        pages = (len(pairs) + cap - 1) // cap
+        seconds = max(3.0, float(self.config.display.rotate_seconds or 12))
+        if time.monotonic() - self._rot_started >= seconds:
+            self._rot_index = (self._rot_index + 1) % pages
+            self._rot_started = time.monotonic()
+        page = self._rot_index % pages
+        return pairs[page * cap:(page + 1) * cap] or pairs[:cap]
 
     def _pending_update(self) -> dict:
         state, checked = self._update_state
@@ -672,7 +1189,7 @@ class Display:
         surface = self.screen
         pygame.draw.line(surface, self.pal.line,
                          (rect.left, rect.top), (rect.right, rect.top))
-        if (time.monotonic() - self._tap_flash < contract.TAP_FLASH_SECONDS
+        if (time.monotonic() - self._tap_flash < 0.35
                 and self._flash_rect.width):
             # Momentary highlight so a tap is visibly acknowledged, on
             # whichever control was actually hit.
@@ -690,20 +1207,18 @@ class Display:
             # Mono glyph ≈ 0.6em + 0.22em tracking; skip the notice when
             # it would run into the theme toggle (narrow/portrait screens
             # still surface updates in the web UI).
-            notice_w = int(len(notice) * px * L["footer_glyph_advance"])
-            x = when_rect.right + int(px * L["footer_update_gap"])
-            if x + notice_w < rect.right - int(px * L["qr_w_ratio"]):
+            notice_w = int(len(notice) * px * 0.85)
+            x = when_rect.right + int(px * 2.2)
+            if x + notice_w < rect.right - int(px * 10):
                 self.label(surface, notice, px, self.pal.high,
                            midleft=(x, rect.centery))
 
         # The mark sits in the middle of the footer, and gives way to
         # anything that has something to say: the update notice is
         # actionable, this is decoration.
-        mark_px = max(L["footer_mark_px_min"],
-                      int(px * L["footer_mark_px_ratio"]))
-        mark_size = int(mark_px * L["footer_mark_size_ratio"])
-        mark_w = (mark_size + int(mark_px * 0.6)
-                  + int(len("GLUCOCUBE") * mark_px * L["footer_glyph_advance"]))
+        mark_px = max(9, int(px * 0.92))
+        mark_size = int(mark_px * 1.35)
+        mark_w = mark_size + int(mark_px * 0.6) + int(len("GLUCOCUBE") * mark_px * 0.85)
         left_edge = rect.centerx - mark_w // 2
         controls_left = (self._qr_rect.left if self._qr_rect.width
                          else self._toggle_rect.left)
@@ -738,11 +1253,18 @@ class Display:
                          icon_c[1] + math.sin(angle) * icon_r)
                 pygame.draw.line(surface, color, inner, outer, 2)
         else:
-            # Moon: tapping goes back to dark mode.
-            pygame.draw.circle(surface, color, icon_c, icon_r * 0.8)
-            pygame.draw.circle(surface, self.pal.bg,
-                               (icon_c[0] + icon_r * 0.45,
-                                icon_c[1] - icon_r * 0.3), icon_r * 0.7)
+            # Moon: tapping goes back to dark mode. Carved on its own
+            # surface — pygame.draw writes alpha rather than blending, so
+            # the second circle punches a genuinely transparent bite and
+            # whatever sits behind the footer shows through it.
+            side = int(icon_r * 2) + 2
+            moon = pygame.Surface((side, side), pygame.SRCALPHA)
+            c = side // 2
+            pygame.draw.circle(moon, color, (c, c), icon_r * 0.8)
+            pygame.draw.circle(moon, (0, 0, 0, 0),
+                               (c + icon_r * 0.45, c - icon_r * 0.3),
+                               icon_r * 0.7)
+            surface.blit(moon, (icon_c[0] - c, icon_c[1] - c))
 
     # A miniature code, cell by cell: three finder squares and enough
     # data specks to read as a QR at fourteen pixels. Drawn rather than
@@ -766,8 +1288,7 @@ class Display:
                                       cell, cell))
         label = "SETTINGS"
         label_right = box.left - int(px * 0.8)
-        if (label_right - int(len(label) * px * L["footer_glyph_advance"])
-                >= self._qr_rect.left):
+        if label_right - int(len(label) * px * 0.85) >= self._qr_rect.left:
             self.label(surface, label, px, color,
                        midright=(label_right, rect.centery))
 
@@ -1026,14 +1547,24 @@ class Display:
         # filter client-to-client IPv4.
         ip_url = admin_url(ip, self.config.admin_port, "/setup")
         primary = mdns or ip_url
-        self.text(screen, "Scan from a phone on this network to set up",
-                  int(s * 0.045), self.pal.dim, midtop=(cx, int(h * 0.17)))
 
-        # The code carries the admin key so that scanning it opens setup
-        # outright. The address printed below deliberately does not: it
-        # is for typing, and the login for it is printed with it.
-        qr = (self._qr_surface(self._with_key(primary), int(s * 0.46))
-              if self.config.admin_port else None)
+        # A display that has asked GlucoCore to pair it shows that instead:
+        # scanning it needs no address, no password and nothing typed, and
+        # a phone that is already signed in finishes the job in one tap.
+        approve = pairing.public_state(self.store).get("approve_url") or ""
+        if approve:
+            self.text(screen, "Scan to add this display to GlucoCore",
+                      int(s * 0.045), self.pal.dim, midtop=(cx, int(h * 0.17)))
+        else:
+            self.text(screen, "Scan from a phone on this network to set up",
+                      int(s * 0.045), self.pal.dim, midtop=(cx, int(h * 0.17)))
+
+        # The setup code carries the admin key so that scanning it opens
+        # setup outright. The address printed below deliberately does not:
+        # it is for typing, and the login for it is printed with it.
+        target = approve or self._with_key(primary)
+        qr = (self._qr_surface(target, int(s * 0.46))
+              if approve or self.config.admin_port else None)
         if qr:
             rect = qr.get_rect(center=(cx, int(h * 0.52)))
             screen.blit(qr, rect)
@@ -1041,6 +1572,14 @@ class Display:
         else:
             info_y = int(h * 0.45)
 
+        if approve:
+            # Nothing under a GlucoCore code but the way in without one:
+            # the address of this display's own settings page.
+            self.text(screen, "or set it up at", int(s * 0.038),
+                      self.pal.faint, midtop=(cx, info_y))
+            self.text(screen, primary, int(s * 0.045), self.pal.dim,
+                      midtop=(cx, info_y + int(s * 0.05)))
+            return
         self.text(screen, primary, int(s * 0.05), self.pal.fg, midtop=(cx, info_y))
         line_y = info_y + int(s * 0.065)
         if mdns:
@@ -1054,6 +1593,32 @@ class Display:
                 int(s * 0.04), self.pal.dim, midtop=(cx, line_y),
             )
 
+    def _identify_left(self) -> float:
+        """Seconds this display should still be waving, if it was asked to."""
+        until = self.store.get_params(IDENTIFY_KEY).get("until") or 0
+        return max(0.0, (float(until) - time.time() * 1000) / 1000)
+
+    def draw_identify(self):
+        """Unmissable, and gone by itself.
+
+        The point is telling one display from another across a room, so it
+        flashes rather than merely captioning itself: a band that alternates
+        every half second reads as "this one" from the doorway.
+        """
+        screen = self.screen
+        w, h = screen.get_width(), screen.get_height()
+        s = min(w, h)
+        on = int(time.monotonic() * 2) % 2 == 0
+        band = pygame.Rect(0, 0, w, int(h * 0.22))
+        band.center = (w // 2, h // 2)
+        pygame.draw.rect(screen, self.pal.in_range if on else self.pal.bg,
+                         band)
+        pygame.draw.rect(screen, self.pal.in_range, band,
+                         width=max(2, int(s * 0.01)))
+        self.text(screen, "here!", int(s * 0.13),
+                  self.pal.bg if on else self.pal.in_range, kind="num",
+                  center=band.center)
+
     def draw(self):
         self._sync_theme()
         self.screen.fill(self.pal.bg)
@@ -1064,9 +1629,9 @@ class Display:
             self._toggle_rect = self._qr_rect = pygame.Rect(0, 0, 0, 0)
             self._qr_open_until = 0.0
             self.draw_hotspot_screen()
-            pygame.display.flip()
-            if self.fb:
-                self.fb.present(self.screen)
+            if self._identify_left():
+                self.draw_identify()
+            self._present()
             return
         users = self.config.users
         snaps = [self.store.snapshot(user.name) for user in users]
@@ -1074,40 +1639,61 @@ class Display:
             self._toggle_rect = self._qr_rect = pygame.Rect(0, 0, 0, 0)
             self._qr_open_until = 0.0
             self.draw_setup_screen()
-            pygame.display.flip()
-            if self.fb:
-                self.fb.present(self.screen)
+            if self._identify_left():
+                self.draw_identify()
+            self._present()
+            return
+        if self.config.display.layout == "rotate":
+            self.draw_ambient(users, snaps)
+            if self.qr_open():
+                self.draw_settings_qr()
+            if self._identify_left():
+                self.draw_identify()
+            self._present()
             return
         full_w = self.screen.get_width()
         full_h = self.screen.get_height()
         footer = self._footer_rect()
         self._qr_rect, self._toggle_rect = self._controls_for(footer)
         body_h = footer.top
-        portrait = full_h > full_w
-        for i, (user, snap) in enumerate(zip(users, snaps)):
+        shown = self._split_page(list(zip(users, snaps)))
+        dc = self.config.display
+        if dc.split_direction == "columns":
+            portrait = False
+        elif dc.split_direction == "rows":
+            portrait = True
+        else:
+            portrait = full_h > full_w
+        for i, (user, snap) in enumerate(shown):
             if portrait:
-                row_h = body_h // len(users)
+                row_h = body_h // len(shown)
                 rect = pygame.Rect(0, i * row_h, full_w, row_h)
                 if i > 0:
-                    inset = int(full_w * L["panel_divider_inset_portrait"])
                     pygame.draw.line(self.screen, self.pal.line,
-                                     (inset, rect.top),
-                                     (full_w - inset, rect.top))
+                                     (int(full_w * 0.03), rect.top),
+                                     (full_w - int(full_w * 0.03), rect.top))
             else:
-                col_w = full_w // len(users)
+                col_w = full_w // len(shown)
                 rect = pygame.Rect(i * col_w, 0, col_w, body_h)
                 if i > 0:
-                    pygame.draw.line(
-                        self.screen, self.pal.line,
-                        (rect.left,
-                         int(body_h * L["panel_divider_inset_landscape"])),
-                        (rect.left,
-                         body_h - int(
-                             body_h * L["panel_divider_inset_landscape_bottom"])))
+                    pygame.draw.line(self.screen, self.pal.line,
+                                     (rect.left, int(body_h * 0.05)),
+                                     (rect.left, body_h - int(body_h * 0.03)))
             self.draw_panel(rect, user, snap)
         self.draw_footer(footer)
         if self.qr_open():
             self.draw_settings_qr()
+        if self._identify_left():
+            self.draw_identify()
+        self._present()
+
+    def _present(self) -> None:
+        """Put the frame on the panel.
+
+        One place, because there are now four ways out of draw() and the
+        fbdev copy is the half that is invisible in tests — the dummy
+        driver makes flip() alone look like it worked.
+        """
         pygame.display.flip()
         if self.fb:
             self.fb.present(self.screen)
@@ -1150,6 +1736,11 @@ class Display:
                 except queue.Empty:
                     break
             self.draw()
+            # Once a frame, and free when the answer has not changed. The
+            # hour is read here rather than cached so that a device left
+            # running dims when the evening arrives, not at the next boot.
+            backlight.apply(self.config.display,
+                            time.localtime().tm_hour)
             if time.time() - last_snapshot >= 5:
                 self.save_snapshot()
                 last_snapshot = time.time()
@@ -1164,6 +1755,20 @@ class Display:
                 # Redraw promptly when the overlay's welcome runs out.
                 timeout = min(timeout,
                               max(0.05, self._qr_open_until - time.monotonic()))
+            identify_left = self._identify_left()
+            if identify_left:
+                # A flash at one frame a second is not a flash. Also brings
+                # the frame that clears it forward to when it runs out.
+                timeout = min(timeout, 0.25, identify_left + 0.02)
+            # Without these two the rotation lands up to a second late and
+            # the revealed footer overstays by the same, because the loop
+            # is otherwise asleep for a whole second at a time.
+            rotate_left = self._ambient_seconds_left()
+            if rotate_left:
+                timeout = min(timeout, rotate_left + 0.02)
+            controls_left = self._controls_until - time.monotonic()
+            if controls_left > 0:
+                timeout = min(timeout, controls_left + 0.02)
             self._wake.wait(timeout)
         self._stop_touch()
         pygame.quit()

@@ -13,11 +13,12 @@ leaves the device exactly as it was.
 
 import json
 import logging
+import socket
 import time
 from urllib.parse import parse_qs, urlparse
 
 from . import config as config_mod
-from . import glucocore, network, ui, verify
+from . import glucocore, network, sync, ui, units, verify
 
 log = logging.getLogger("glucocube.onboarding")
 
@@ -25,23 +26,12 @@ SETUP_KEY = "__setup"
 DRAFT_VERSION = 1
 STARTER_NAMES = {"Person A", "Person B"}
 
-SOURCE_CARDS = (
-    ("push", "Trio, or another uploader",
-     "The pump app sends readings straight to this device"),
-    ("tidepool", "twiist",
-     "Pulled from the wearer's Tidepool account"),
-    ("nightscout", "A Nightscout site",
-     "Pulled from an existing cloud Nightscout"),
-)
-
 TITLES = {
     "welcome": "Welcome",
     "wifi": "Wi-Fi",
     "timezone": "Where is it?",
-    "account": "GlucoCore account",
-    "verify_email": "Check your email",
-    "device_name": "Name this display",
-    "patients": "Who to show",
+    "pair": "Pair with GlucoCore",
+    "people": "Who to show",
     "thresholds": "Ranges",
     "password": "Password for this page",
     "review": "Ready",
@@ -86,10 +76,9 @@ def seed_draft(config_path: str) -> dict:
         "started_at": _now_ms(),
         "done": [],
         "wifi": {},
-        "account": {},
         "device_name": "",
-        "patient_ids": [],
-        "patient_names": {},
+        "pairing": {},
+        "signin": {},
         "display": display,
         "admin_password": "",
         "admin_password_off": False,
@@ -113,11 +102,9 @@ def steps_for(draft: dict) -> list[str]:
     if wifi_needed(draft):
         steps.append("wifi")
     steps.append("timezone")
-    steps.append("account")
-    if draft.get("account", {}).get("pending_verification"):
-        steps.append("verify_email")
-    steps.append("device_name")
-    steps.append("patients")
+    steps.append("pair")
+    if (draft.get("signin") or {}).get("token"):
+        steps.append("people")
     steps += ["thresholds", "password", "review"]
     return steps
 
@@ -139,8 +126,7 @@ def next_step(draft: dict, step: str) -> str:
 
 
 def path_for(step: str) -> str:
-    kind, _, index = step.partition(":")
-    return f"/setup/{kind}" + (f"?i={index}" if index else "")
+    return f"/setup/{step}"
 
 
 def mark_done(draft: dict, step: str) -> None:
@@ -185,7 +171,7 @@ def _progress(draft: dict, step: str) -> str:
 def _shell(draft: dict, step: str, heading: str, body: str, *,
            script: str = "") -> str:
     return ui.page(
-        f"GlucoCube setup — {TITLES.get(step.partition(':')[0], 'Setup')}",
+        f"GlucoCube setup — {TITLES.get(step, 'Setup')}",
         f"{_progress(draft, step)}<h1>{ui.esc(heading)}</h1>{body}",
         script=script,
     )
@@ -199,13 +185,6 @@ def _actions(primary: str, *, back: str = "", extra: str = "",
     return (f'<div class="actions stick">{back_html}'
             f'<button type="submit">{ui.esc(primary)}</button>'
             f'{extra}{note_html}</div>')
-
-
-def _person_label(draft: dict, index: int) -> str:
-    people = draft.get("people") or []
-    if 0 <= index < len(people) and people[index].get("name"):
-        return people[index]["name"]
-    return f"Person {index + 1}"
 
 
 TIMEZONE_SCRIPT = """<script>
@@ -311,27 +290,11 @@ setInterval(async () => {
 </script>"""
 
 
+RENDERERS = {}          # filled in below, once each renderer exists
+
+
 def render(handler, draft: dict, step: str, *, banner: str = "") -> str:
-    kind, _, _raw_index = step.partition(":")
-    if kind == "welcome":
-        return _render_welcome(handler, draft, step, banner)
-    if kind == "wifi":
-        return _render_wifi(handler, draft, step, banner)
-    if kind == "timezone":
-        return _render_timezone(handler, draft, step, banner)
-    if kind == "account":
-        return _render_account(handler, draft, step, banner)
-    if kind == "verify_email":
-        return _render_verify_email(handler, draft, step, banner)
-    if kind == "device_name":
-        return _render_device_name(handler, draft, step, banner)
-    if kind == "patients":
-        return _render_patients(handler, draft, step, banner)
-    if kind == "thresholds":
-        return _render_thresholds(handler, draft, step, banner)
-    if kind == "password":
-        return _render_password(handler, draft, step, banner)
-    return _render_review(handler, draft, step, banner)
+    return RENDERERS.get(step, _render_review)(handler, draft, step, banner)
 
 
 def _render_welcome(handler, draft, step, banner) -> str:
@@ -344,7 +307,8 @@ minutes.</p>
 <h2>You will need</h2>
 <ul>
   <li>Your Wi-Fi password, if the device is not on a network yet.</li>
-  <li>A GlucoCore account — sign in or create one during setup.</li>
+  <li>A pairing code from GlucoCore — open <b>Devices</b> there, add this
+      display and choose who it shows.</li>
 </ul>
 <form method="POST" action="/setup/welcome">
   {_actions("Start")}
@@ -373,8 +337,9 @@ def _render_wifi(draft_handler, draft, step, banner) -> str:
 <p class="lede">Pick your home network so the device can reach the internet.</p>
 <form method="POST" action="/setup/wifi">
   {ui.network_picker(networks, selected=wifi.get("attempted_ssid", ""))}
-  {ui.row("Password", ui.password_input("wifi_password", "",
-          input_id="wifi_password"), inline=False, for_id="wifi_password")}
+  <div data-wifi-password>{ui.row("Password",
+      ui.password_input("wifi_password", "", input_id="wifi_password"),
+      inline=False, for_id="wifi_password")}</div>
   <p class="note">{hint}</p>
   {_actions("Join this network")}
 </form>
@@ -389,14 +354,13 @@ def _render_timezone(handler, draft, step, banner) -> str:
 
     current = (draft.get("display") or {}).get(
         "timezone", handler.server.config.display.timezone)
+    # Hidden until the script fills in the zone it detected — on the card
+    # itself, not the label inside it, or an empty box is left behind.
     phone_card = ui.option_card(
         "tzmode", "phone", "Use this phone's setting", "",
         controls="tzmode",
-        trail='<span class="sub" id="tzphonename"></span>')
-    # Hidden until the script fills in the zone it detected.
-    phone_card = phone_card.replace('<label class="opt"',
-                                    '<label class="opt" id="tzphone"'
-                                    ' data-needs-js hidden', 1)
+        trail='<span class="sub" id="tzphonename"></span>',
+        wrap_extra='id="tzphone" data-needs-js hidden')
     list_card = ui.option_card("tzmode", "list", "Choose from a list", "",
                                checked=True, controls="tzmode")
     picker = ui.group(
@@ -418,101 +382,179 @@ straight off the image has no time zone set, and reads UTC.</p>
     return _shell(draft, step, "Where is it?", body, script=TIMEZONE_SCRIPT)
 
 
-def _render_account(handler, draft, step, banner) -> str:
-    account = draft.get("account") or {}
-    body = f"""{banner}
-<p class="lede">Sign in to GlucoCore, or create an account. Your password is
-used once — the device keeps a read-only token instead.</p>
-<form method="POST" action="/setup/account">
-  <label>Full name (optional, for new accounts)</label>
-  <input name="name" type="text" value="{ui.esc(account.get('name', ''))}"
-         autocomplete="name">
-  <label>Email</label>
-  <input name="email" type="email" required autocomplete="username"
-         value="{ui.esc(account.get('email', ''))}">
-  <label>Password</label>
-  <input name="password" type="password" required autocomplete="current-password">
-  <input type="hidden" name="mode" value="login" id="acct_mode">
-  <div class="actions stick">
-    <button type="submit" onclick="document.getElementById('acct_mode').value='login'">
-      Sign in</button>
-    <button type="submit" class="secondary"
-            onclick="document.getElementById('acct_mode').value='signup'">
-      Create account</button>
-  </div>
-</form>"""
-    return _shell(draft, step, "Your GlucoCore account", body)
+PAIRING_SCRIPT = """<script>
+// Somebody may be approving this display on their phone right now. When
+// they do, the display pairs itself and restarts under this page; asking
+// keeps the wizard moving rather than leaving it on a screen whose
+// question has already been answered.
+(function(){
+  var waiting = document.getElementById('pairwait');
+  if (!waiting) return;
+  var tick = async function(){
+    try {
+      var response = await fetch('/api/pairing.json', {cache: 'no-store'});
+      if ((await response.json()).paired) { location.replace('/setup'); return; }
+    } catch (err) {
+      // The restart pairing causes looks exactly like this. Keep asking.
+    }
+    setTimeout(tick, 3000);
+  };
+  setTimeout(tick, 3000);
+})();
+</script>"""
+
+PAIR_CARDS = (
+    ("qr", "Scan it with your phone",
+     "Approve this display in GlucoCore — nothing to type"),
+    ("signin", "Sign in here",
+     "Your GlucoCore email and password, used once"),
+    ("code", "Type a pairing code",
+     "Six digits, from Devices in GlucoCore"),
+)
 
 
-def _render_verify_email(handler, draft, step, banner) -> str:
-    email = (draft.get("account") or {}).get("email", "")
-    body = f"""{banner}
-<p class="lede">We sent a six-digit code to <b>{ui.esc(email)}</b>. Enter it
-in your email app, then tap continue here once your account is ready.</p>
-<form method="POST" action="/setup/verify_email">
-  {_actions("I've verified — continue")}
-</form>
-<p class="note">If you already have an account, try signing in instead from
-the previous step.</p>"""
-    return _shell(draft, step, "Check your email", body)
+def _render_pair(handler, draft, step, banner) -> str:
+    from . import pairing
 
-
-def _render_device_name(handler, draft, step, banner) -> str:
+    host = glucocore.GLUCOCORE_BASE.split("//")[-1]
     name = draft.get("device_name") or ""
-    body = f"""{banner}
-<p class="lede">How this display appears in GlucoCore — e.g. Kitchen, Grace's room.</p>
-<form method="POST" action="/setup/device_name">
-  <label>Display name</label>
-  <input name="device_name" type="text" required placeholder="Kitchen display"
-         value="{ui.esc(name)}">
-  {_actions("Continue")}
+    chosen = "qr"
+    approve = pairing.public_state(handler.server.store).get("approve_url")
+    qr = (f"""{ui.qr_svg(approve, alt="Approve this display in GlucoCore")}
+<p class="note">Scan it with a phone signed in to GlucoCore, choose who this
+display shows, and approve. This page carries on by itself.</p>
+<div class="banner info" id="pairwait">Waiting to be approved&hellip;</div>"""
+          if approve else
+          ui.banner("warn", "This display has not been able to ask GlucoCore "
+                            "for a code yet. It keeps trying — or use one of "
+                            "the other two ways."))
+    signin = f"""<form method="POST" action="/setup/pair">
+  <input type="hidden" name="how" value="signin">
+  {ui.row("Email", ui.text_input("email", "", kind="email", input_id="email",
+                                 extra='autocapitalize="none" autocorrect="off"'
+                                       ' spellcheck="false"'
+                                       ' autocomplete="username"'),
+          inline=False, for_id="email")}
+  {ui.row("Password", ui.password_input("password", "", input_id="password"),
+          inline=False, for_id="password",
+          hint="Used once, to create this display in GlucoCore.")}
+  {_actions("Sign in")}
 </form>"""
-    return _shell(draft, step, "Name this display", body)
-
-
-def _render_patients(handler, draft, step, banner) -> str:
-    patients = draft.get("available_patients") or []
-    selected = set(draft.get("patient_ids") or [])
-    if not patients:
-        body = f"""{banner}
-<p class="lede">No patients are visible yet. Go back and sign in again once
-your account is ready.</p>
-<p><a class="btn secondary" href="/setup/account">Back to sign in</a></p>"""
-        return _shell(draft, step, "Who to show", body)
-    boxes = []
-    for patient in patients:
-        pid = patient.get("userId") or patient.get("userid") or ""
-        label = patient.get("name") or patient.get("email") or pid
-        checked = " checked" if pid in selected else ""
-        boxes.append(
-            f'<label style="display:block;margin:8px 0">'
-            f'<input type="checkbox" name="patient_ids" value="{ui.esc(pid)}"'
-            f'{checked}> {ui.esc(label)}</label>'
-        )
+    code = f"""<form method="POST" action="/setup/pair">
+  <input type="hidden" name="how" value="code">
+  {ui.row("Pairing code",
+          ui.text_input("code", "", placeholder="123456", input_id="code",
+                        extra='inputmode="numeric" autocomplete="one-time-code"'
+                              ' pattern="[0-9 ]*" maxlength="9"'
+                              ' autocapitalize="off" spellcheck="false"'),
+          inline=False, for_id="code",
+          hint="In GlucoCore, open Devices and create one. It lasts ten"
+               " minutes and works once.")}
+  {ui.row("Name this display",
+          ui.text_input("device_name", name, placeholder="Kitchen display",
+                        input_id="device_name"),
+          inline=False, for_id="device_name",
+          hint="Optional — blank keeps the name you gave it in GlucoCore.")}
+  {_actions("Pair this display")}
+</form>"""
     body = f"""{banner}
-<p class="lede">Choose whose glucose appears on this display. You can change
-this later from GlucoCore.</p>
-<form method="POST" action="/setup/patients">
-  {''.join(boxes)}
-  {_actions("Continue")}
+<p class="lede">This display shows the people a GlucoCore account says it
+may. Three ways to say so — they end in the same place.</p>
+{ui.choice_cards("how", PAIR_CARDS, chosen, controls="how")}
+{ui.group("how", "qr", qr, current=chosen)}
+{ui.group("how", "signin", signin, current=chosen)}
+{ui.group("how", "code", code, current=chosen)}
+<p class="note">No account yet? Create one at <b>{ui.esc(host)}</b> on your
+phone, then come back.</p>"""
+    return _shell(draft, step, "Pair with GlucoCore", body,
+                  script=PAIRING_SCRIPT)
+
+
+def _render_people(handler, draft, step, banner) -> str:
+    signin = draft.get("signin") or {}
+    patients = signin.get("patients") or []
+    boxes = "".join(
+        ui.checkbox("patient_ids",
+                    str(patient.get("name") or patient.get("email")
+                        or _patient_id(patient)),
+                    True, value=_patient_id(patient))
+        for patient in patients if _patient_id(patient)
+    )
+    if not boxes:
+        boxes = ('<p class="note">This account cannot see anyone yet. Add a '
+                 "patient in GlucoCore, then sign in again.</p>")
+    body = f"""{banner}
+<p class="lede">Signed in as <b>{ui.esc(signin.get('email', ''))}</b>. Choose
+whose glucose this display pulls from GlucoCore.</p>
+<form method="POST" action="/setup/people">
+  {ui.row("Name this display",
+          ui.text_input("device_name", draft.get("device_name") or "",
+                        placeholder="Kitchen display", input_id="device_name"),
+          inline=False, for_id="device_name")}
+  <label class="lbl">Who to show</label>
+  {boxes}
+  {_actions("Pair this display")}
 </form>"""
     return _shell(draft, step, "Who to show", body)
 
 
+def _patient_id(patient: dict) -> str:
+    return str(patient.get("userId") or patient.get("userid") or "")
+
+
+def _remember_pairing(draft: dict, answer: dict, device_name: str) -> bool:
+    """Keep what a pairing returned, so the commit can write it down."""
+    device = answer.get("device") or {}
+    remote = device.get("config") or {}
+    if not (remote.get("patientIds") or []):
+        return False
+    draft["device_name"] = device.get("name") or device_name
+    draft["pairing"] = {
+        "device_id": device.get("id") or "",
+        "device_token": answer.get("deviceToken") or "",
+        "hardware_id": network.hardware_id(),
+        "config": remote,
+    }
+    # The bands GlucoCore holds for this display are the answer to the next
+    # step's question, so it is asked with them already filled in.
+    draft["display"] = sync.display_from_remote(draft.get("display") or {},
+                                                remote)
+    return bool(draft["pairing"]["device_token"])
+
+
+UNIT_CARDS = (
+    ("mg/dL", "mg/dL", "What the United States reads"),
+    ("mmol/L", "mmol/L", "What most of the rest of the world reads"),
+)
+
+
 def _render_thresholds(handler, draft, step, banner) -> str:
     display = draft.get("display") or {}
-    value = lambda key, default: display.get(key, default)
+    shown_in = units.normalize(display.get("units"))
+    step_by = units.step(shown_in)
+
+    def field(key, default):
+        value = display.get(key)
+        return ui.text_input(
+            key, units.fmt_field(default if value in (None, "") else value,
+                                 shown_in),
+            kind="number", extra=f'step="{step_by}"')
+
     body = f"""{banner}
 <p class="lede">Readings are coloured against these. The defaults suit most
 people — you can change them per person later.</p>
 <form method="POST" action="/setup/thresholds">
+  <label class="lbl">Read in</label>
+  {ui.choice_cards("units", UNIT_CARDS, shown_in)}
+  <input type="hidden" name="typed_units" value="{ui.esc(shown_in)}">
+  <p class="note">The boxes below are in {ui.esc(shown_in)}. Switching
+  converts them rather than reinterpreting them, so pick the unit first if
+  you are going to.</p>
   {ui.row("In range", '<div class="pair">'
-          + ui.text_input("low", value("low", 70), kind="number")
-          + ui.text_input("high", value("high", 180), kind="number")
-          + "</div>", inline=False, hint="low and high, mg/dL")}
+          + field("low", 70) + field("high", 180)
+          + "</div>", inline=False, hint="low and high")}
   {ui.row("Urgent", '<div class="pair">'
-          + ui.text_input("urgent_low", value("urgent_low", 55), kind="number")
-          + ui.text_input("urgent_high", value("urgent_high", 250), kind="number")
+          + field("urgent_low", 55) + field("urgent_high", 250)
           + "</div>", inline=False,
           hint="below and above these, the panel turns red")}
   {_actions("Continue")}
@@ -561,10 +603,11 @@ The username is <b>admin</b>.</p>
 
 
 def _render_review(handler, draft, step, banner) -> str:
-    names = draft.get("patient_names") or {}
+    remote = (draft.get("pairing") or {}).get("config") or {}
     patient_rows = "".join(
-        f"<tr><td>{ui.esc(names.get(pid, pid))}</td><td>GlucoCore</td></tr>"
-        for pid in (draft.get("patient_ids") or [])
+        f"<tr><td>{ui.esc(sync.patient_label(remote, pid))}</td>"
+        "<td>GlucoCore</td></tr>"
+        for pid in (remote.get("patientIds") or [])
     )
     display = draft.get("display") or {}
     if (draft.get("admin_password") or "").strip():
@@ -575,12 +618,12 @@ def _render_review(handler, draft, step, banner) -> str:
     else:
         access = "no password — open to this network"
     body = f"""{banner}
-<p class="lede">That is everything. Saving pairs this display with GlucoCore
-and restarts it.</p>
+<p class="lede">That is everything. This display is paired already — saving
+writes it down and restarts on the new settings.</p>
 <div class="tablewrap"><table><tbody>
 <tr><td>Display</td><td>{ui.esc(draft.get('device_name', ''))}</td></tr>
 {patient_rows}
-<tr><td>In range</td><td>{display.get('low', 70):g}&ndash;{display.get('high', 180):g} mg/dL</td></tr>
+<tr><td>In range</td><td>{units.fmt_field(display.get('low', 70), display.get('units'))}&ndash;{units.fmt_field(display.get('high', 180), display.get('units'))} {ui.esc(units.normalize(display.get('units')))}</td></tr>
 <tr><td>Settings page</td><td>{ui.esc(access)}</td></tr>
 </tbody></table></div>
 <form method="POST" action="/setup/review">
@@ -608,6 +651,18 @@ def _render_done(handler, draft) -> str:
                    f"<h1>All set</h1>{body}", script=DONE_SCRIPT)
 
 
+RENDERERS.update({
+    "welcome": _render_welcome,
+    "wifi": _render_wifi,
+    "timezone": _render_timezone,
+    "pair": _render_pair,
+    "people": _render_people,
+    "thresholds": _render_thresholds,
+    "password": _render_password,
+    "review": _render_review,
+})
+
+
 # ------------------------------------------------------------ routing ----
 
 def handles(path: str) -> bool:
@@ -629,16 +684,13 @@ def _query(path: str) -> dict:
     return {k: v[0] for k, v in parse_qs(urlparse(path).query).items()}
 
 
-def _index(handler, draft: dict) -> int:
-    try:
-        return max(0, min(int(_query(handler.path).get("i", "0")),
-                          len(draft.get("people") or []) - 1))
-    except ValueError:
-        return 0
-
-
 def _redirect(handler, target: str) -> None:
     handler._send(b"", "text/html", 303, {"Location": target})
+
+
+def _paired_already(handler) -> bool:
+    gc = handler.server.config.glucocore
+    return bool(gc and gc.device_token)
 
 
 def _already_configured(handler) -> bool:
@@ -679,8 +731,17 @@ def do_get(handler, path: str) -> None:
         draft = seed_draft(handler.server.config_path)
         save_draft(store, draft)
     step = path[len("/setup/"):]
-    if step not in ("welcome", "wifi", "timezone", "account", "verify_email",
-                    "device_name", "patients", "thresholds", "password", "review"):
+    if step == "pair" and _paired_already(handler):
+        # Somebody scanned the code on the wall while this page was open.
+        # That is this step being answered, not something to recover from.
+        mark_done(draft, "pair")
+        draft["signin"] = {}
+        save_draft(store, draft)
+        _redirect(handler, path_for(next_step(draft, "pair")))
+        return
+    if step not in RENDERERS:
+        # A stale bookmark or a typed URL. One list of steps, so a new one
+        # cannot be reachable in the wizard but a 303 from the address bar.
         _redirect(handler, "/setup")
         return
     handler._send(render(handler, draft, step).encode(),
@@ -701,9 +762,6 @@ def do_post(handler, path: str, form: dict) -> None:
     if step == "wifi/rescan":
         network.refresh_scan_async(force=True)
         _redirect(handler, "/setup/wifi")
-        return
-    if step == "verify":
-        _do_verify(handler, draft, form)
         return
     if step == "review":
         _commit(handler, draft)
@@ -735,103 +793,93 @@ def do_post(handler, path: str, form: dict) -> None:
     elif step == "wifi":
         _start_join(handler, draft, form)
         return
-    elif step == "account":
-        email = (form.get("email") or "").strip()
-        password = form.get("password") or ""
-        name = (form.get("name") or "").strip()
-        mode = form.get("mode") or "login"
-        draft["account"] = {"email": email, "name": name}
-        if mode == "signup":
-            draft["account"]["password"] = password
-            try:
-                glucocore.signup(email, password, name)
-                draft["account"]["pending_verification"] = True
-                mark_done(draft, "account")
-            except Exception as exc:  # noqa: BLE001
-                handler._send(render(handler, draft, "account", banner=ui.banner(
-                    "err", f"Could not start signup: {ui.esc(exc)}")).encode(),
-                    "text/html; charset=utf-8", 400)
+    elif step == "pair":
+        how = form.get("how") or "code"
+        if how == "signin":
+            result, session = verify.glucocore_session(
+                form.get("email") or "", form.get("password") or "")
+            if not result.ok or not session.get("token"):
+                handler._send(render(handler, draft, "pair",
+                                     banner=ui.failure(result.message,
+                                                       result.detail)).encode(),
+                              "text/html; charset=utf-8", 400)
                 return
-        else:
-            result = verify.glucocore_login(email, password)
-            if not result.ok:
-                handler._send(render(handler, draft, "account", banner=ui.banner(
-                    "err", result.message)).encode(),
-                    "text/html; charset=utf-8", 400)
-                return
-            try:
-                token, userid = glucocore.login(email, password)
-            except Exception as exc:  # noqa: BLE001
-                handler._send(render(handler, draft, "account", banner=ui.banner(
-                    "err", str(exc))).encode(), "text/html; charset=utf-8", 400)
-                return
-            draft["account"].update({
-                "session_token": token,
-                "user_id": userid,
-                "pending_verification": False,
-            })
-            draft["available_patients"] = glucocore.list_patients(token, userid)
-            mark_done(draft, "account")
-            draft["done"] = [d for d in draft.get("done", []) if d != "verify_email"]
-    elif step == "verify_email":
-        account = draft.get("account") or {}
-        email = account.get("email", "")
-        password = account.get("password") or ""
-        if not password:
-            handler._send(render(handler, draft, "verify_email", banner=ui.banner(
-                "warn", "Sign in again from the account step after verifying your email.")).encode(),
-                "text/html; charset=utf-8", 200)
-            draft["done"] = [d for d in draft.get("done", []) if d != "account"]
+            draft["signin"] = {
+                "token": session["token"],
+                "email": (form.get("email") or "").strip(),
+                "patients": session.get("patients") or [],
+            }
+            # Not done yet: who to show is the next question, and the step
+            # after it is what pairs.
             save_draft(store, draft)
-            _redirect(handler, "/setup/account")
+            _redirect(handler, "/setup/people")
             return
-        result = verify.glucocore_login(email, password)
+        # A code, typed here. The claim is the only step that cannot be
+        # undone by going back — a code is spent once — so what it returns
+        # is kept in the draft and the commit reads it rather than
+        # redeeming a second time at the end.
+        device_name = (form.get("device_name") or "").strip()
+        result, claimed = verify.glucocore_claim(
+            form.get("code") or "", network.hardware_id(), device_name)
         if not result.ok:
-            handler._send(render(handler, draft, "verify_email", banner=ui.banner(
-                "err", result.message)).encode(), "text/html; charset=utf-8", 400)
+            handler._send(render(handler, draft, "pair",
+                                 banner=ui.failure(result.message,
+                                                   result.detail)).encode(),
+                          "text/html; charset=utf-8", 400)
             return
-        token, userid = glucocore.login(email, password)
-        draft["account"].update({
-            "session_token": token,
-            "user_id": userid,
-            "pending_verification": False,
-        })
-        draft["account"].pop("password", None)
-        draft["available_patients"] = glucocore.list_patients(token, userid)
-        mark_done(draft, "verify_email")
-        mark_done(draft, "account")
-    elif step == "device_name":
-        name = (form.get("device_name") or "").strip()
-        if not name:
-            handler._send(render(handler, draft, "device_name", banner=ui.banner(
-                "err", "Enter a name for this display.")).encode(),
+        if not _remember_pairing(draft, claimed, device_name):
+            handler._send(render(handler, draft, "pair", banner=ui.banner(
+                "err", "That pairing has nobody on it yet. Choose who this "
+                       "display shows in GlucoCore, then pair again.")).encode(),
                 "text/html; charset=utf-8", 400)
             return
-        draft["device_name"] = name
-        mark_done(draft, "device_name")
-    elif step == "patients":
+        mark_done(draft, "pair")
+    elif step == "people":
+        signin = draft.get("signin") or {}
+        known = {_patient_id(patient) for patient in signin.get("patients") or []}
+        known.discard("")
         selected = form.get("patient_ids", [])
         if isinstance(selected, str):
             selected = [selected]
-        if not selected:
-            handler._send(render(handler, draft, "patients", banner=ui.banner(
+        # Only ids this account was actually shown: a hand-edited form must
+        # not pair a display to somebody else's data.
+        patient_ids = [pid for pid in selected if pid in known]
+        if not patient_ids:
+            handler._send(render(handler, draft, "people", banner=ui.banner(
                 "err", "Choose at least one person.")).encode(),
                 "text/html; charset=utf-8", 400)
             return
-        names = {}
-        for patient in draft.get("available_patients") or []:
-            pid = patient.get("userId") or patient.get("userid") or ""
-            names[pid] = patient.get("name") or patient.get("email") or pid
-        draft["patient_ids"] = selected
-        draft["patient_names"] = {pid: names.get(pid, pid) for pid in selected}
-        mark_done(draft, "patients")
+        name = ((form.get("device_name") or "").strip()
+                or socket.gethostname().split(".")[0])
+        result, registered = verify.glucocore_register(
+            signin["token"], name, network.hardware_id(), patient_ids,
+            display=draft.get("display") or {})
+        if not result.ok:
+            handler._send(render(handler, draft, "people",
+                                 banner=ui.failure(result.message,
+                                                   result.detail)).encode(),
+                          "text/html; charset=utf-8", 502)
+            return
+        _remember_pairing(draft, registered, name)
+        # The session has done its one job. What the device keeps is its
+        # own token, and the draft must not carry an account credential
+        # any further than this.
+        draft["signin"] = {}
+        mark_done(draft, "people")
+        mark_done(draft, "pair")
     elif step == "thresholds":
         display = dict(draft.get("display") or {})
+        # The boxes hold what the page was rendered in; the cards say what
+        # to read in from here on. Reading the boxes in the newly chosen
+        # unit would move the thresholds instead of converting them.
+        typed_in = units.normalize(form.get("typed_units")
+                                   or display.get("units"))
+        display["units"] = units.normalize(form.get("units") or typed_in)
         for key in ("low", "high", "urgent_low", "urgent_high"):
             value = (form.get(key) or "").strip()
             if value:
                 try:
-                    display[key] = float(value)
+                    display[key] = units.from_display(float(value), typed_in)
                 except ValueError:
                     pass
         draft["display"] = display
@@ -865,58 +913,7 @@ def do_post(handler, path: str, form: dict) -> None:
         return
 
     save_draft(store, draft)
-    _redirect(handler, path_for(next_step(draft, _step_key(handler, step, draft))))
-
-
-def _step_key(handler, step: str, draft: dict) -> str:
-    if step in ("source", "creds"):
-        return f"{step}:{_index(handler, draft)}"
-    return step
-
-
-def _source_from_form(existing: dict, form: dict) -> dict | None:
-    kind = existing.get("type") or "push"
-    if kind == "push":
-        return None
-    if kind == "tidepool":
-        return {"type": "tidepool",
-                "email": (form.get("email") or "").strip(),
-                "password": form.get("password") or "",
-                "poll_seconds": existing.get("poll_seconds", 60)}
-    url = (form.get("url") or "").strip()
-    if url and not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    return {"type": "nightscout", "url": url,
-            "api_secret": (form.get("api_secret") or "").strip(),
-            "poll_seconds": existing.get("poll_seconds", 60)}
-
-
-def _missing_credentials(source) -> str:
-    if not source:
-        return ""
-    if source["type"] == "tidepool" and not (source.get("email")
-                                             and source.get("password")):
-        return "Both the Tidepool email and password are needed."
-    if source["type"] == "nightscout" and not source.get("url"):
-        return "The Nightscout site address is needed."
-    return ""
-
-
-def _do_verify(handler, draft, form: dict) -> None:
-    index = _index(handler, draft)
-    person = draft["people"][index]
-    source = _source_from_form(person.get("source") or {}, form)
-    person["source"] = source
-    result = verify.source(source or {"type": "push"})
-    person["verified"] = bool(result.ok)
-    save_draft(handler.server.store, draft)
-    if "application/json" in (handler.headers.get("Accept") or ""):
-        handler._send(json.dumps(result.as_dict()).encode(), "application/json")
-        return
-    handler._send(render(handler, draft, f"creds:{index}",
-                         banner=ui.banner("ok" if result.ok else "err",
-                                          ui.esc(result.message))).encode(),
-                  "text/html; charset=utf-8")
+    _redirect(handler, path_for(next_step(draft, step)))
 
 
 def _start_join(handler, draft, form: dict) -> None:
@@ -954,106 +951,64 @@ def _start_join(handler, draft, form: dict) -> None:
     handler._send(handler._joining_page(ssid), "text/html; charset=utf-8")
 
 
-def users_from_draft(draft: dict, reserved) -> list[dict]:
-    users = []
-    for person in draft.get("people") or []:
-        source = person.get("source") or None
-        user = {
-            "name": person["name"],
-            "port": person.get("port"),
-            "api_secret": person.get("api_secret")
-                          or config_mod.readable_secret(16),
-        }
-        if person.get("thresholds"):
-            user["thresholds"] = person["thresholds"]
-        if source:
-            user["source"] = source
-        users.append(user)
-    config_mod.assign_ports(users, reserved=reserved)
-    return users
+def keep_local_users(users: list[dict]) -> list[dict]:
+    """Everyone a GlucoCore pairing does not replace.
+
+    People fed by an uploader, Tidepool or a Nightscout site are none of
+    GlucoCore's business and stay exactly as they are — pairing adds to a
+    display rather than clearing it. The two placeholders a fresh image
+    ships with are not people at all: if nobody has touched them they go,
+    rather than leaving two empty panels beside the real ones.
+    """
+    kept = []
+    for user in users:
+        if (user.get("source") or {}).get("type") == "glucocore":
+            continue
+        if user.get("name") in STARTER_NAMES and not user.get("source"):
+            continue
+        kept.append(user)
+    return kept
 
 
 def _commit(handler, draft: dict) -> None:
-    """Write config.json and register with GlucoCore."""
+    """Write config.json for the pairing the code already earned."""
     from .webadmin import restart_soon
 
     store = handler.server.store
-    account = draft.get("account") or {}
-    token = account.get("session_token")
-    patient_ids = draft.get("patient_ids") or []
-    device_name = (draft.get("device_name") or "").strip()
+    paired = draft.get("pairing") or {}
 
-    if not token or not patient_ids or not device_name:
+    if not paired.get("device_token") and not _paired_already(handler):
         handler._send(render(handler, draft, "review", banner=ui.banner(
-            "err", "Missing account, patients, or device name — go back and "
-                   "complete each step.")).encode(),
+            "err", "This display is not paired yet — go back and pair it "
+                   "with GlucoCore.")).encode(),
             "text/html; charset=utf-8", 400)
         return
+    if paired.get("device_token"):
+        # Paired on one of this wizard's own screens. The device it earned
+        # goes in now, through the one function all three ways share.
+        try:
+            sync.write_pairing(
+                handler.server.config_path,
+                {"id": paired.get("device_id", ""),
+                 "name": draft.get("device_name") or "",
+                 "config": paired.get("config") or {}},
+                paired["device_token"], paired.get("hardware_id", ""),
+                admin_port=handler.server.config.admin_port, store=store)
+        except Exception as exc:  # noqa: BLE001
+            handler._send(render(handler, draft, "review", banner=ui.banner(
+                "err", f"Could not save: {ui.esc(exc)}")).encode(),
+                "text/html; charset=utf-8", 500)
+            return
+    # Otherwise the display paired itself while this was open — somebody
+    # scanned it — and config.json already says so.
 
-    display = draft.get("display") or {}
-    remote_config = {
-        "version": 1,
-        "patientIds": patient_ids,
-        "display": {
-            "timezone": display.get("timezone", ""),
-            "units": "mg/dL",
-            "low": display.get("low", 70),
-            "high": display.get("high", 180),
-            "urgent_low": display.get("urgent_low", 55),
-            "urgent_high": display.get("urgent_high", 250),
-            "stale_minutes": display.get("stale_minutes", 12),
-        },
-        "perPatient": {},
-    }
-
-    hw_id = network.hardware_id()
-    try:
-        reg = glucocore.register_device(
-            token, device_name, hw_id, patient_ids, config=remote_config,
-        )
-    except Exception as exc:  # noqa: BLE001
-        handler._send(render(handler, draft, "review", banner=ui.banner(
-            "err", f"Could not register with GlucoCore: {ui.esc(exc)}")).encode(),
-            "text/html; charset=utf-8", 500)
-        return
-
-    device_token = reg.get("deviceToken") or ""
-    device = reg.get("device") or {}
-    device_id = device.get("id") or ""
-
-    if not device_token:
-        handler._send(render(handler, draft, "review", banner=ui.banner(
-            "err", "GlucoCore did not return a device token.")).encode(),
-            "text/html; charset=utf-8", 500)
-        return
-
-    import secrets
-    names = draft.get("patient_names") or {}
-    users = []
-    for patient_id in patient_ids:
-        users.append({
-            "name": names.get(patient_id, patient_id),
-            "port": None,
-            "api_secret": secrets.token_hex(12),
-            "source": {
-                "type": "glucocore",
-                "patient_id": patient_id,
-                "poll_seconds": 60,
-            },
-        })
-
+    # Everything else the wizard asked about. Read after the pairing wrote
+    # its half, so this adds to that file rather than replacing it.
     try:
         raw = json.loads(open(handler.server.config_path).read())
     except (OSError, ValueError):
         raw = {}
-    config_mod.assign_ports(users, reserved={handler.server.config.admin_port})
-    raw["users"] = users
-    raw.setdefault("display", {}).update(display)
-    raw["glucocore"] = {
-        "device_id": device_id,
-        "device_token": device_token,
-        "hardware_id": hw_id,
-    }
+    raw.setdefault("display", {}).update(draft.get("display") or {})
     password = (draft.get("admin_password") or "").strip()
     password_off = bool(draft.get("admin_password_off")) and not password
     if password:
