@@ -30,6 +30,8 @@
 #include "mbedtls/sha1.h"
 
 #include "gc_http.h"
+#include "gc_net.h"
+#include "gc_synclog.h"
 
 static const char *TAG = "gc_sources";
 
@@ -537,6 +539,8 @@ static esp_err_t poll_nightscout(poller_t *poller)
 
     ESP_LOGI(TAG, "[%s] pulled %d readings, %d treatments",
              poller->config.name, entries, treatments);
+    gc_synclog_add("nightscout", poller->config.name, true,
+                   "pulled %d readings, %d treatments", entries, treatments);
     return ESP_OK;
 }
 
@@ -921,6 +925,8 @@ static esp_err_t poll_tidepool(poller_t *poller)
     }
     ESP_LOGI(TAG, "[%s] pulled %d readings, %d treatments",
              poller->config.name, entries, treatments);
+    gc_synclog_add("tidepool", poller->config.name, true,
+                   "pulled %d readings, %d treatments", entries, treatments);
     return ESP_OK;
 }
 
@@ -953,6 +959,8 @@ static esp_err_t poll_glucocore(poller_t *poller)
             ESP_LOGW(TAG, "[%s] GlucoCore rejected the device token — "
                           "this display needs pairing again",
                      poller->config.name);
+            gc_synclog_add("glucocore", poller->config.name, false,
+                           "device token rejected — re-pair in GlucoCore");
             return ESP_ERR_INVALID_STATE;
         }
         return ESP_FAIL;
@@ -965,6 +973,8 @@ static esp_err_t poll_glucocore(poller_t *poller)
     cJSON_Delete(json);
     ESP_LOGI(TAG, "[%s] pulled %d readings, %d treatments",
              poller->config.name, entries, treatments);
+    gc_synclog_add("glucocore", poller->config.name, true,
+                   "pulled %d readings, %d treatments", entries, treatments);
     return ESP_OK;
 }
 
@@ -1002,6 +1012,10 @@ static void poller_task(void *arg)
                                : poll_seconds * 3);
             ESP_LOGW(TAG, "[%s] poll failed (%s); trying again in %ds",
                      poller->config.name, esp_err_to_name(err), delay);
+            gc_synclog_add(gc_source_kind_name(poller->config.kind),
+                           poller->config.name, false,
+                           "poll failed: %s (retry in %ds)",
+                           esp_err_to_name(err), delay);
         }
         for (int slept = 0; slept < delay && !poller->stop; slept++) {
             vTaskDelay(pdMS_TO_TICKS(1000));
@@ -1270,7 +1284,6 @@ static void apply_remote_config(const cJSON *remote, gc_config_t *config)
         cJSON_GetObjectItemCaseSensitive(remote, "patientIds");
     const cJSON *per_patient =
         cJSON_GetObjectItemCaseSensitive(remote, "perPatient");
-    const cJSON *names = cJSON_GetObjectItemCaseSensitive(remote, "patientNames");
     if (!cJSON_IsArray(patients) || cJSON_GetArraySize(patients) == 0) {
         return;
     }
@@ -1286,17 +1299,30 @@ static void apply_remote_config(const cJSON *remote, gc_config_t *config)
         user->kind = GC_SOURCE_GLUCOCORE;
         snprintf(user->patient_id, sizeof(user->patient_id), "%s",
                  id->valuestring);
-        const char *name = cJSON_IsObject(names)
-                               ? gc_json_string(names, id->valuestring, NULL)
-                               : NULL;
-        snprintf(user->name, sizeof(user->name), "%s",
-                 name != NULL ? name : id->valuestring);
         user->poll_seconds = 60;
 
         const cJSON *mine =
             cJSON_IsObject(per_patient)
                 ? cJSON_GetObjectItemCaseSensitive(per_patient, id->valuestring)
                 : NULL;
+
+        /* A person's name on the display is GlucoCore's `label` — what to
+         * call them on screen, when the account name is not the household
+         * name. Without one there is only the patient id, which is not a
+         * name anybody would choose to see on a wall.
+         *
+         * Read from perPatient, not from a patientNames map: the service
+         * has never sent one, and reading for it named everybody by their
+         * patient id. The Pi had the same bug (see sync.patient_label). */
+        const char *label = cJSON_IsObject(mine)
+                                ? gc_json_string(mine, "label", NULL)
+                                : NULL;
+        while (label != NULL && *label == ' ') {
+            label++;
+        }
+        snprintf(user->name, sizeof(user->name), "%s",
+                 (label != NULL && *label != '\0') ? label : id->valuestring);
+
         const cJSON *ranges =
             cJSON_IsObject(mine)
                 ? cJSON_GetObjectItemCaseSensitive(mine, "thresholds")
@@ -1476,4 +1502,203 @@ esp_err_t gc_glucocore_heartbeat(const gc_config_t *config,
     gc_http_free(&response);
     cJSON_free(text);
     return err;
+}
+
+/* --------------------------------------------------- staying in step -- */
+/*
+ * A paired display follows GlucoCore: who it shows, what they are called,
+ * their ranges and the units all live there once pairing has happened.
+ *
+ * The Pi holds a long poll open rather than asking on a timer, so a change
+ * made on a phone reaches the wall in seconds instead of at the next
+ * minute; this does the same. The heartbeat rides on the same loop, which
+ * is what makes the devices screen able to say a display is online.
+ */
+
+#define GLUCOCORE_HEARTBEAT_SECONDS 60
+#define GLUCOCORE_WAIT_SECONDS 55
+#define GLUCOCORE_ERROR_BACKOFF_SECONDS 30
+
+static struct {
+    TaskHandle_t task;
+    volatile bool stop;
+    gc_config_t config;                  /* a copy; the caller owns the live one */
+    gc_glucocore_changed_cb on_change;
+    /* Long enough for "2.14.0-rc.12" many times over. gc_ota owns the real
+     * limit; this does not depend on the updater just to size a string. */
+    char version[32];
+    volatile bool online;
+} s_core;
+
+esp_err_t gc_glucocore_wait_config(gc_config_t *config, int32_t since_version,
+                                   int timeout_seconds, bool *changed)
+{
+    if (config == NULL || config->glucocore.device_token[0] == '\0') {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (changed != NULL) {
+        *changed = false;
+    }
+    char url[256];
+    snprintf(url, sizeof(url),
+             GC_GLUCOCORE_BASE
+             "/v1/sugar_cubes/me/config/wait?since_version=%" PRId32
+             "&timeout=%d",
+             since_version, timeout_seconds);
+
+    gc_http_request_t request = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .headers = {{GC_GLUCOCORE_SESSION_HEADER,
+                     config->glucocore.device_token}},
+        .header_count = 1,
+        /* Longer than the poll it is holding open, or the client gives up
+         * on a request the server is deliberately sitting on. */
+        .timeout_ms = (timeout_seconds + 10) * 1000,
+    };
+    int status = 0;
+    cJSON *json = gc_http_get_json(&request, &status);
+    if (json == NULL) {
+        return (status == 401 || status == 403) ? ESP_ERR_INVALID_STATE
+                                                : ESP_FAIL;
+    }
+    const cJSON *data = cJSON_GetObjectItemCaseSensitive(json, "data");
+    const cJSON *payload = cJSON_IsObject(data) ? data : json;
+
+    if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(payload, "changed"))) {
+        bool found = false;
+        const double version = gc_json_number(payload, "version", 0.0, &found);
+        const cJSON *remote =
+            cJSON_GetObjectItemCaseSensitive(payload, "config");
+        /* A version we have already taken is not a change, however the
+         * request came to return — a reconnect can replay the last one. */
+        if (found && (int32_t)version > since_version) {
+            apply_remote_config(remote, config);
+            config->glucocore.config_version = (int32_t)version;
+            if (changed != NULL) {
+                *changed = true;
+            }
+        }
+    }
+    cJSON_Delete(json);
+    return ESP_OK;
+}
+
+bool gc_glucocore_online(void)
+{
+    return s_core.online;
+}
+
+static void glucocore_task(void *arg)
+{
+    (void)arg;
+
+    /* What the display already has is the starting point: without this the
+     * first long poll would be told about a change it has already applied,
+     * and would restart every poller for nothing. */
+    if (gc_glucocore_sync_config(&s_core.config) == ESP_OK) {
+        s_core.online = true;
+    }
+
+    int64_t last_heartbeat = 0;
+    while (!s_core.stop) {
+        const int64_t now = gc_now_ms();
+        if (now - last_heartbeat >= GLUCOCORE_HEARTBEAT_SECONDS * 1000) {
+            const esp_err_t err = gc_glucocore_heartbeat(
+                &s_core.config, s_core.version, gc_net_ip());
+            s_core.online = (err == ESP_OK);
+            if (err != ESP_OK) {
+                gc_synclog_add("glucocore", "system", false,
+                               "could not reach GlucoCore: %s",
+                               esp_err_to_name(err));
+            }
+            last_heartbeat = now;
+        }
+
+        gc_config_t candidate = s_core.config;
+        bool changed = false;
+        const esp_err_t err = gc_glucocore_wait_config(
+            &candidate, candidate.glucocore.config_version,
+            GLUCOCORE_WAIT_SECONDS, &changed);
+
+        if (err == ESP_ERR_INVALID_STATE) {
+            gc_synclog_add("glucocore", "system", false,
+                           "device token rejected — re-pair in GlucoCore");
+            s_core.online = false;
+            for (int i = 0; i < GC_SOURCE_ERROR_BACKOFF_SECONDS
+                            && !s_core.stop; i++) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+            continue;
+        }
+        if (err != ESP_OK) {
+            s_core.online = false;
+            for (int i = 0; i < GLUCOCORE_ERROR_BACKOFF_SECONDS
+                            && !s_core.stop; i++) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+            continue;
+        }
+        s_core.online = true;
+
+        if (changed && !s_core.stop) {
+            char reason[160];
+            if (!gc_config_valid(&candidate, reason, sizeof(reason))) {
+                /* Refused rather than applied: a config that would not
+                 * validate is one this display cannot draw, and what it is
+                 * showing now at least works. */
+                gc_synclog_add("glucocore", "system", false,
+                               "refused a config change: %s", reason);
+                continue;
+            }
+            s_core.config = candidate;
+            gc_config_save(&candidate);
+            gc_synclog_add("glucocore", "system", true,
+                           "took config version %" PRId32 " (%d %s)",
+                           candidate.glucocore.config_version,
+                           candidate.user_count,
+                           candidate.user_count == 1 ? "person" : "people");
+            if (s_core.on_change != NULL) {
+                s_core.on_change(&candidate);
+            }
+        }
+    }
+    s_core.task = NULL;
+    vTaskDelete(NULL);
+}
+
+esp_err_t gc_glucocore_start(const gc_config_t *config,
+                             gc_glucocore_changed_cb on_change,
+                             const char *firmware_version)
+{
+    gc_glucocore_stop();
+    if (config == NULL || config->glucocore.device_token[0] == '\0') {
+        /* Not an error: a display fed by Nightscout or Tidepool has no
+         * GlucoCore to stay in step with. */
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_core.config = *config;
+    s_core.on_change = on_change;
+    s_core.stop = false;
+    s_core.online = false;
+    snprintf(s_core.version, sizeof(s_core.version), "%s",
+             firmware_version != NULL ? firmware_version : "");
+
+    if (xTaskCreate(glucocore_task, "gc_core", 8192, NULL, 4, &s_core.task)
+        != pdPASS) {
+        ESP_LOGE(TAG, "could not start the GlucoCore task");
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+void gc_glucocore_stop(void)
+{
+    if (s_core.task == NULL) {
+        return;
+    }
+    s_core.stop = true;
+    for (int waited = 0; s_core.task != NULL && waited < 140; waited++) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
 }

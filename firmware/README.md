@@ -128,16 +128,29 @@ thing runs inside `pytest` too, so it gates every push.
 
 ## What the Pi does that this does not
 
+The list is kept in `tests/test_contract.py` rather than only here —
+`PI_ONLY_ROUTES` names every path the Pi answers and this does not, with
+the reason, and a test fails if one of them quietly starts working. Closing
+a gap means deleting a line from a test.
+
+The ones worth knowing about:
+
 - **Ambient mode** — one person at a time over a photograph, with the
   wallpapers and the weather that go with it. The firmware draws the split
   layout, which is what a device upgrading from an earlier version keeps.
 - **`/screen.png`** — the settings page's live view of the panel. Encoding
   750 KB of RGB565 to PNG every few seconds costs more than the page is
-  worth on this hardware, so the settings page shows the dashboard's own
-  HTML instead.
+  worth on this hardware, so it answers 503 and says so.
 - **Push sources** — a Trio instance uploading straight to the device. The
   Pi opens a Nightscout-compatible listener per person; here every source is
   pulled.
+- **Scan-to-pair** — an unpaired display showing a request as a QR code for
+  a signed-in phone to approve. Pairing here is by six-digit code. The
+  request and collect calls are implemented (`gc_glucocore_request_pairing`,
+  `gc_glucocore_collect_pairing`); what is missing is the screen and the
+  waiter that drive them.
+- **GlucoCore's command queue** — the five buttons on its devices screen
+  (identify, restart, refresh, clear cache, check for updates).
 
 ## Safety note
 

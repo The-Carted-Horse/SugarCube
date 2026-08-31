@@ -634,6 +634,12 @@ static const struct {
     {"Pacific/Auckland", "NZST-12NZDT,M9.5.0,M4.1.0/3"},
 };
 
+const char *gc_net_zone_name(int index)
+{
+    const int count = (int)(sizeof gc_zones / sizeof gc_zones[0]);
+    return (index >= 0 && index < count) ? gc_zones[index].iana : NULL;
+}
+
 static void apply_timezone(const char *timezone)
 {
     const char *posix = "UTC0";

@@ -357,3 +357,91 @@ def test_the_release_build_checks_the_stamp_took():
     """And the workflow proves it on the artifact, not just in the source."""
     text = workflow_text("build-image.yml")
     assert "Check the version was stamped in" in text
+
+
+# ------------------------------------------------- what each product serves ----
+
+FIRMWARE_HTTPD = ROOT / "firmware/components/gc_httpd/gc_httpd.c"
+
+
+def firmware_routes() -> set[str]:
+    """The paths the firmware's web app registers."""
+    text = FIRMWARE_HTTPD.read_text()
+    table = text.split("static const httpd_uri_t ROUTES[]")[1].split("};")[0]
+    routes = set(re.findall(r'\{"(/[^"]*)"', table))
+    routes |= set(contract.CAPTIVE_PROBE_PATHS)
+    return routes
+
+
+# Paths both products answer. A phone with one bookmarked finds the same
+# page on the other, so this list is an interface, not an implementation
+# detail — adding to it on the Pi means adding it here too.
+SHARED_ROUTES = {
+    "/",
+    "/setup",
+    "/settings",
+    "/settings/access",
+    "/settings/clock",
+    "/settings/network",
+    "/settings/people",
+    "/settings/person",
+    "/settings/person/remove",
+    "/settings/ranges",
+    "/settings/updates",
+    "/settings/updates/channel",
+    "/settings/glucocore/unpair",
+    "/log",
+    "/api/dashboard.json",
+    "/api/health.json",
+    "/api/log.json",
+    "/api/source/test",
+    "/api/wifi.json",
+    "/screen.png",
+    "/update/check",
+}
+
+# What the Raspberry Pi serves and the firmware does not, and why. This is
+# the honest answer to "what is lost on the ESP32" — kept here rather than
+# only in prose, so that closing one of these gaps means deleting a line
+# from a test rather than remembering to update a README.
+PI_ONLY_ROUTES = {
+    "/settings/screen": "no live view of the panel; see /screen.png",
+    "/settings/weather": "weather belongs to ambient mode",
+    "/settings/person/wallpaper": "wallpapers belong to ambient mode",
+    "/settings/glucocore/signin": "pairing is by code or by scanning, not by "
+                                  "handing a wall display an account password",
+    "/settings/glucocore/register": "the display registers itself when it pairs",
+    "/settings/glucocore/pair": "covered by /settings/pairing",
+    "/settings/glucocore/cancel": "covered by /settings/pairing",
+    "/api/pairing.json": "scan-to-pair is not wired up yet",
+    "/display/theme": "the theme is a tap on the panel or the ranges page",
+    "/fonts/": "the firmware's pages are set in the system font",
+    "/wifi": "folded into /setup",
+    "/wifi/rescan": "the scan refreshes itself; see /api/wifi.json",
+    "/update/apply": "covered by POST /settings/updates",
+}
+
+
+@pytest.mark.parametrize("route", sorted(SHARED_ROUTES))
+def test_the_firmware_serves_what_the_pi_does(route):
+    assert route in firmware_routes(), (
+        f"the Pi serves {route} and the firmware does not. Either add it to "
+        f"gc_httpd's ROUTES, or move it to PI_ONLY_ROUTES with the reason."
+    )
+
+
+@pytest.mark.parametrize("route", sorted(PI_ONLY_ROUTES))
+def test_what_the_firmware_does_not_serve_is_written_down(route):
+    """A gap that has been closed should stop being described as a gap."""
+    assert route not in firmware_routes(), (
+        f"the firmware now serves {route}; take it out of PI_ONLY_ROUTES "
+        f"and add it to SHARED_ROUTES."
+    )
+
+
+def test_the_captive_portal_answers_every_probe():
+    """A probe the firmware does not answer is a phone that sits on the
+    setup network waiting to be told what to do."""
+    routes = firmware_routes()
+    for path in contract.CAPTIVE_PROBE_PATHS:
+        assert path in routes

@@ -46,6 +46,8 @@ static const char *TAG = "glucocube";
 static gc_config_t s_config;
 static gc_store_t *s_store;
 
+static void on_glucocore_config(const gc_config_t *config);
+
 static int64_t now_ms(void)
 {
     /* Wall-clock milliseconds once SNTP has landed. Before that the device
@@ -130,6 +132,9 @@ static void on_config_changed(const gc_config_t *config)
     ESP_LOGI(TAG, "settings saved; restarting the data sources");
     gc_sources_stop();
     s_config = *config;
+    /* The clock is part of the settings: a display moved between time
+     * zones should not need a reboot to say the right hour. */
+    gc_net_time_sync(s_config.display.timezone);
     for (int i = 0; i < GC_MAX_USERS; i++) {
         gc_store_clear_user(s_store, i);
     }
@@ -138,6 +143,19 @@ static void on_config_changed(const gc_config_t *config)
     refresh_screen_urls();
     apply_backlight();
     gc_sources_start(&s_config, s_store);
+    /* Restarted rather than left alone: pairing may have changed, and a
+     * task holding a long poll open with the previous device token would
+     * keep it open for another minute. */
+    gc_glucocore_start(&s_config, on_glucocore_config, gc_ota_current_version());
+}
+
+/* A config GlucoCore pushed, rather than one somebody typed. It has
+ * already been validated and saved by the time this runs; everything else
+ * is the same, so the two share a path. */
+static void on_glucocore_config(const gc_config_t *config)
+{
+    ESP_LOGI(TAG, "GlucoCore sent new settings");
+    on_config_changed(config);
 }
 
 /* ---------------------------------------------------------------- main -- */
@@ -184,6 +202,7 @@ void app_main(void)
     refresh_screen_urls();
 
     gc_sources_start(&s_config, s_store);
+    gc_glucocore_start(&s_config, on_glucocore_config, gc_ota_current_version());
     gc_ota_start(s_config.update_channel);
 
     ESP_LOGI(TAG, "%s %s on %s", "GlucoCube", gc_ota_current_version(),

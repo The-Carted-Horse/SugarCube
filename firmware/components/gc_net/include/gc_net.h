@@ -82,6 +82,12 @@ esp_err_t gc_net_watch_start(void);
 esp_err_t gc_net_time_sync(const char *timezone);
 bool gc_net_time_is_set(void);
 
+/* The IANA zone names this firmware knows, for the settings page to offer.
+ * Returns NULL past the end. A zone that is not in the list can still be
+ * typed as a POSIX rule, which is passed through untouched — see the note
+ * on gc_zones in gc_net.c. */
+const char *gc_net_zone_name(int index);
+
 #ifdef __cplusplus
 }
 #endif

@@ -91,6 +91,31 @@ esp_err_t gc_glucocore_heartbeat(const gc_config_t *config,
                                  const char *firmware_version,
                                  const char *ip_address);
 
+/* Blocks until GlucoCore has a config newer than `since_version`, or the
+ * timeout passes. One held-open request rather than a poll, so a change
+ * made on a phone reaches the wall in seconds. */
+esp_err_t gc_glucocore_wait_config(gc_config_t *config, int32_t since_version,
+                                   int timeout_seconds, bool *changed);
+
+/* ---- housekeeping for a paired display ---- */
+
+/* Called when a config change has been taken and saved. The caller owns
+ * restarting whatever reads the config. */
+typedef void (*gc_glucocore_changed_cb)(const gc_config_t *config);
+
+/* Starts the task that keeps a paired display in step with GlucoCore: it
+ * holds a long poll open for config changes, and says the display is alive
+ * often enough for the devices screen to show it as online. Does nothing —
+ * and says so — on a display that is not paired. */
+esp_err_t gc_glucocore_start(const gc_config_t *config,
+                             gc_glucocore_changed_cb on_change,
+                             const char *firmware_version);
+void gc_glucocore_stop(void);
+
+/* True while the last exchange with GlucoCore succeeded, for the settings
+ * page to show. */
+bool gc_glucocore_online(void);
+
 #ifdef __cplusplus
 }
 #endif

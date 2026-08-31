@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <time.h>
 
 #include "cJSON.h"
 #include "esp_http_server.h"
@@ -33,6 +34,7 @@
 #include "gc_ota.h"
 #include "gc_predict.h"
 #include "gc_sources.h"
+#include "gc_synclog.h"
 #include "gc_ui.h"
 
 static const char *TAG = "gc_httpd";
@@ -560,36 +562,61 @@ static esp_err_t handle_settings(httpd_req_t *request)
     send_page_head(request, "Settings");
 
     const gc_ota_state_t update = gc_ota_state();
-    char body[2048];
+    char clock[GC_MAX_TZ] = "UTC — not set";
+    if (s_config->display.timezone[0] != '\0') {
+        snprintf(clock, sizeof(clock), "%s", s_config->display.timezone);
+    }
+
+    char body[2560];
+    /* A status report rather than a table of contents: every row leads
+     * with what is true now, and only then opens the page that would
+     * change it. */
     int length = snprintf(body, sizeof(body),
         "<h1>Settings</h1><p class=\"lede\">%s, %s.</p>"
-        "<a class=\"row\" href=\"/settings/network\">Network"
+        "<a class=\"row\" href=\"/settings/people\">People"
+        "<span>%d configured</span></a>"
+        "<a class=\"row\" href=\"/settings/pairing\">GlucoCore"
         "<span>%s</span></a>"
         "<a class=\"row\" href=\"/settings/ranges\">Ranges"
         "<span>%.0f&ndash;%.0f %s</span></a>"
+        "<a class=\"row\" href=\"/settings/network\">Network"
+        "<span>%s</span></a>"
+        "<a class=\"row\" href=\"/settings/clock\">Clock"
+        "<span>%s</span></a>"
+        "<a class=\"row\" href=\"/settings/access\">Access"
+        "<span>%s</span></a>"
         "<a class=\"row\" href=\"/settings/updates\">Updates"
-        "<span>%s%s</span></a>"
+        "<span>%s &middot; %s</span></a>"
+        "<a class=\"row\" href=\"/log\">Sync log<span>&rsaquo;</span></a>"
         "<a class=\"row\" href=\"/\">Dashboard<span>&rsaquo;</span></a>",
         GC_BOARD_ID, gc_ota_current_version(),
-        gc_net_is_online() ? gc_net_ip() : "not connected",
+        s_config->user_count,
+        s_config->glucocore.device_token[0] == '\0'
+            ? "not paired"
+            : (gc_glucocore_online() ? "paired" : "paired &middot; unreachable"),
         (double)s_config->display.low, (double)s_config->display.high,
         s_config->display.mmol ? "mmol/L" : "mg/dL",
+        gc_net_is_online() ? gc_net_ip() : "not connected",
+        clock,
+        s_config->admin_password[0] != '\0' ? "password" : "no password",
         update.current,
-        update.available ? " &middot; update available" : " &middot; up to date");
+        update.available ? "update available" : "up to date");
 
+    /* Anything that needs attention is one tappable line, at the top of
+     * what is wrong rather than buried in the page that fixes it. */
     if (s_config->user_count == 0) {
         length += snprintf(body + length, sizeof(body) - length,
             "<div class=\"note\">This display is not showing anybody yet. "
             "Pair it with GlucoCore from <a href=\"/settings/pairing\">"
-            "Pairing</a>.</div>");
-    } else {
-        for (int i = 0; i < s_config->user_count
-                        && length < (int)sizeof(body) - 160; i++) {
-            length += snprintf(body + length, sizeof(body) - length,
-                "<a class=\"row\" href=\"/settings/pairing\">%s<span>%s</span></a>",
-                s_config->users[i].name,
-                gc_source_label(gc_source_kind_name(s_config->users[i].kind)));
-        }
+            "GlucoCore</a>, or add somebody by hand from "
+            "<a href=\"/settings/people\">People</a>.</div>");
+    }
+    if (s_config->admin_password[0] == '\0'
+        && !s_config->admin_password_off) {
+        length += snprintf(body + length, sizeof(body) - length,
+            "<div class=\"note\">Anyone on this network can open these "
+            "settings. <a href=\"/settings/access\">Set a password</a>, or "
+            "say that is deliberate.</div>");
     }
     httpd_resp_send_chunk(request, body, length);
     return send_page_end(request);
@@ -613,10 +640,21 @@ static esp_err_t handle_settings_pairing(httpd_req_t *request)
         "<div class=\"note\">In GlucoCore, open <b>Devices</b> and create a "
         "code: six digits, ten minutes, single use. Pairing decides who this "
         "display shows, what they are called and their ranges — all of it "
-        "follows GlucoCore from then on.</div>",
+        "follows GlucoCore from then on.</div>"
+        "%s",
         s_config->glucocore.device_token[0] != '\0'
             ? "This display is paired. Entering a new code re-pairs it."
-            : "This display is not paired with anybody yet.");
+            : "This display is not paired with anybody yet.",
+        s_config->glucocore.device_token[0] != '\0'
+            ? "<form method=\"post\" action=\"/settings/glucocore/unpair\" "
+              "onsubmit=\"return confirm('Unpair this display?')\">"
+              "<button type=\"submit\" style=\"background:var(--band);"
+              "color:var(--fg)\">Unpair</button></form>"
+              "<div class=\"note\">Unpairing keeps the people it was "
+              "showing, with their names and ranges, and clears where their "
+              "readings came from — so they can be pointed at Nightscout or "
+              "Tidepool instead.</div>"
+            : "");
     httpd_resp_send_chunk(request, body, length);
     return send_page_end(request);
 }
@@ -755,15 +793,28 @@ static esp_err_t handle_settings_updates(httpd_req_t *request)
     const int length = snprintf(body, sizeof(body),
         "<h1>Updates</h1><p class=\"lede\">Running %s on the %s channel.</p>"
         "%s"
+        "<form method=\"post\" action=\"/update/check\">"
+        "<button type=\"submit\" style=\"background:var(--band);"
+        "color:var(--fg)\">Check now</button></form>"
+        "<form method=\"post\" action=\"/settings/updates/channel\">"
+        "<label for=\"channel\">Which releases this display follows</label>"
+        "<select id=\"channel\" name=\"channel\">"
+        "<option value=\"stable\"%s>Standard &mdash; full releases only</option>"
+        "<option value=\"beta\"%s>Beta &mdash; pre-releases as well</option>"
+        "</select><button type=\"submit\">Change channel</button></form>"
         "<div class=\"note\">Installing writes the spare half of the flash "
         "and restarts into it. If the new firmware cannot get onto the "
         "network and draw a frame, the device puts this one back by "
-        "itself.</div>",
+        "itself.<br><br>Changing the channel takes effect at the next check: "
+        "leaving Beta steps back onto the last full release, which is the "
+        "point of it.</div>",
         update.current, gc_channel_label(s_config->update_channel),
         update.available
             ? "<form method=\"post\" action=\"/settings/updates\">"
               "<button type=\"submit\">Install the update</button></form>"
-            : "<p>This display is up to date.</p>");
+            : "<p>This display is up to date.</p>",
+        s_config->update_channel == GC_CHANNEL_STABLE ? " selected" : "",
+        s_config->update_channel == GC_CHANNEL_BETA ? " selected" : "");
     httpd_resp_send_chunk(request, body, length);
     return send_page_end(request);
 }
@@ -786,6 +837,566 @@ static esp_err_t handle_settings_updates_post(httpd_req_t *request)
     send_page_end(request);
     gc_ota_install(&update);   /* does not return when it works */
     return ESP_OK;
+}
+
+/* ---- the sync log ---- */
+
+/* What every source has been doing. On the Pi this is how somebody finds
+ * out that a Nightscout secret stopped working without opening a terminal,
+ * and it is the same here — more so, because there is no terminal. */
+static esp_err_t handle_log(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    send_page_head(request, "Sync log");
+    httpd_resp_send_chunk(request,
+        "<h1>Sync log</h1><p class=\"lede\">Newest first. Cleared by a "
+        "restart.</p><div id=\"rows\"></div>"
+        "<p><a class=\"row\" href=\"/settings\">Settings"
+        "<span>&rsaquo;</span></a></p>"
+        "<script>"
+        "async function tick(){"
+        "const r=await fetch('/api/log.json',{cache:'no-store'});"
+        "if(!r.ok)return;const d=await r.json();"
+        "document.getElementById('rows').innerHTML=d.entries.length?"
+        "d.entries.map(e=>{"
+        "const t=e.ms?new Date(e.ms).toLocaleTimeString():'--';"
+        "return `<div class=\"row\"><span style=\"text-align:left\">"
+        "${e.ok?'':'&#9888; '}<b>${e.user}</b> &middot; ${e.source}<br>"
+        "${e.message}</span><span>${t}</span></div>`;}).join('')"
+        ":'<p class=\"note\">Nothing yet. A source logs here the first "
+        "time it fetches, or the first time it cannot.</p>';}"
+        "tick();setInterval(tick,10000);"
+        "</script>", HTTPD_RESP_USE_STRLEN);
+    return send_page_end(request);
+}
+
+static esp_err_t handle_log_json(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    static gc_synclog_entry_t entries[GC_SYNCLOG_ENTRIES];
+    const int count = gc_synclog_recent(entries, GC_SYNCLOG_ENTRIES);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *list = cJSON_AddArrayToObject(root, "entries");
+    for (int i = 0; i < count; i++) {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddNumberToObject(item, "ms", (double)entries[i].ms);
+        cJSON_AddStringToObject(item, "source", entries[i].source);
+        cJSON_AddStringToObject(item, "user", entries[i].user);
+        cJSON_AddStringToObject(item, "message", entries[i].message);
+        cJSON_AddBoolToObject(item, "ok", entries[i].ok);
+        cJSON_AddItemToArray(list, item);
+    }
+    return send_json(request, root);
+}
+
+/* ---- the clock ---- */
+
+static esp_err_t handle_clock(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    send_page_head(request, "Clock");
+
+    char now[64] = "not set yet";
+    if (gc_net_time_is_set()) {
+        const time_t when = (time_t)(now_ms() / 1000);
+        struct tm tm_now;
+        localtime_r(&when, &tm_now);
+        strftime(now, sizeof(now), "%a %d %b %H:%M", &tm_now);
+    }
+    char body[1024];
+    int length = snprintf(body, sizeof(body),
+        "<h1>Clock</h1>"
+        "<p class=\"lede\">The display reads %s. Your phone says "
+        "<span id=\"phone\">&hellip;</span>.</p>"
+        "<form method=\"post\" action=\"/settings/clock\">"
+        "<label for=\"tz\">Time zone</label>"
+        "<input list=\"zones\" id=\"tz\" name=\"timezone\" value=\"%s\" "
+        "autocapitalize=\"off\" autocorrect=\"off\" "
+        "placeholder=\"Europe/London\"><datalist id=\"zones\">",
+        now, s_config->display.timezone);
+    for (int i = 0; length < (int)sizeof(body) - 96; i++) {
+        const char *zone = gc_net_zone_name(i);
+        if (zone == NULL) {
+            break;
+        }
+        length += snprintf(body + length, sizeof(body) - length,
+                           "<option value=\"%s\">", zone);
+    }
+    length += snprintf(body + length, sizeof(body) - length,
+        "</datalist>"
+        "<label for=\"fmt\">Show the time as</label>"
+        "<select id=\"fmt\" name=\"time_format\">"
+        "<option value=\"24\"%s>15:04</option>"
+        "<option value=\"12\"%s>3:04 pm</option></select>"
+        "<button type=\"submit\">Save</button></form>"
+        "<div class=\"note\">A zone this firmware does not know falls back "
+        "to UTC rather than to a wrong offset. If yours is missing you can "
+        "type a POSIX rule instead &mdash; "
+        "<code>AEST-10AEDT,M10.1.0,M4.1.0/3</code> &mdash; which is passed "
+        "through untouched.</div>"
+        "<script>document.getElementById('phone').textContent="
+        "Intl.DateTimeFormat().resolvedOptions().timeZone;</script>",
+        s_config->display.time_format == 12 ? "" : " selected",
+        s_config->display.time_format == 12 ? " selected" : "");
+    httpd_resp_send_chunk(request, body, length);
+    return send_page_end(request);
+}
+
+/* Every save takes the same shape: copy, edit the copy, validate, write,
+ * hand it to the caller. What is running now keeps running unless all of
+ * that succeeds. */
+static esp_err_t save_and_redirect(httpd_req_t *request,
+                                   const gc_config_t *candidate,
+                                   const char *back)
+{
+    char reason[160];
+    if (!gc_config_valid(candidate, reason, sizeof(reason))
+        || gc_config_save(candidate) != ESP_OK) {
+        send_page_head(request, "Not saved");
+        char page[512];
+        const int length = snprintf(page, sizeof(page),
+            "<h1>Not saved</h1><p class=\"lede bad\">%s</p>"
+            "<p><a class=\"row\" href=\"%s\">Back<span>&rsaquo;</span></a></p>",
+            reason, back);
+        httpd_resp_send_chunk(request, page, length);
+        return send_page_end(request);
+    }
+    httpd_resp_set_status(request, "303 See Other");
+    httpd_resp_set_hdr(request, "Location", "/settings");
+    httpd_resp_send(request, NULL, 0);
+    if (s_on_change != NULL) {
+        s_on_change(candidate);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t handle_clock_post(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    char body[256];
+    if (read_body(request, body, sizeof(body)) != ESP_OK) {
+        httpd_resp_set_status(request, "400 Bad Request");
+        return httpd_resp_send(request, "Could not read that form.", -1);
+    }
+    gc_config_t candidate = *s_config;
+    char value[GC_MAX_TZ];
+    if (form_field(body, "timezone", value, sizeof(value))) {
+        snprintf(candidate.display.timezone,
+                 sizeof(candidate.display.timezone), "%s", value);
+    }
+    if (form_field(body, "time_format", value, sizeof(value))) {
+        candidate.display.time_format = (atoi(value) == 12) ? 12 : 24;
+    }
+    return save_and_redirect(request, &candidate, "/settings/clock");
+}
+
+/* ---- access ---- */
+
+static esp_err_t handle_access(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    send_page_head(request, "Access");
+    char body[1280];
+    const int length = snprintf(body, sizeof(body),
+        "<h1>Access</h1><p class=\"lede\">%s</p>"
+        "<form method=\"post\" action=\"/settings/access\">"
+        "<label for=\"pw\">Password</label>"
+        "<input id=\"pw\" name=\"password\" type=\"password\" "
+        "autocomplete=\"new-password\" placeholder=\"leave blank for none\">"
+        "<label><input type=\"checkbox\" name=\"off\" value=\"1\"%s "
+        "style=\"width:auto;margin-right:.5rem\">No password on purpose"
+        "</label>"
+        "<button type=\"submit\">Save</button></form>"
+        "<div class=\"note\">On a home network you trust, the display is "
+        "only reachable from that network, and no password means nothing to "
+        "look up on a phone. On a network guests, flatmates or an office "
+        "share, keep one. Ticking the box stops this page asking.</div>",
+        s_config->admin_password[0] != '\0'
+            ? "This display asks for a password."
+            : (s_config->admin_password_off
+                   ? "No password, on purpose."
+                   : "No password yet &mdash; anyone on this network can "
+                     "open the settings."),
+        s_config->admin_password_off ? " checked" : "");
+    httpd_resp_send_chunk(request, body, length);
+    return send_page_end(request);
+}
+
+static esp_err_t handle_access_post(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    char body[512];
+    if (read_body(request, body, sizeof(body)) != ESP_OK) {
+        httpd_resp_set_status(request, "400 Bad Request");
+        return httpd_resp_send(request, "Could not read that form.", -1);
+    }
+    gc_config_t candidate = *s_config;
+    char value[GC_MAX_SECRET];
+    if (form_field(body, "password", value, sizeof(value))) {
+        snprintf(candidate.admin_password, sizeof(candidate.admin_password),
+                 "%s", value);
+    }
+    /* An unticked checkbox is simply absent from the form. */
+    candidate.admin_password_off =
+        form_field(body, "off", value, sizeof(value));
+    if (candidate.admin_password[0] != '\0') {
+        candidate.admin_password_off = false;
+    }
+    return save_and_redirect(request, &candidate, "/settings/access");
+}
+
+/* ---- people ---- */
+
+static const char *SOURCE_CHOICES[] = {"glucocore", "nightscout", "tidepool"};
+
+static esp_err_t handle_people(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    send_page_head(request, "People");
+    char body[1536];
+    int length = snprintf(body, sizeof(body),
+        "<h1>People</h1><p class=\"lede\">Who this display shows.</p>");
+
+    const int64_t now = now_ms();
+    for (int i = 0; i < s_config->user_count
+                    && length < (int)sizeof(body) - 200; i++) {
+        gc_snapshot_t snap;
+        char when[24] = "no readings yet";
+        if (gc_store_snapshot(s_store, i, now, &snap) && snap.has_sgv) {
+            const long minutes = (long)((now - snap.sgv_date) / 60000);
+            snprintf(when, sizeof(when), "%ldm ago", minutes);
+        }
+        length += snprintf(body + length, sizeof(body) - length,
+            "<a class=\"row\" href=\"/settings/person?i=%d\">%s"
+            "<span>%s &middot; %s</span></a>",
+            i, s_config->users[i].name,
+            gc_source_label(gc_source_kind_name(s_config->users[i].kind)), when);
+    }
+    if (s_config->user_count < GC_MAX_USERS) {
+        length += snprintf(body + length, sizeof(body) - length,
+            "<a class=\"row\" href=\"/settings/person?i=%d\">Add somebody"
+            "<span>+</span></a>", s_config->user_count);
+    }
+    length += snprintf(body + length, sizeof(body) - length,
+        "<form method=\"post\" action=\"/settings/people\">"
+        "<button type=\"submit\">Fetch now</button></form>");
+    httpd_resp_send_chunk(request, body, length);
+    return send_page_end(request);
+}
+
+static esp_err_t handle_people_post(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    /* "Fetch now": every poller wakes rather than waiting out its interval.
+     * Nothing is saved, so there is nothing to validate. */
+    gc_sources_poll_now();
+    gc_synclog_add("system", "system", true, "fetch requested from settings");
+    httpd_resp_set_status(request, "303 See Other");
+    httpd_resp_set_hdr(request, "Location", "/log");
+    return httpd_resp_send(request, NULL, 0);
+}
+
+static int query_index(httpd_req_t *request)
+{
+    char query[96];
+    if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK) {
+        return 0;
+    }
+    char value[8];
+    if (httpd_query_key_value(query, "i", value, sizeof(value)) != ESP_OK) {
+        return 0;
+    }
+    const int index = atoi(value);
+    return (index >= 0 && index < GC_MAX_USERS) ? index : 0;
+}
+
+static esp_err_t handle_person(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    const int index = query_index(request);
+    const bool existing = index < s_config->user_count;
+    const gc_user_config_t blank = {.kind = GC_SOURCE_NIGHTSCOUT,
+                                    .poll_seconds = 60};
+    const gc_user_config_t *user = existing ? &s_config->users[index] : &blank;
+
+    send_page_head(request, existing ? "Person" : "Add somebody");
+    char body[2560];
+    int length = snprintf(body, sizeof(body),
+        "<h1>%s</h1>"
+        "<form method=\"post\" action=\"/settings/person?i=%d\">"
+        "<label for=\"name\">Name on screen</label>"
+        "<input id=\"name\" name=\"name\" value=\"%s\" required "
+        "maxlength=\"40\">"
+        "<label for=\"kind\">Where the readings come from</label>"
+        "<select id=\"kind\" name=\"kind\" onchange=\"pick()\">",
+        existing ? user->name : "Add somebody", index,
+        existing ? user->name : "");
+    for (size_t i = 0; i < 3; i++) {
+        length += snprintf(body + length, sizeof(body) - length,
+            "<option value=\"%s\"%s>%s</option>", SOURCE_CHOICES[i],
+            user->kind == gc_source_kind_from_name(SOURCE_CHOICES[i])
+                ? " selected" : "",
+            gc_source_label(SOURCE_CHOICES[i]));
+    }
+    length += snprintf(body + length, sizeof(body) - length,
+        "</select>"
+        "<div id=\"glucocore\"><label for=\"patient\">Patient id</label>"
+        "<input id=\"patient\" name=\"patient_id\" value=\"%s\">"
+        "<div class=\"note\">Set by pairing. Change it only if GlucoCore "
+        "told you to.</div></div>"
+        "<div id=\"nightscout\"><label for=\"url\">Site address</label>"
+        "<input id=\"url\" name=\"url\" value=\"%s\" "
+        "placeholder=\"https://mysite.example.com\" autocapitalize=\"off\">"
+        "<label for=\"secret\">API secret or access token</label>"
+        "<input id=\"secret\" name=\"api_secret\" value=\"%s\" "
+        "autocapitalize=\"off\"></div>"
+        "<div id=\"tidepool\"><label for=\"email\">Tidepool email</label>"
+        "<input id=\"email\" name=\"email\" type=\"email\" value=\"%s\" "
+        "autocapitalize=\"off\">"
+        "<label for=\"password\">Tidepool password</label>"
+        "<input id=\"password\" name=\"password\" type=\"password\" "
+        "value=\"%s\"></div>"
+        "<p><button type=\"button\" onclick=\"test()\" "
+        "style=\"background:var(--band);color:var(--fg)\">Test the "
+        "connection</button></p><p id=\"verdict\"></p>"
+        "<button type=\"submit\">Save</button></form>",
+        user->patient_id, user->url, user->api_secret, user->email,
+        user->password);
+
+    if (existing && s_config->user_count > 1) {
+        length += snprintf(body + length, sizeof(body) - length,
+            "<form method=\"post\" action=\"/settings/person/remove?i=%d\" "
+            "onsubmit=\"return confirm('Take %s off this display?')\">"
+            "<button type=\"submit\" style=\"background:var(--band);"
+            "color:var(--fg)\">Remove %s</button></form>",
+            index, user->name, user->name);
+    }
+    length += snprintf(body + length, sizeof(body) - length,
+        "<script>"
+        "function pick(){const k=document.getElementById('kind').value;"
+        "for(const id of ['glucocore','nightscout','tidepool'])"
+        "document.getElementById(id).style.display=(id===k)?'':'none';}"
+        "pick();"
+        "async function test(){"
+        "const v=document.getElementById('verdict');v.textContent='Testing…';"
+        "const f=new FormData(document.forms[0]);"
+        "const r=await fetch('/api/source/test',{method:'POST',"
+        "body:new URLSearchParams(f)});"
+        "const d=await r.json();"
+        "v.textContent=d.detail;v.className=d.ok?'':'bad';}"
+        "</script>");
+    httpd_resp_send_chunk(request, body, length);
+    return send_page_end(request);
+}
+
+/* Each field is read straight into the struct member it belongs to, at
+ * that member's own size, so a long paste is truncated where it is stored
+ * rather than in a staging buffer on the way. */
+static void read_person_form(const char *body, gc_user_config_t *user)
+{
+    char kind[24];
+    form_field(body, "name", user->name, sizeof(user->name));
+    if (form_field(body, "kind", kind, sizeof(kind))) {
+        user->kind = gc_source_kind_from_name(kind);
+    }
+    form_field(body, "patient_id", user->patient_id, sizeof(user->patient_id));
+    form_field(body, "url", user->url, sizeof(user->url));
+    form_field(body, "api_secret", user->api_secret, sizeof(user->api_secret));
+    form_field(body, "email", user->email, sizeof(user->email));
+    form_field(body, "password", user->password, sizeof(user->password));
+    if (user->poll_seconds <= 0) {
+        user->poll_seconds = 60;
+    }
+}
+
+static esp_err_t handle_person_post(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    const int index = query_index(request);
+    char body[1024];
+    if (read_body(request, body, sizeof(body)) != ESP_OK) {
+        httpd_resp_set_status(request, "400 Bad Request");
+        return httpd_resp_send(request, "Could not read that form.", -1);
+    }
+    gc_config_t candidate = *s_config;
+    if (index >= candidate.user_count) {
+        if (candidate.user_count >= GC_MAX_USERS) {
+            httpd_resp_set_status(request, "303 See Other");
+            httpd_resp_set_hdr(request, "Location", "/settings/people");
+            return httpd_resp_send(request, NULL, 0);
+        }
+        memset(&candidate.users[candidate.user_count], 0,
+               sizeof(gc_user_config_t));
+        candidate.user_count++;
+    }
+    read_person_form(body, &candidate.users[index]);
+
+    char back[48];
+    snprintf(back, sizeof(back), "/settings/person?i=%d", index);
+    return save_and_redirect(request, &candidate, back);
+}
+
+static esp_err_t handle_person_remove(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    const int index = query_index(request);
+    gc_config_t candidate = *s_config;
+    if (index >= candidate.user_count || candidate.user_count <= 1) {
+        httpd_resp_set_status(request, "303 See Other");
+        httpd_resp_set_hdr(request, "Location", "/settings/people");
+        return httpd_resp_send(request, NULL, 0);
+    }
+    /* Closed up rather than blanked: the panels are drawn from the first
+     * user_count entries, and a hole would draw an empty one. */
+    for (int i = index; i + 1 < candidate.user_count; i++) {
+        candidate.users[i] = candidate.users[i + 1];
+    }
+    candidate.user_count--;
+    memset(&candidate.users[candidate.user_count], 0, sizeof(gc_user_config_t));
+    return save_and_redirect(request, &candidate, "/settings/people");
+}
+
+/* Tries the credentials on the form without storing them — verify.py's
+ * job, and the reason a wrong password is a sentence rather than a display
+ * that quietly shows nothing. */
+static esp_err_t handle_source_test(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    char body[1024];
+    if (read_body(request, body, sizeof(body)) != ESP_OK) {
+        httpd_resp_set_status(request, "400 Bad Request");
+        return httpd_resp_send(request, "{}", 2);
+    }
+    char kind[24] = {0};
+    form_field(body, "kind", kind, sizeof(kind));
+
+    gc_verify_result_t verdict;
+    if (strcmp(kind, "nightscout") == 0) {
+        char url[GC_MAX_URL] = {0}, secret[GC_MAX_SECRET] = {0};
+        form_field(body, "url", url, sizeof(url));
+        form_field(body, "api_secret", secret, sizeof(secret));
+        verdict = gc_verify_nightscout(url, secret);
+    } else if (strcmp(kind, "tidepool") == 0) {
+        char email[GC_MAX_EMAIL] = {0}, password[GC_MAX_SECRET] = {0};
+        form_field(body, "email", email, sizeof(email));
+        form_field(body, "password", password, sizeof(password));
+        verdict = gc_verify_tidepool(email, password);
+    } else {
+        verdict.ok = s_config->glucocore.device_token[0] != '\0';
+        snprintf(verdict.detail, sizeof(verdict.detail), "%s",
+                 verdict.ok ? "Paired with GlucoCore."
+                            : "This display is not paired with GlucoCore yet.");
+    }
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddBoolToObject(json, "ok", verdict.ok);
+    cJSON_AddStringToObject(json, "detail", verdict.detail);
+    return send_json(request, json);
+}
+
+/* ---- unpairing, channels, updates, Wi-Fi ---- */
+
+static esp_err_t handle_unpair(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    gc_config_t candidate = *s_config;
+    memset(&candidate.glucocore, 0, sizeof(candidate.glucocore));
+    /* The people GlucoCore was feeding stay, with their source cleared:
+     * throwing them away would lose their names and ranges too, and the
+     * person unpairing may be about to point them at Nightscout. */
+    for (int i = 0; i < candidate.user_count; i++) {
+        if (candidate.users[i].kind == GC_SOURCE_GLUCOCORE) {
+            candidate.users[i].kind = GC_SOURCE_NONE;
+            candidate.users[i].patient_id[0] = '\0';
+        }
+    }
+    gc_synclog_add("glucocore", "system", true, "unpaired from GlucoCore");
+    return save_and_redirect(request, &candidate, "/settings/pairing");
+}
+
+static esp_err_t handle_channel_post(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    char body[128];
+    if (read_body(request, body, sizeof(body)) != ESP_OK) {
+        httpd_resp_set_status(request, "400 Bad Request");
+        return httpd_resp_send(request, "Could not read that form.", -1);
+    }
+    char value[16];
+    gc_config_t candidate = *s_config;
+    if (form_field(body, "channel", value, sizeof(value))) {
+        candidate.update_channel = gc_channel_from_name(value);
+    }
+    return save_and_redirect(request, &candidate, "/settings/updates");
+}
+
+static esp_err_t handle_update_check(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    gc_ota_state_t found;
+    if (gc_ota_check(s_config->update_channel, &found) == ESP_OK) {
+        gc_synclog_add("updates", "system", true,
+                       found.available ? "%s is available" : "up to date (%s)",
+                       found.available ? found.latest : found.current);
+    } else {
+        gc_synclog_add("updates", "system", false, "could not reach GitHub");
+    }
+    httpd_resp_set_status(request, "303 See Other");
+    httpd_resp_set_hdr(request, "Location", "/settings/updates");
+    return httpd_resp_send(request, NULL, 0);
+}
+
+static esp_err_t handle_wifi_json(httpd_req_t *request)
+{
+    if (!authorized(request)) {
+        return deny(request);
+    }
+    gc_scan_result_t seen[GC_MAX_SCAN_RESULTS];
+    const int found = gc_net_scan(seen, GC_MAX_SCAN_RESULTS);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "online", gc_net_is_online());
+    cJSON_AddStringToObject(root, "ip", gc_net_ip());
+    cJSON_AddStringToObject(root, "error", gc_net_last_error());
+    cJSON *list = cJSON_AddArrayToObject(root, "networks");
+    for (int i = 0; i < found; i++) {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "ssid", seen[i].ssid);
+        cJSON_AddNumberToObject(item, "rssi", seen[i].rssi);
+        cJSON_AddBoolToObject(item, "secured", seen[i].secured);
+        cJSON_AddItemToArray(list, item);
+    }
+    return send_json(request, root);
 }
 
 /* ---- the captive portal ---- */
@@ -841,6 +1452,22 @@ static const httpd_uri_t ROUTES[] = {
     {"/settings/pairing", HTTP_POST, handle_settings_pairing_post, NULL},
     {"/settings/updates", HTTP_GET, handle_settings_updates, NULL},
     {"/settings/updates", HTTP_POST, handle_settings_updates_post, NULL},
+    {"/settings/updates/channel", HTTP_POST, handle_channel_post, NULL},
+    {"/settings/clock", HTTP_GET, handle_clock, NULL},
+    {"/settings/clock", HTTP_POST, handle_clock_post, NULL},
+    {"/settings/access", HTTP_GET, handle_access, NULL},
+    {"/settings/access", HTTP_POST, handle_access_post, NULL},
+    {"/settings/people", HTTP_GET, handle_people, NULL},
+    {"/settings/people", HTTP_POST, handle_people_post, NULL},
+    {"/settings/person", HTTP_GET, handle_person, NULL},
+    {"/settings/person", HTTP_POST, handle_person_post, NULL},
+    {"/settings/person/remove", HTTP_POST, handle_person_remove, NULL},
+    {"/settings/glucocore/unpair", HTTP_POST, handle_unpair, NULL},
+    {"/api/source/test", HTTP_POST, handle_source_test, NULL},
+    {"/api/wifi.json", HTTP_GET, handle_wifi_json, NULL},
+    {"/api/log.json", HTTP_GET, handle_log_json, NULL},
+    {"/log", HTTP_GET, handle_log, NULL},
+    {"/update/check", HTTP_POST, handle_update_check, NULL},
 };
 
 esp_err_t gc_httpd_start(gc_config_t *config, gc_store_t *store,
