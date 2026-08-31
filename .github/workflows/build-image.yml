@@ -276,6 +276,11 @@ jobs:
       # A version that did not reach the compiler is a firmware that calls
       # itself 0.0.0 and never offers an update — and it runs perfectly well
       # otherwise, so nothing else would notice.
+      #
+      # Asked of the raw bytes rather than of `strings` output: whether the
+      # literal ends up on a line of its own depends on how the linker packs
+      # constants next to each other, which is not something this is trying
+      # to test. `grep -aF` asks the actual question.
       - name: Check the version was stamped in
         shell: bash
         env:
@@ -283,12 +288,23 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
-          if ! strings "firmware/dist/glucocube-$BOARD-$VERSION.bin" \
-               | grep -qx "$VERSION"; then
-            echo "The firmware does not carry the version $VERSION." >&2
-            exit 1
+          binary="firmware/dist/glucocube-$BOARD-$VERSION.bin"
+          if grep -qaF "$VERSION" "$binary"; then
+            echo "Stamped $VERSION into the $BOARD firmware."
+            exit 0
           fi
-          echo "Stamped $VERSION into the $BOARD firmware."
+          # Say why, rather than leaving the next person to reproduce it.
+          echo "The firmware does not carry the version $VERSION." >&2
+          echo "--- what was built ---" >&2
+          ls -l "$binary" >&2 || true
+          echo "--- version-shaped strings in it ---" >&2
+          grep -aoE '"'"'[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?'"'"' "$binary" \
+            | sort -u | head >&2 || true
+          echo "--- how it was compiled ---" >&2
+          grep -o "GC_VERSION=[^ ]*" \
+            "firmware/build-$BOARD/compile_commands.json" \
+            | sort -u | head -3 >&2 || true
+          exit 1
 
       - name: Keep the firmware for the release step
         uses: actions/upload-artifact@v4
