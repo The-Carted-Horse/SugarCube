@@ -967,6 +967,48 @@ const gc_predict_vector_t gc_predict_vectors[] = {
 };
 const int gc_predict_vector_count = 6;
 
+const gc_version_vector_t gc_version_vectors[] = {
+    {"2.0.1", "2.0.0", true},
+    {"2.0.0", "2.0.1", false},
+    {"2.0.0", "2.0.0", false},
+    {"2.0.1", "2.0.1-rc.3", true},
+    {"2.0.1-rc.3", "2.0.1", false},
+    {"2.0.1-rc.4", "2.0.1-rc.3", true},
+    {"2.0.1-rc.3", "2.0.1-rc.4", false},
+    {"2.0.0-rc.1", "2.0.0-beta5", true},
+    {"2.0.0-beta2", "2.0.0-alpha3", true},
+    {"2.0.0-pre1", "2.0.0-alpha9", true},
+    {"1.0", "1.0.0", false},
+    {"1.0.0", "1.0", false},
+    {"1.0.1", "1.0", true},
+    {"v2.1.0", "2.0.9", true},
+    {"2.1.0", "v2.0.9", true},
+    {"3.0.0", "2.99.99", true},
+    {"10.0.0", "9.99.99", true},
+    {"2.0.10", "2.0.9", true},
+    {"banana", "2.0.0", false},
+    {"2.0.0", "banana", false},
+    {"", "2.0.0", false},
+    {"2.0.0-dev", "1.0.0", false},
+    {"1.0.0", "2.0.0-dev", false},
+    {"2.0.0", "0.0.0", true},
+};
+const int gc_version_vector_count = 24;
+
+const gc_prerelease_vector_t gc_prerelease_vectors[] = {
+    {"2.0.0", false},
+    {"2.0.1-rc.3", true},
+    {"v2.0.1-rc.3", true},
+    {"2.0.0-beta2", true},
+    {"2.0.0-alpha1", true},
+    {"2.0.0-pre1", true},
+    {"1.0", false},
+    {"banana", false},
+    {"", false},
+    {"2.0.0-dev", false},
+};
+const int gc_prerelease_vector_count = 10;
+
 const gc_point_t *gc_predict_history(int index) {
     switch (index) {
     case 0: return gc_pred_hist_0;

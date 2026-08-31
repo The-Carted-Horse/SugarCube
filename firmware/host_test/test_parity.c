@@ -311,6 +311,37 @@ static void run_store_checks(void)
     gc_store_destroy(store);
 }
 
+/* ---------------------------------------------------------- gc_version -- */
+
+/* Which release a device moves to. The Pi and the ESP32 read one list of
+ * releases, so they have to order it the same way or one of them installs
+ * something the other would not. */
+static void run_version_vectors(void)
+{
+    printf("versions (%d comparisons, %d labels)\n",
+           gc_version_vector_count, gc_prerelease_vector_count);
+    for (int i = 0; i < gc_version_vector_count; i++) {
+        const gc_version_vector_t *v = &gc_version_vectors[i];
+        checks++;
+        const bool got = gc_ota_version_is_newer(v->candidate, v->current);
+        if (got != v->expect_newer) {
+            fail("version", "is_newer(\"%s\", \"%s\") is %s, Python says %s",
+                 v->candidate, v->current, got ? "true" : "false",
+                 v->expect_newer ? "true" : "false");
+        }
+    }
+    for (int i = 0; i < gc_prerelease_vector_count; i++) {
+        const gc_prerelease_vector_t *v = &gc_prerelease_vectors[i];
+        checks++;
+        const bool got = gc_ota_version_is_prerelease(v->version);
+        if (got != v->expect_prerelease) {
+            fail("prerelease", "is_prerelease(\"%s\") is %s, Python says %s",
+                 v->version, got ? "true" : "false",
+                 v->expect_prerelease ? "true" : "false");
+        }
+    }
+}
+
 /* ---------------------------------------------------------- the header -- */
 
 static void run_contract_checks(void)
@@ -339,6 +370,7 @@ static void run_contract_checks(void)
 int main(void)
 {
     run_contract_checks();
+    run_version_vectors();
     run_oref_vectors();
     run_predict_vectors();
     run_store_checks();

@@ -12,6 +12,7 @@
 #include "gc_oref.h"
 #include "gc_predict.h"
 #include "gc_store.h"
+#include "gc_version.h"
 
 #define GC_VECTOR_NOW 1700000000000LL
 #define GC_VECTOR_STEPS 24
@@ -35,6 +36,17 @@ typedef struct {
 } gc_oref_vector_t;
 
 typedef struct {
+    const char *candidate;
+    const char *current;
+    bool expect_newer;
+} gc_version_vector_t;
+
+typedef struct {
+    const char *version;
+    bool expect_prerelease;
+} gc_prerelease_vector_t;
+
+typedef struct {
     const char *name;
     gc_snapshot_t snapshot;
     bool expect_valid;
@@ -49,6 +61,10 @@ extern const gc_oref_vector_t gc_oref_vectors[];
 extern const int gc_oref_vector_count;
 extern const gc_predict_vector_t gc_predict_vectors[];
 extern const int gc_predict_vector_count;
+extern const gc_version_vector_t gc_version_vectors[];
+extern const int gc_version_vector_count;
+extern const gc_prerelease_vector_t gc_prerelease_vectors[];
+extern const int gc_prerelease_vector_count;
 
 /* The snapshot in a predict vector carries counts but not the arrays
  * themselves — they are too long to sit in a designated initialiser. The

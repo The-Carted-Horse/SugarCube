@@ -17,13 +17,14 @@ Python forecast that is not mirrored in the C fails CI rather than shipping.
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from glucocube import contract, oref, predict  # noqa: E402
+from glucocube import contract, oref, predict, updater  # noqa: E402
 from glucocube.store import UserSnapshot  # noqa: E402
 
 OUT = "firmware/host_test/vectors.c"
@@ -170,6 +171,46 @@ PREDICT_CASES = [
 ]
 
 
+# Version strings, run through updater.py's own ordering. This is the logic
+# that decides whether a device replaces its running firmware, so the C is
+# not trusted to agree — it is checked.
+VERSION_PAIRS = [
+    ("2.0.1", "2.0.0"),
+    ("2.0.0", "2.0.1"),
+    ("2.0.0", "2.0.0"),
+    # A finished release outranks every pre-release of the same number, so a
+    # device on 2.0.1-rc.3 is offered the real 2.0.1 when it lands.
+    ("2.0.1", "2.0.1-rc.3"),
+    ("2.0.1-rc.3", "2.0.1"),
+    ("2.0.1-rc.4", "2.0.1-rc.3"),
+    ("2.0.1-rc.3", "2.0.1-rc.4"),
+    ("2.0.0-rc.1", "2.0.0-beta5"),
+    ("2.0.0-beta2", "2.0.0-alpha3"),
+    ("2.0.0-pre1", "2.0.0-alpha9"),
+    # (1, 0) and (1, 0, 0) are the same version.
+    ("1.0", "1.0.0"),
+    ("1.0.0", "1.0"),
+    ("1.0.1", "1.0"),
+    ("v2.1.0", "2.0.9"),
+    ("2.1.0", "v2.0.9"),
+    ("3.0.0", "2.99.99"),
+    ("10.0.0", "9.99.99"),
+    ("2.0.10", "2.0.9"),
+    # Nothing unreadable ever compares as newer, in either position.
+    ("banana", "2.0.0"),
+    ("2.0.0", "banana"),
+    ("", "2.0.0"),
+    ("2.0.0-dev", "1.0.0"),
+    ("1.0.0", "2.0.0-dev"),
+    ("2.0.0", "0.0.0"),
+]
+
+VERSION_LABELS = [
+    "2.0.0", "2.0.1-rc.3", "v2.0.1-rc.3", "2.0.0-beta2", "2.0.0-alpha1",
+    "2.0.0-pre1", "1.0", "banana", "", "2.0.0-dev",
+]
+
+
 def cfloat(value) -> str:
     return repr(float(value)) + "f"
 
@@ -223,6 +264,7 @@ def gen_header() -> str:
 #include "gc_oref.h"
 #include "gc_predict.h"
 #include "gc_store.h"
+#include "gc_version.h"
 
 #define GC_VECTOR_NOW {NOW}LL
 #define GC_VECTOR_STEPS {STEPS}
@@ -246,6 +288,17 @@ typedef struct {{
 }} gc_oref_vector_t;
 
 typedef struct {{
+    const char *candidate;
+    const char *current;
+    bool expect_newer;
+}} gc_version_vector_t;
+
+typedef struct {{
+    const char *version;
+    bool expect_prerelease;
+}} gc_prerelease_vector_t;
+
+typedef struct {{
     const char *name;
     gc_snapshot_t snapshot;
     bool expect_valid;
@@ -260,6 +313,10 @@ extern const gc_oref_vector_t gc_oref_vectors[];
 extern const int gc_oref_vector_count;
 extern const gc_predict_vector_t gc_predict_vectors[];
 extern const int gc_predict_vector_count;
+extern const gc_version_vector_t gc_version_vectors[];
+extern const int gc_version_vector_count;
+extern const gc_prerelease_vector_t gc_prerelease_vectors[];
+extern const int gc_prerelease_vector_count;
 
 /* The snapshot in a predict vector carries counts but not the arrays
  * themselves — they are too long to sit in a designated initialiser. The
@@ -387,6 +444,20 @@ def gen_source() -> str:
 
     # Accessors so the runner can copy the variable-length arrays into the
     # fixed-size snapshot fields without knowing each case by name.
+    out.append("const gc_version_vector_t gc_version_vectors[] = {")
+    for candidate, current in VERSION_PAIRS:
+        newer = "true" if updater.is_newer(candidate, current) else "false"
+        out.append(f'    {{{json.dumps(candidate)}, {json.dumps(current)}, {newer}}},')
+    out.append("};")
+    out.append(f"const int gc_version_vector_count = {len(VERSION_PAIRS)};")
+    out.append("")
+    out.append("const gc_prerelease_vector_t gc_prerelease_vectors[] = {")
+    for version in VERSION_LABELS:
+        pre = "true" if updater.is_prerelease(version) else "false"
+        out.append(f'    {{{json.dumps(version)}, {pre}}},')
+    out.append("};")
+    out.append(f"const int gc_prerelease_vector_count = {len(VERSION_LABELS)};")
+    out.append("")
     out.append("const gc_point_t *gc_predict_history(int index) {")
     out.append("    switch (index) {")
     for index in range(len(PREDICT_CASES)):

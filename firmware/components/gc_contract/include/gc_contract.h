@@ -102,6 +102,13 @@ gc_theme_t gc_theme_from_name(const char *name);
 #define GC_TAP_FLASH_SECONDS 0.35
 #define GC_UPDATE_CHECK_HOURS 6
 
+/* what a source says */
+#define GC_TIDEPOOL_MGDL_PER_MMOL 18.01559
+#define GC_TREND_RATE_DOUBLE 17.0
+#define GC_TREND_RATE_SINGLE 10.0
+#define GC_TREND_RATE_FORTYFIVE 5.0
+#define GC_TREND_MAX_GAP_MS 900000
+
 /* network */
 #define GC_HOTSPOT_SSID "GlucoCube-Setup"
 #define GC_HOTSPOT_ADDR "10.42.0.1"
@@ -121,6 +128,8 @@ extern const char *const gc_captive_always_serve[GC_CAPTIVE_ALWAYS_SERVE_COUNT];
 
 #define GC_UNITS_MGDL "mg/dL"
 #define GC_REPO "The-Carted-Horse/SugarCube"
+#define GC_GLUCOCORE_BASE "https://www.glucocore.app"
+#define GC_GLUCOCORE_SESSION_HEADER "x-tidepool-session-token"
 #define GC_FORCE_MARKER "[force-update]"
 
 #define GC_HORIZON_COUNT 4

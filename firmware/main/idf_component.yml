@@ -1,0 +1,18 @@
+# Fetched from git rather than the component registry. The registry is one
+# more service a release build depends on, and the two dependencies here
+# are both on GitHub anyway; the touch controller is driven directly in
+# gc_board rather than through a third-party driver, because its reset
+# sequencing is board-specific and that is where the pin map lives.
+dependencies:
+  idf:
+    version: ">=5.3"
+  lvgl/lvgl:
+    version: "v9.2.2"
+    git: https://github.com/lvgl/lvgl.git
+  # mDNS left ESP-IDF for esp-protocols; without it http://glucocube.local/
+  # does not resolve and the device can only be reached at its IP, which is
+  # the one address a person cannot be expected to remember.
+  espressif/mdns:
+    version: "mdns-v1.12.0"
+    git: https://github.com/espressif/esp-protocols.git
+    path: components/mdns

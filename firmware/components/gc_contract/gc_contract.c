@@ -111,7 +111,7 @@ const gc_tick_t gc_ticks[GC_TICK_COUNT] = {
 static const struct { const char *type; const char *label; } source_labels[] = {
     {"tidepool", "TWIIST"},
     {"nightscout", "NS"},
-    {"glucocore", "CORE"},
+    {"glucocore", "GLUCOCORE"},
 };
 
 const char *gc_source_label(const char *source_type)

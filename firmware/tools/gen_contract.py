@@ -152,6 +152,12 @@ def gen_header() -> str:
             out.append(f"#define {cident(name)} {literal}")
         out.append("")
 
+    out.append("/* what a source says */")
+    for name in ("TIDEPOOL_MGDL_PER_MMOL", "TREND_RATE_DOUBLE",
+                 "TREND_RATE_SINGLE", "TREND_RATE_FORTYFIVE"):
+        out.append(f"#define {cident(name)} {cfloat(getattr(contract, name))}")
+    out.append(f"#define GC_TREND_MAX_GAP_MS {contract.TREND_MAX_GAP_MS}")
+    out.append("")
     out.append("/* network */")
     out.append(f'#define GC_HOTSPOT_SSID "{contract.HOTSPOT_SSID}"')
     out.append(f'#define GC_HOTSPOT_ADDR "{contract.HOTSPOT_ADDR}"')
@@ -170,6 +176,9 @@ def gen_header() -> str:
     out.append("")
     out.append(f'#define GC_UNITS_MGDL "{contract.UNITS_MGDL}"')
     out.append(f'#define GC_REPO "{contract.REPO}"')
+    out.append(f'#define GC_GLUCOCORE_BASE "{contract.GLUCOCORE_BASE}"')
+    out.append('#define GC_GLUCOCORE_SESSION_HEADER '
+               f'"{contract.GLUCOCORE_SESSION_HEADER}"')
     out.append(f'#define GC_FORCE_MARKER "{contract.FORCE_MARKER}"')
     out.append("")
 

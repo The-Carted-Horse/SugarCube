@@ -26,7 +26,7 @@ from . import config as config_mod
 from . import multipart as multipart_mod
 from . import wallpaper as wallpaper_mod
 from . import weather as weather_mod
-from . import captive, network, onboarding, predict, sources, synclog, ui
+from . import captive, contract, network, onboarding, predict, sources, synclog, ui
 from . import updater
 from . import glucocore, pairing, sync, verify
 from . import units as units_mod
@@ -881,10 +881,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             source_type = (user.source or {}).get("type")
             users.append({
                 "name": user.name,
-                "source_label": {"tidepool": "TWIIST",
-                                 "nightscout": "NS",
-                                 "glucocore": "GLUCOCORE"}.get(source_type,
-                                                               "TRIO"),
+                "source_label": contract.SOURCE_LABELS.get(
+                    source_type, contract.SOURCE_LABEL_DEFAULT),
                 "thresholds": {
                     **merged_thresholds(dc, user),
                     "stale_minutes": dc.stale_minutes,

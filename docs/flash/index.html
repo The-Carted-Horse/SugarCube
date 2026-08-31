@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flash GlucoCube</title>
+<script type="module"
+        src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #F6F7F5; --fg: #181C20; --dim: #666E76; --faint: #949BA2;
+    --line: #D1D4CF; --band: #E9EBE6; --ok: #109448;
+    --warn: #B07408; --urgent: #E00000;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0A0C0F; --fg: #E9EDF1; --dim: #7A848E; --faint: #545D66;
+      --line: #262D34; --band: #14191E; --ok: #5FDE96;
+      --warn: #E9B949; --urgent: #FF453A;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 3rem 1.25rem 5rem;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 40rem; margin: 0 auto; }
+  h1 { font-size: 1.9rem; letter-spacing: -0.02em; margin: 0 0 .35rem; }
+  .lede { color: var(--dim); margin: 0 0 2.5rem; }
+  h2 {
+    font-size: .75rem; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--dim); margin: 2.5rem 0 .9rem; font-weight: 600;
+  }
+  .board {
+    display: block; border: 1px solid var(--line); border-radius: 12px;
+    padding: .9rem 1rem; margin-bottom: .6rem; cursor: pointer;
+  }
+  .board:has(input:checked) { border-color: var(--ok); background: var(--band); }
+  .board input { margin-right: .6rem; }
+  .board-name { font-weight: 600; }
+  .board-spec { display: block; color: var(--dim); font-size: .85rem;
+                 margin-left: 1.6rem; }
+  esp-web-install-button { --esp-tools-button-color: var(--fg); }
+  .unsupported { color: var(--warn); }
+  .note {
+    border-left: 3px solid var(--line); padding: .1rem 0 .1rem 1rem;
+    color: var(--dim); margin: 1.25rem 0;
+  }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .88em; background: var(--band); padding: .12em .4em;
+    border-radius: 4px;
+  }
+  a { color: inherit; }
+  footer {
+    margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--line);
+    color: var(--faint); font-size: .85rem;
+  }
+  #channel { color: var(--dim); font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Flash GlucoCube</h1>
+  <p class="lede">
+    Put the firmware on an ESP32-S3 board from this page. Plug the board in
+    over USB, choose it below, and press Install — nothing to download and
+    nothing to install first.
+  </p>
+
+  <h2>Which board</h2>
+        <label class="board">
+          <input type="radio" name="board" value="esp32-8048s050" checked>
+          <span class="board-name">Sunton ESP32-8048S050</span>
+          <span class="board-spec">800&times;480 &middot; 16 MB flash &middot; 8 MB PSRAM</span>
+        </label>
+        <label class="board">
+          <input type="radio" name="board" value="sugarcube-s3">
+          <span class="board-name">SugarCube ESP32-S3</span>
+          <span class="board-spec">800&times;480 &middot; 16 MB flash &middot; 8 MB PSRAM</span>
+        </label>
+
+  <h2>Install</h2>
+  <p>
+    <esp-web-install-button id="installer">
+      <button slot="activate">Install GlucoCube</button>
+      <span slot="unsupported" class="unsupported">
+        This browser cannot talk to a USB serial port. Chrome, Edge or Opera
+        on a desktop can; Safari and Firefox cannot, and nor can a phone.
+      </span>
+      <span slot="not-allowed" class="unsupported">
+        This page has to be served over HTTPS to reach a serial port.
+      </span>
+    </esp-web-install-button>
+  </p>
+  <p id="channel">Reading the latest release…</p>
+
+  <div class="note">
+    <p>
+      Installing erases the board, firmware and settings alike. A display
+      that is already set up keeps its settings through an ordinary update
+      — <strong>Settings → Updates</strong> on the device itself — so this
+      page is for a board being set up for the first time, or one being
+      rescued.
+    </p>
+  </div>
+
+  <h2>Once it is on</h2>
+  <p>
+    The panel lights and shows a QR code. Scan it with a phone and the setup
+    wizard opens: Wi-Fi, where in the world it is so the clock is right, and
+    who it is for. With no network at all the device opens its own
+    <code>GlucoCube-Setup</code> hotspot instead, and the wizard opens by
+    itself once a phone joins it.
+  </p>
+
+  <h2>Or from a terminal</h2>
+  <p>
+    The same image is attached to every
+    <a href="https://github.com/The-Carted-Horse/SugarCube/releases">release</a>, and
+    <code>esptool</code> writes it in one command:
+  </p>
+  <p><code>esptool.py --chip esp32s3 write_flash 0x0 glucocube-&lt;board&gt;-&lt;version&gt;-factory.bin</code></p>
+
+  <footer>
+    GlucoCube is a convenience display, not a medical device. Forecasts are
+    estimates. Don't rely on it for alarms or treatment decisions — use the
+    CGM app's own alerts for that.
+  </footer>
+</main>
+
+<script>
+  const REPO = 'The-Carted-Horse/SugarCube';
+  const installer = document.getElementById('installer');
+  const channel = document.getElementById('channel');
+
+  // The manifests are release assets, so the page has to find out which
+  // release is current before it can point at one. Naming the tag rather
+  // than using /latest/download means a page opened mid-release cannot
+  // hand somebody one version's bootloader and another's app.
+  let tag = null;
+
+  function board() {
+    return document.querySelector('input[name=board]:checked').value;
+  }
+
+  function point() {
+    if (!tag) return;
+    installer.manifest =
+      `https://github.com/${REPO}/releases/download/${tag}/manifest-${board()}.json`;
+  }
+
+  for (const input of document.querySelectorAll('input[name=board]')) {
+    input.addEventListener('change', point);
+  }
+
+  fetch(`https://api.github.com/repos/${REPO}/releases/latest`)
+    .then((response) => {
+      if (!response.ok) throw new Error(response.status);
+      return response.json();
+    })
+    .then((release) => {
+      tag = release.tag_name;
+      channel.textContent = `Installing ${tag}, the current release.`;
+      point();
+    })
+    .catch(() => {
+      channel.innerHTML =
+        'Could not reach GitHub to find the current release. The firmware ' +
+        `is on the <a href="https://github.com/${REPO}/releases">releases ` +
+        'page</a>, and esptool will write it.';
+    });
+</script>
+</body>
+</html>

@@ -1,10 +1,18 @@
 # GlucoCube
 
-A wall-mounted glucose dashboard for two (or more) people, built for a
-Raspberry Pi with the official 7" touchscreen. It boots straight into the
-display — no desktop environment — and shows each person's current glucose,
-trend, a 3-hour history chart, a 2-hour forecast, insulin on board, carbs on
-board, and recent treatments.
+A wall-mounted glucose dashboard for two (or more) people. It boots
+straight into the display — no desktop environment — and shows each person's
+current glucose, trend, a 3-hour history chart, a 2-hour forecast, insulin on
+board, carbs on board, and recent treatments.
+
+It ships as **two devices from one repository**: a Raspberry Pi with the
+official 7" touchscreen, and firmware for an ESP32-S3 board with a 5" panel
+that costs a fraction of one. They are peers, not a device and its satellite
+— the ESP32 fetches its own data over TLS and needs no Pi anywhere. Every
+number that decides what a person sees lives in one file
+([`glucocube/contract.py`](glucocube/contract.py)) and is compiled into both,
+so the two screens are the same dashboard rather than two that resemble each
+other.
 
 ![Screenshot](docs/screenshot.png)
 
@@ -64,10 +72,38 @@ Grab `glucocube-<version>.img.xz` from the
 flash it with Raspberry Pi Imager (or `dd`), boot the Pi, and follow the
 QR codes on screen. That's the whole install.
 
-(Images are built by the `Build and release` GitHub Actions workflow, which
-runs on every push to `main` — see [Cutting a release](#cutting-a-release).)
+(Images and firmware are both built by the `Build and release` GitHub
+Actions workflow, which runs on every push to `main` — see
+[Cutting a release](#cutting-a-release).)
 
-### Option B: install on an existing Raspberry Pi OS
+### Option B: flash an ESP32-S3 board
+
+Open **[the web installer](https://the-carted-horse.github.io/SugarCube/flash/)**
+in Chrome, Edge or Opera on a desktop, plug the board in over USB, and press
+Install. Nothing to download and nothing to install first.
+
+Two boards are supported today, both 800×480 with capacitive touch,
+16 MB of flash and 8 MB of PSRAM:
+
+| Board | Notes |
+|---|---|
+| Sunton **ESP32-8048S050** | 5" panel, off the shelf, about a tenth of a Pi setup |
+| **SugarCube ESP32-S3** | the purpose-built board |
+
+Or write it by hand from the
+[releases page](https://github.com/The-Carted-Horse/SugarCube/releases):
+
+```bash
+esptool.py --chip esp32s3 write_flash 0x0 \
+    glucocube-esp32-8048s050-<version>-factory.bin
+```
+
+Either way the panel lights and shows a QR code; scanning it opens the same
+setup wizard the Pi shows. See [`firmware/`](firmware/) for how it is built,
+which board profile is which, and what the Pi does that it does not (ambient
+mode, and push sources).
+
+### Option C: install on an existing Raspberry Pi OS
 
 Use Raspberry Pi OS **Lite** (no desktop needed):
 
@@ -312,14 +348,27 @@ The channel is stored in `config.json`:
 
 Releases are cut by pushing, not by tagging:
 
-- **Push to `dev`** — builds an image and publishes `vX.Y.Z-rc.N` as a
-  GitHub *pre-release*. Devices on the Standard channel never see it;
-  devices set to Beta are offered it at their next check, and the attached
-  image can be flashed to try it. Each further push to `dev` bumps `N`.
-- **Push to `main`** — builds an image and publishes `vX.Y.Z` as a full
-  release. This is the one existing devices offer under Settings → Updates.
-  It takes the version the `dev` rcs were rehearsing (`2.0.1-rc.3` →
-  `2.0.1`), or bumps the patch number if `dev` never rehearsed one.
+- **Push to `dev`** — builds and publishes `vX.Y.Z-rc.N` as a GitHub
+  *pre-release*. Devices on the Standard channel never see it; devices set
+  to Beta are offered it at their next check, and the attached images can
+  be flashed to try it. Each further push to `dev` bumps `N`.
+- **Push to `main`** — builds and publishes `vX.Y.Z` as a full release.
+  This is the one existing devices offer under Settings → Updates. It takes
+  the version the `dev` rcs were rehearsing (`2.0.1-rc.3` → `2.0.1`), or
+  bumps the patch number if `dev` never rehearsed one.
+
+Each release carries both products, cut from the same commit at the same
+version number:
+
+| Asset | For |
+|---|---|
+| `glucocube-<version>.img.xz` | a Raspberry Pi SD card |
+| `glucocube-<board>-<version>.bin` | an ESP32 already in the field, updating itself |
+| `glucocube-<board>-<version>-factory.bin` | an ESP32 being flashed for the first time |
+| `manifest-<board>.json` | what the [web installer](docs/flash/) reads |
+
+The version is worked out once and handed to both builds, so an image and a
+firmware on one release can never disagree about what they are.
 
 Both create their tag at the commit that was pushed, so there is no tag to
 push by hand.
@@ -330,9 +379,21 @@ run the workflow manually and pick the part to increment and the channel.
 A push that changes nothing a device runs publishes nothing: prose, the
 enclosure, the test suite and tool config are excluded on both channels,
 because a release whose code is identical to the last one would still be
-offered to every device on it. Everything else still cuts one, `install.sh`
-and the systemd units included. To publish anyway, run the workflow by
-hand — the exclusions apply to pushes only.
+offered to every device on it. Everything else still cuts one, `install.sh`,
+the systemd units and `firmware/` included. To publish anyway, run the
+workflow by hand — the exclusions apply to pushes only.
+
+## Firmware for ESP32-S3
+
+[`firmware/`](firmware/) is the ESP-IDF project: the board profiles, the
+ported forecast, and the parity harness that keeps it honest. The short
+version is that both products draw from
+[`glucocube/contract.py`](glucocube/contract.py), and the forecast the C
+runs is checked against the Python's own answers on every push:
+
+```bash
+make -C firmware/host_test        # builds the C on the host and compares
+```
 
 ## Enclosure
 

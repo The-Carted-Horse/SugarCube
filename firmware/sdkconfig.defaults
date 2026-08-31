@@ -69,7 +69,6 @@ CONFIG_HTTPD_MAX_URI_LEN=512
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
 CONFIG_LWIP_IPV6=y
 CONFIG_LWIP_MAX_SOCKETS=16
-CONFIG_MDNS_MAX_INTERFACES=2
 
 # ---- LVGL -----------------------------------------------------------------
 # 16-bit colour, matching the panel; the dashboard is drawn into a canvas
@@ -83,6 +82,10 @@ CONFIG_LV_USE_LOG=n
 CONFIG_LV_USE_TINY_TTF=y
 CONFIG_LV_TINY_TTF_FILE_SUPPORT=n
 CONFIG_LV_USE_CANVAS=y
+# lv_malloc goes to the C library's allocator, which on this target can reach
+# PSRAM. LVGL's own pool is a fixed array in internal SRAM, and a 147px glyph
+# cache does not fit in one.
+CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_FONT_MONTSERRAT_14=n
 
 # ---- logging --------------------------------------------------------------

@@ -25,6 +25,7 @@ INCLUDES := \
 	-I$(COMPONENTS)/gc_oref/include \
 	-I$(COMPONENTS)/gc_predict/include \
 	-I$(COMPONENTS)/gc_store/include \
+	-I$(COMPONENTS)/gc_ota/include \
 	-I$(CURDIR)
 
 SOURCES := \
@@ -32,6 +33,7 @@ SOURCES := \
 	$(COMPONENTS)/gc_oref/gc_oref.c \
 	$(COMPONENTS)/gc_predict/gc_predict.c \
 	$(COMPONENTS)/gc_store/gc_store.c \
+	$(COMPONENTS)/gc_ota/gc_version.c \
 	$(CURDIR)/vectors.c \
 	$(CURDIR)/test_parity.c
 

@@ -169,12 +169,34 @@ DIRECTION_ANGLES = {
 }
 
 
+# ----------------------------------------------------- what a source says ----
+
+# Tidepool normalises glucose to mmol/L on the wire and this is the figure
+# it uses. Deliberately not MGDL_PER_MMOL above: that one is what a person
+# reads (18.0, matching the pump app on the shelf), and this one is how a
+# stored value is reconstructed from what Tidepool sent. Rounding the wire
+# conversion to match the display's would move every Tidepool reading by a
+# fraction of a mg/dL for no reason.
+TIDEPOOL_MGDL_PER_MMOL = 18.01559
+
+# Tidepool sends no trend arrow, so one is derived from the slope between
+# consecutive readings, in mg/dL per five minutes. Both products have to
+# derive the same arrow from the same slope or the two screens disagree
+# about which way somebody is going.
+TREND_RATE_DOUBLE = 17.0
+TREND_RATE_SINGLE = 10.0
+TREND_RATE_FORTYFIVE = 5.0
+
+# How far apart two readings may be and still yield a slope worth reading.
+TREND_MAX_GAP_MS = 15 * 60 * 1000
+
+
 # ---------------------------------------------------------------- badges ----
 
 SOURCE_LABELS = {
     "tidepool": "TWIIST",
     "nightscout": "NS",
-    "glucocore": "CORE",
+    "glucocore": "GLUCOCORE",
 }
 SOURCE_LABEL_DEFAULT = "TRIO"
 
@@ -351,6 +373,13 @@ QR_BORDER_MODULES = 2
 
 
 # --------------------------------------------------------------- releases ----
+
+# GlucoCore's canonical host. Configured with the name it actually serves
+# from, so every call skips the redirect; the firmware has to agree, since
+# a display paired from one product and moved to the other should find the
+# same account.
+GLUCOCORE_BASE = "https://www.glucocore.app"
+GLUCOCORE_SESSION_HEADER = "x-tidepool-session-token"
 
 REPO = "The-Carted-Horse/SugarCube"
 UPDATE_CHANNELS = ("stable", "beta")

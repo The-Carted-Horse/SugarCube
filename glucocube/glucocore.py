@@ -8,6 +8,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import contract
+
 log = logging.getLogger("glucocube.glucocore")
 
 # The service's own address. Nobody types this — it is not a setting, and
@@ -17,8 +19,8 @@ log = logging.getLogger("glucocube.glucocore")
 # that redirect anyway; being configured with the canonical name saves
 # every call a round trip.
 GLUCOCORE_BASE = os.environ.get("GLUCOCORE_BASE",
-                                "https://www.glucocore.app").rstrip("/")
-SESSION_HEADER = "x-tidepool-session-token"
+                                contract.GLUCOCORE_BASE).rstrip("/")
+SESSION_HEADER = contract.GLUCOCORE_SESSION_HEADER
 
 
 MAX_REDIRECTS = 3

@@ -1,6 +1,14 @@
 name: Build and release
 
-# Releases are cut from branches, not from hand-pushed tags:
+# GlucoCube ships as two things from this one repository:
+#
+#   glucocube-<version>.img.xz               a Raspberry Pi SD-card image
+#   glucocube-<board>-<version>.bin          ESP32-S3 firmware, per board
+#   glucocube-<board>-<version>-factory.bin  the same, plus bootloader and
+#                                            partition table, for a board
+#                                            being flashed for the first time
+#
+# Both are cut from branches rather than from hand-pushed tags:
 #   push to dev  -> vX.Y.Z-rc.N  marked as a pre-release
 #   push to main -> vX.Y.Z       a full release devices will offer
 # The tag is created by the release step at the pushed commit, so there
@@ -28,9 +36,9 @@ on:
     #
     # Everything not listed here still cuts a release, including
     # install.sh, config.example.json (install.sh reads it), the systemd
-    # units and the pi-gen stage. To publish anyway — a doc fix worth a
-    # version of its own, say — run the workflow by hand from the Actions
-    # tab; workflow_dispatch above ignores this list entirely.
+    # units, the pi-gen stage and firmware/. To publish anyway — a doc fix
+    # worth a version of its own, say — run the workflow by hand from the
+    # Actions tab; workflow_dispatch above ignores this list entirely.
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -54,14 +62,19 @@ concurrency:
 
 jobs:
   # Nothing is published from a red tree: the same suite that runs on every
-  # push runs again here, and the build below waits for it.
+  # push runs again here, and everything below waits for it.
   test:
     uses: ./.github/workflows/ci.yml
 
-  build:
+  # The version is worked out once and handed to both builds, so the image
+  # and the firmware on one release can never disagree about what they are.
+  version:
     needs: test
-    # Native ARM runner: no QEMU emulation needed, and much faster builds.
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       # Tags are what the next version number is derived from, so the
       # full history (and with it every tag) has to come down.
@@ -139,23 +152,33 @@ jobs:
             tag="v$version"
           fi
 
+          # The updater on both products only understands vX.Y.Z and
+          # vX.Y.Z-rc.N: a device stamped with anything else stops seeing
+          # updates, so this is checked once, here, for both builds.
+          if [[ ! "${tag#v}" =~ ^[0-9]+(\.[0-9]+)*(-rc\.[0-9]+)?$ ]]; then
+            echo "Computed version '${tag#v}' is not a version the updater reads" >&2
+            exit 1
+          fi
+
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
           echo "prerelease=$([ "$channel" = prerelease ] && echo true || echo false)" \
             >> "$GITHUB_OUTPUT"
           echo "Previous release $current -> $tag ($channel)"
 
+  image:
+    needs: version
+    # Native ARM runner: no QEMU emulation needed, and much faster builds.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
       # Bake the release version into the image so the updater can compare
-      # it against future releases. The updater only understands vX.Y.Z and
-      # vX.Y.Z-rc.N: a device stamped with anything else stops seeing updates.
+      # it against future releases.
       - name: Stamp release version
         run: |
-          version='${{ steps.version.outputs.version }}'
-          if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+)*(-rc\.[0-9]+)?$ ]]; then
-            echo "Computed version '$version' is not a version the updater reads" >&2
-            exit 1
-          fi
-          echo "__version__ = \"$version\"" > glucocube/_version.py
+          echo "__version__ = \"${{ needs.version.outputs.version }}\"" \
+            > glucocube/_version.py
 
       # pi-gen only sees the stage directory, so the app source must be
       # inside it before the build starts.
@@ -183,20 +206,132 @@ jobs:
           compression-level: 9
           verbose-output: true
 
-      - name: Upload image artifact
+      - name: Keep the image for the release step
         uses: actions/upload-artifact@v4
         with:
           name: glucocube-image
           path: ${{ steps.build.outputs.image-path }}
+          if-no-files-found: error
+
+  firmware:
+    needs: version
+    runs-on: ubuntu-latest
+    # The same ESP-IDF the firmware is developed against. Pinned, because a
+    # toolchain that moves under a release is a release nobody can reproduce.
+    container: espressif/idf:v5.3.2
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per profile in contract.ESP32_BOARDS. A board added
+        # there without a line here silently stops being published, which
+        # tests/test_contract.py is what catches.
+        board: [esp32-8048s050, sugarcube-s3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the firmware
+        shell: bash
+        env:
+          BOARD: ${{ matrix.board }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          cd firmware
+          # The version reaches the OTA checker as a compile definition, so
+          # a device can tell whether a release is newer than what it runs.
+          idf.py -DGC_BOARD="$BOARD" -DGC_VERSION="$VERSION" \
+                 -B "build-$BOARD" build
+
+      - name: Assemble the release binaries
+        shell: bash
+        env:
+          BOARD: ${{ matrix.board }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          cd firmware
+          build="build-$BOARD"
+          out="dist"
+          mkdir -p "$out"
+
+          # The OTA image is the application on its own: that is what a
+          # device already in the field writes into its spare slot.
+          cp "$build/glucocube-$BOARD.bin" \
+             "$out/glucocube-$BOARD-$VERSION.bin"
+
+          # The factory image is everything a blank board needs, at the
+          # offsets it needs them, so flashing is one file at 0x0.
+          python -m esptool --chip esp32s3 merge_bin \
+            -o "$out/glucocube-$BOARD-$VERSION-factory.bin" \
+            --flash_mode dio --flash_size 16MB --flash_freq 80m \
+            0x0 "$build/bootloader/bootloader.bin" \
+            0x8000 "$build/partition_table/partition-table.bin" \
+            0xf000 "$build/ota_data_initial.bin" \
+            0x20000 "$build/glucocube-$BOARD.bin"
+
+          ls -l "$out"
+
+      # A version that did not reach the compiler is a firmware that calls
+      # itself 0.0.0 and never offers an update — and it runs perfectly well
+      # otherwise, so nothing else would notice.
+      - name: Check the version was stamped in
+        shell: bash
+        env:
+          BOARD: ${{ matrix.board }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! strings "firmware/dist/glucocube-$BOARD-$VERSION.bin" \
+               | grep -qx "$VERSION"; then
+            echo "The firmware does not carry the version $VERSION." >&2
+            exit 1
+          fi
+          echo "Stamped $VERSION into the $BOARD firmware."
+
+      - name: Keep the firmware for the release step
+        uses: actions/upload-artifact@v4
+        with:
+          name: glucocube-firmware-${{ matrix.board }}
+          path: firmware/dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [version, image, firmware]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect every artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # The web installer at docs/flash/ reads this to know what to write
+      # and where. It names the release explicitly rather than "latest", so
+      # a page opened during a release cannot hand somebody half of one.
+      - name: Write the web-installer manifests
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/write_manifests.py \
+            --version "$VERSION" --tag "$TAG" --out artifacts/manifests
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
+          tag_name: ${{ needs.version.outputs.tag }}
           # The tag does not exist yet; cut it at the commit that was pushed.
           target_commitish: ${{ github.sha }}
-          prerelease: ${{ steps.version.outputs.prerelease }}
-          files: ${{ steps.build.outputs.image-path }}
+          prerelease: ${{ needs.version.outputs.prerelease }}
+          files: |
+            artifacts/glucocube-image/*
+            artifacts/glucocube-firmware-*/*
+            artifacts/manifests/*
+          fail_on_unmatched_files: true
           # Releases were going out with an empty description; the commit
           # log is a better starting point than nothing.
           generate_release_notes: true

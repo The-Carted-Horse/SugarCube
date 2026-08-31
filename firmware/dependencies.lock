@@ -1,0 +1,23 @@
+dependencies:
+  espressif/mdns:
+    component_hash: 8f6a86c9a922ae73615467741663eb41758a0616a93b3457823a4e8f3ddd6b12
+    source:
+      git: https://github.com/espressif/esp-protocols.git
+      path: components/mdns
+      type: git
+    version: db06b19b7be729c163d346f62ec0eba01047b7f1
+  idf:
+    component_hash: null
+    source:
+      type: idf
+    version: 5.3.2
+  lvgl/lvgl:
+    component_hash: 5a7802237265336e3366845857f91e7ff832a55443ceda164d00db89cdd04658
+    source:
+      git: https://github.com/lvgl/lvgl.git
+      path: .
+      type: git
+    version: c98ab243621a2a948674da5339c15da88832f928
+manifest_hash: 1b08b2d5c272d66f752acf85499a48b6394e5cd3cf3c1ab61d69fa1539e01c4e
+target: esp32s3
+version: 1.0.0

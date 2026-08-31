@@ -100,6 +100,39 @@ jobs:
             image/stage-glucocube/prerun.sh \
             image/stage-glucocube/00-glucocube/*.sh
 
+  firmware:
+    name: Firmware (${{ matrix.board }})
+    runs-on: ubuntu-latest
+    # Pinned to the ESP-IDF the firmware is developed against: a toolchain
+    # that moves under a release is a release nobody can reproduce.
+    container: espressif/idf:v5.3.2
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [esp32-8048s050, sugarcube-s3]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Every board profile has to keep building, not just the one somebody
+      # happens to have on their desk. The forecast the firmware runs is
+      # checked against the Python's own answers by the test job above —
+      # see tests/test_contract.py — so this is the compile, not the maths.
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          cd firmware
+          idf.py -DGC_BOARD="${{ matrix.board }}" -B "build-${{ matrix.board }}" build
+
+      - name: Report what it costs
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          cd firmware
+          idf.py -DGC_BOARD="${{ matrix.board }}" -B "build-${{ matrix.board }}" size
+
   units:
     name: Service files
     runs-on: ubuntu-latest

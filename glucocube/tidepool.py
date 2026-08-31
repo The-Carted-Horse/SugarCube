@@ -23,14 +23,14 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-from . import synclog
+from . import contract, synclog
 from .sources import BasePoller
 from .store import Store, parse_time_ms
 
 log = logging.getLogger("glucocube.tidepool")
 
 API_BASE = "https://api.tidepool.org"
-MGDL_PER_MMOLL = 18.01559
+MGDL_PER_MMOLL = contract.TIDEPOOL_MGDL_PER_MMOL
 FETCH_WINDOW_HOURS = 6
 
 
@@ -45,17 +45,17 @@ def direction_from_rate(rate_per_5min: float | None) -> str | None:
     if rate_per_5min is None:
         return None
     r = rate_per_5min
-    if r > 17:
+    if r > contract.TREND_RATE_DOUBLE:
         return "DoubleUp"
-    if r > 10:
+    if r > contract.TREND_RATE_SINGLE:
         return "SingleUp"
-    if r > 5:
+    if r > contract.TREND_RATE_FORTYFIVE:
         return "FortyFiveUp"
-    if r < -17:
+    if r < -contract.TREND_RATE_DOUBLE:
         return "DoubleDown"
-    if r < -10:
+    if r < -contract.TREND_RATE_SINGLE:
         return "SingleDown"
-    if r < -5:
+    if r < -contract.TREND_RATE_FORTYFIVE:
         return "FortyFiveDown"
     return "Flat"
 
@@ -73,7 +73,7 @@ def transform(docs: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
         ms = parse_time_ms(doc, "time")
         mgdl = to_mgdl(float(doc["value"]), doc.get("units"))
         rate = None
-        if prev_ms is not None and 0 < ms - prev_ms <= 15 * 60 * 1000:
+        if prev_ms is not None and 0 < ms - prev_ms <= contract.TREND_MAX_GAP_MS:
             rate = (mgdl - prev_mgdl) / ((ms - prev_ms) / (5 * 60 * 1000))
         entries.append(
             {
