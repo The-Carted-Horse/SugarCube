@@ -34,18 +34,36 @@ NOW = 1_700_000_000_000          # a fixed instant; nothing here reads the clock
 MINUTE = 60 * 1000
 CURVES = {"IOB": 0, "COB": 1, "UAM": 2}
 
+# Python 3.12 changed sum() over floats to compensated (Neumaier) summation,
+# and oref.predict sums in four places — so the Pi's own forecast differs in
+# its last digit depending on which Python it runs. At 1e-14 mg/dL that is
+# nothing to a display, but it makes a byte-for-byte golden file impossible:
+# the same script on 3.11 and 3.13 writes different digits.
+#
+# So everything written here is quantised to a grid far finer than anything
+# that could matter and far coarser than that noise. The C is compared
+# against these to a hundredth of a mg/dL, 10,000 times looser again, so
+# nothing real hides in the gap.
+QUANTUM = 6
+
+
+def q(value) -> float:
+    return round(float(value), QUANTUM)
+
 
 def history(count, start_value, per_step, step_min=5, end_offset_min=0):
     """`count` readings ending `end_offset_min` ago, ascending."""
     out = []
     for i in range(count):
         ago = (count - 1 - i) * step_min + end_offset_min
-        out.append((NOW - ago * MINUTE, start_value + per_step * i))
+        # Quantised at construction so the C is fed exactly what the Python
+        # was, rather than a rounded version of it.
+        out.append((NOW - ago * MINUTE, q(start_value + per_step * i)))
     return out
 
 
 def bolus(minutes_ago, units):
-    return (NOW - minutes_ago * MINUTE, units)
+    return (NOW - minutes_ago * MINUTE, q(units))
 
 
 # Each case is exercised through oref.predict directly.
@@ -212,7 +230,7 @@ VERSION_LABELS = [
 
 
 def cfloat(value) -> str:
-    return repr(float(value)) + "f"
+    return repr(q(value)) + "f"
 
 
 def emit_points(name, points, out):

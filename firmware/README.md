@@ -110,6 +110,14 @@ pinned rather than trusted:
 make -C firmware/host_test        # builds the C with a host compiler and runs it
 ```
 
+One wrinkle worth knowing about: Python 3.12 changed `sum()` over floats to
+compensated summation, and `oref.predict` sums in four places, so the Pi's
+own forecast differs in its last digit depending on which Python it runs —
+about 1e-14 mg/dL. Nothing a display could show, but enough that a
+byte-for-byte golden file is impossible, so the vectors are quantised to
+1e-6 and compared to 1e-2. CI runs the generator on 3.11, 3.12 and 3.13,
+which is what catches it if that ever stops being true.
+
 `host_test/gen_vectors.py` runs `glucocube/oref.py` and `predict.py` over a
 spread of deliberately awkward inputs — pump IOB with no visible boluses,
 negative IOB, carbs on board, readings clamping at both ends, an implausible
